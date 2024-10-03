@@ -1,0 +1,15 @@
+[package]
+name = "jsony"
+version = "0.0.1"
+edition = "2021"
+authors = ["Thomas Dagenais <exrok@i64.dev>"]
+license = "MIT"
+readme = "README.md"
+description = "An experimental fast compiling serialization and deserialization libary for json like formats."
+
+[dependencies]
+# jsony_macros = { version = "0.0.1" }
+jsony_macros = { path = "../jsony_macros" }
+itoa = "1"
+ryu = "1"
+memchr = "2.7.4"

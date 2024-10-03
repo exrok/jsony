@@ -1,0 +1,8 @@
+[package]
+name = "macro_preprocessor"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+memchr = "2.7.4"
+ra-ap-rustc_lexer = "0.67.0"
