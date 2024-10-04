@@ -1,14 +1,15 @@
 use ra_ap_rustc_lexer::{tokenize, TokenKind};
-use std::collections::HashSet;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::slice::Iter as SliceIter;
+
 #[derive(Debug, Hash, PartialEq, Eq)]
 enum Kind {
     PushIdent,
     PushPunctAlone,
     PushPunctJoint,
 }
+
 #[derive(Debug, Hash, PartialEq, Eq)]
 struct Fnctl<'a> {
     kind: Kind,
@@ -62,7 +63,7 @@ fn munch_thing<'a>(
     Some((
         Fnctl {
             kind,
-            buffer: &buffer_name,
+            buffer: buffer_name,
             literal: &raw[value.clone()],
         },
         start.start..end.end,
@@ -317,40 +318,4 @@ fn main() {
             .unwrap();
         }
     }
-
-    return;
-    let mut end = 0;
-    let tokens: Vec<(TokenKind, Range<usize>)> = tokenize(&data)
-        .map(move |tok| {
-            let start = end;
-            end += tok.len as usize;
-            (tok.kind, start..end)
-        })
-        .collect();
-    let mut iter = tokens.iter();
-    let mut thetoks: HashSet<Fnctl<'_>> = HashSet::new();
-    let mut group = false;
-    let mut x = 0;
-    for i in 0..tokens.len() {
-        if let Some((fnctl, range)) = munch_thing(&data, &mut iter) {
-            if !group {
-                println!("--------");
-            }
-            x += 1;
-            println!("{:?} {}", fnctl, &data[range]);
-            thetoks.insert(fnctl);
-            group = true;
-        } else {
-            group = false;
-        }
-    }
-    println!("{} {}", thetoks.len(), x);
-    // let mut lines = data.lines();
-    // while let Some(line) = lines.next() {
-    //     let bebop = line.trim();
-    //     if bebop.starts_with("tt_") {
-    //         println!("{}", line);
-    //     }
-    // }
-    // println!("Hello, world!");
 }

@@ -140,7 +140,7 @@ fn index_of_next_value_in_array(s: &[u8]) -> Option<usize> {
 // If bytes is valid UTF-8 the returned bytes will be too.
 fn array_index(bytes: &[u8], mut index: usize) -> Result<&[u8], ErrorCode> {
     let mut i = 0;
-    while bytes.get(i).ok_or(ErrorCode::EOF)?.is_ascii_whitespace() {
+    while bytes.get(i).ok_or(ErrorCode::Eof)?.is_ascii_whitespace() {
         i += 1;
     }
     if bytes[i] != b'[' {
@@ -151,13 +151,13 @@ fn array_index(bytes: &[u8], mut index: usize) -> Result<&[u8], ErrorCode> {
         i += index_of_next_value_in_array(&bytes[i..]).ok_or(ErrorCode::OutOfBoundsArrayAccess)?;
         index -= 1;
     }
-    while bytes.get(i).ok_or(ErrorCode::EOF)?.is_ascii_whitespace() {
+    while bytes.get(i).ok_or(ErrorCode::Eof)?.is_ascii_whitespace() {
         i += 1;
     }
     if bytes[i] == b']' {
         return Err(ErrorCode::OutOfBoundsArrayAccess);
     }
-    return Ok(&bytes[i..]);
+    Ok(&bytes[i..])
 }
 
 // Return remaining bytes starting with value of the provided key.
@@ -165,19 +165,19 @@ fn array_index(bytes: &[u8], mut index: usize) -> Result<&[u8], ErrorCode> {
 // If bytes is valid UTF-8 the returned bytes will be too.
 pub(crate) fn object_index<'a>(bytes: &'a [u8], key: &[u8]) -> Result<&'a [u8], ErrorCode> {
     let mut i = 0;
-    while bytes.get(i).ok_or(ErrorCode::EOF)?.is_ascii_whitespace() {
+    while bytes.get(i).ok_or(ErrorCode::Eof)?.is_ascii_whitespace() {
         i += 1;
     }
     if bytes[i] != b'{' {
         return Err(ErrorCode::ExpectedObject);
     }
     i += 1;
-    while let Some(offset) = memchr(b'"', bytes.get(i..).ok_or(ErrorCode::EOF)?) {
+    while let Some(offset) = memchr(b'"', bytes.get(i..).ok_or(ErrorCode::Eof)?) {
         i += offset + 1;
         let key_start = i;
-        i += index_of_string_end2(&bytes[key_start - 1..]).ok_or(ErrorCode::EOF)?;
+        i += index_of_string_end2(&bytes[key_start - 1..]).ok_or(ErrorCode::Eof)?;
         let key_stop = i - 1;
-        i += memchr(b':', &bytes[i..]).ok_or(ErrorCode::EOF)? + 1;
+        i += memchr(b':', &bytes[i..]).ok_or(ErrorCode::Eof)? + 1;
         let expr_start = i;
         {
             let k = (key_start, key_stop);
@@ -186,7 +186,7 @@ pub(crate) fn object_index<'a>(bytes: &'a [u8], key: &[u8]) -> Result<&'a [u8], 
                 return Ok(&bytes[expr_start..]);
             }
         }
-        i += expr_end(&bytes[i..]).ok_or(ErrorCode::EOF)?;
+        i += expr_end(&bytes[i..]).ok_or(ErrorCode::Eof)?;
     }
     Err(ErrorCode::MissingObjectKey)
 }
@@ -242,7 +242,7 @@ impl std::ops::Index<usize> for Value {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum ErrorCode {
-    EOF = 1,
+    Eof = 1,
     MissingObjectKey = 2,
     OutOfBoundsArrayAccess = 3,
     ExpectedObject = 4,
@@ -257,7 +257,7 @@ impl ErrorCode {
         //   - Since #[repr(transparent)] Value(str), cast is safe
         unsafe {
             let fake_pointer = self as usize as *const u8;
-            &*(std::slice::from_raw_parts(fake_pointer, 0) as *const _ as *const Value)
+            &*(core::ptr::slice_from_raw_parts(fake_pointer, 0) as *const Value)
         }
     }
 }
@@ -274,7 +274,7 @@ impl Value {
             return None;
         }
         let tagged = self.raw.as_ptr() as usize;
-        if tagged >= 1 && tagged <= 5 {
+        if (1..=5).contains(&tagged) {
             unsafe { Some(std::mem::transmute::<u8, ErrorCode>(tagged as u8)) }
         } else if tagged > 0xC000_0000_0000_0000 {
             Some(ErrorCode::MissingObjectKey)
@@ -297,7 +297,7 @@ impl Value {
                 return ErrorCode::MissingObjectKey.as_value();
             }
             let tagged = pointer_bits | (key.len() << 49) | (0xC000_0000_0000_0000);
-            &*(std::slice::from_raw_parts(tagged as *const u8, 0) as *const _ as *const Value)
+            &*(core::ptr::slice_from_raw_parts(tagged as *const u8, 0) as *const Value)
         }
         #[cfg(not(target_pointer_width = "64"))]
         {
@@ -349,7 +349,7 @@ impl Value {
 
     pub fn new(raw: &str) -> &Value {
         if raw.is_empty() {
-            ErrorCode::EOF.as_value()
+            ErrorCode::Eof.as_value()
         } else {
             unsafe { &*(raw as *const str as *const Value) }
         }
@@ -368,7 +368,7 @@ impl Value {
             return Some("Unknown JSON Parsing Error".into());
         };
         let message = match error_code {
-            ErrorCode::EOF => "Unexpected EOF",
+            ErrorCode::Eof => "Unexpected EOF",
             ErrorCode::MissingObjectKey => "Key not found in object",
             ErrorCode::OutOfBoundsArrayAccess => "Index larger than array",
             ErrorCode::ExpectedObject => "Expected an object but found something else",
@@ -397,8 +397,8 @@ mod test {
         assert_eq!(42u64, value[0]["inner"][0].parse::<u64>().unwrap());
         assert_eq!("nice", value[0]["inner"][1].parse::<String>().unwrap());
         assert_eq!("wow", value[1].parse::<String>().unwrap());
-        assert_eq!(false, value[2].parse::<bool>().unwrap());
-        assert_eq!(true, value[3].parse::<bool>().unwrap());
+        assert!(!value[2].parse::<bool>().unwrap());
+        assert!(value[3].parse::<bool>().unwrap());
         assert_eq!(-123.456, value[4].parse::<f64>().unwrap());
         assert_eq!(None::<u32>, value[5].parse::<Option<u32>>().unwrap());
     }

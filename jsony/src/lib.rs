@@ -40,7 +40,8 @@ pub unsafe trait ToBinary {
 pub unsafe trait FromJson<'a>: Sized + 'a {
     /// Safety to Call:
     /// - dest: must be an aligned pointer to self which is valid for writes.
-    /// Safety to implemented:
+    /// # Safety
+    /// to implemented:
     /// - If `Ok(())` is returned then `dest` must be initilized to a valid Self
     #[inline]
     unsafe fn emplace_from_json(
@@ -120,7 +121,7 @@ pub fn from_binary<'a, T: FromBinary<'a>>(slice: &'a [u8]) -> Result<T, FromBina
     let mut decoder = Decoder::new(slice);
     let value = Ok(T::binary_decode(&mut decoder));
     if let Some(error) = decoder.consume_error() {
-        return Err(error);
+        Err(error)
     } else {
         value
     }
@@ -203,6 +204,12 @@ impl std::fmt::Write for StringBuf {
 #[repr(transparent)]
 pub struct RawBuf {
     pub string: String,
+}
+
+impl Default for RawBuf {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RawBuf {
@@ -627,32 +634,32 @@ impl<T: ToJson> ToJson for [T] {
     }
 }
 
-impl<'a, T: ToJson + ?Sized + Clone> ToJson for Cow<'a, T> {
+impl<'a, T: ToJson + Clone> ToJson for Cow<'a, T> {
     type Into = T::Into;
 
     fn jsonify_into(&self, output: &mut Self::Into) {
-        <T as ToJson>::jsonify_into(&*self, output)
+        <T as ToJson>::jsonify_into(self, output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for Rc<T> {
     type Into = T::Into;
 
     fn jsonify_into(&self, output: &mut Self::Into) {
-        <T as ToJson>::jsonify_into(&*self, output)
+        <T as ToJson>::jsonify_into(self, output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for Box<T> {
     type Into = T::Into;
 
     fn jsonify_into(&self, output: &mut Self::Into) {
-        <T as ToJson>::jsonify_into(&*self, output)
+        <T as ToJson>::jsonify_into(self, output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for Arc<T> {
     type Into = T::Into;
 
     fn jsonify_into(&self, output: &mut Self::Into) {
-        <T as ToJson>::jsonify_into(&*self, output)
+        <T as ToJson>::jsonify_into(self, output)
     }
 }
 

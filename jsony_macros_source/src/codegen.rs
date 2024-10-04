@@ -25,8 +25,8 @@ use StaticToken::Ident as StaticIdent;
 use StaticToken::Punct as StaticPunct;
 
 #[allow(unused)]
-fn tt_append(foo: &mut Vec<TokenTree>, chr: &'static [StaticToken]) {
-    foo.extend(chr.iter().map(|tok| match tok {
+fn tt_append(output: &mut Vec<TokenTree>, chr: &'static [StaticToken]) {
+    output.extend(chr.iter().map(|tok| match tok {
         StaticIdent(value) => TokenTree::Ident(Ident::new(value, Span::call_site())),
         StaticPunct(chr, spacing) => TokenTree::Punct(Punct::new(
             *chr,
@@ -142,11 +142,9 @@ fn fmt_generics(buffer: &mut Vec<TokenTree>, generics: &[Generic], fmt: GenericB
             }
         }
         buffer.push(generic.ident.clone().into());
-        if fmt.bounds {
-            if !generic.bounds.is_empty() {
-                append_tok!(: buffer);
-                buffer.extend(generic.bounds.iter().cloned());
-            }
+        if fmt.bounds && !generic.bounds.is_empty() {
+            append_tok!(: buffer);
+            buffer.extend(generic.bounds.iter().cloned());
         }
     }
 }
@@ -174,7 +172,7 @@ fn bodyless_impl_from(
     let any_generics = !target.generics.is_empty();
     splat! {
         output;
-        impl <#[#lifetime] [?(!generics.is_empty()), [fmt_generics(output, &generics, DEF)]] >
+        impl <#[#lifetime] [?(!generics.is_empty()), [fmt_generics(output, generics, DEF)]] >
          [~&crate_path]::[#trait_name]<#[#lifetime]> for [#target.name][?(any_generics) <
             [fmt_generics(output, &target.generics, USE)]
         >]  [?(!target.where_clauses.is_empty() || !target.generic_field_types.is_empty())
@@ -252,7 +250,7 @@ struct Ctx<'a> {
 
 impl<'a> Ctx<'a> {
     pub fn target_type(&self, out: &mut Vec<TokenTree>) {
-        splat!(out; [#self.target.name] [?(self.target.generics.len() > 0) < [fmt_generics(
+        splat!(out; [#self.target.name] [?(!self.target.generics.is_empty()) < [fmt_generics(
             out, &self.target.generics, USE
         )]>])
     }
@@ -415,7 +413,7 @@ fn struct_schema(
 fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     splat!(out;
        const _: () = {
-            const unsafe fn __schema_inner<#[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, &ctx.generics, DEF)]] >()
+            const unsafe fn __schema_inner<#[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, DEF)]] >()
                 ~> ::jsony::__internal::ObjectSchema<#[#ctx.lifetime]>
                 [?(!ctx.target.where_clauses.is_empty() || !ctx.target.generic_field_types.is_empty())
              where [
@@ -431,7 +429,7 @@ fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Re
                 }
             [
                 let ts = token_stream!(out; __schema_inner::<
-                    #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, &ctx.generics, USE)]]
+                    #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
                 >().decode(dst, parser, None));
                 impl_from_json(out, ctx, ts)?;
             ]
@@ -564,7 +562,7 @@ fn handle_struct(
             [#target.name] {
                 [for field in fields {
                     splat!{(&mut output);
-                        [#field.name]: [binary_decode_field(&mut output, &ctx, &field)],
+                        [#field.name]: [binary_decode_field(&mut output, &ctx, field)],
                     }
                 }]
             }
@@ -596,7 +594,7 @@ fn handle_tuple_struct(
         let body = token_stream! {(&mut output);
             [#target.name] (
                 [for field in fields {
-                    splat!{(&mut output); [binary_decode_field(&mut output, &ctx, &field)], }
+                    splat!{(&mut output); [binary_decode_field(&mut output, &ctx, field)], }
                 }]
             )
         };
@@ -622,7 +620,7 @@ fn enum_to_binary(
                         ) => {
                             encoder.push([#Literal::u8_unsuffixed(i as u8)]);
                             [for (i, field) in variant.fields.iter().enumerate() {
-                                binary_encode_field(out, &ctx, field, &|out| splat!{out; [#ctx.temp[i]]})
+                                binary_encode_field(out, ctx, field, &|out| splat!{out; [#ctx.temp[i]]})
                             }]
                         }}
                     },
@@ -632,7 +630,7 @@ fn enum_to_binary(
                         } => {
                             encoder.push([#Literal::u8_unsuffixed(i as u8)]);
                             [for field in variant.fields {
-                                binary_encode_field(out, &ctx, field, &|out| splat!{out; [#field.name]})
+                                binary_encode_field(out, ctx, field, &|out| splat!{out; [#field.name]})
                             }]
                         }}
                     },
@@ -645,7 +643,7 @@ fn enum_to_binary(
             }
         ]}
     };
-    impl_to_binary(out, &ctx, body)
+    impl_to_binary(out, ctx, body)
 }
 
 fn enum_from_binary(
@@ -666,7 +664,7 @@ fn enum_from_binary(
                             splat!{out;
                                 [#ctx.target.name]::[#variant.name](
                                     [for field in variant.fields {
-                                        splat!{out; [binary_decode_field(out, &ctx, field)], }
+                                        splat!{out; [binary_decode_field(out, ctx, field)], }
                                     }]
                                 )
                             }
@@ -675,7 +673,7 @@ fn enum_from_binary(
                             splat!{out;
                                 [#ctx.target.name]::[#variant.name]{
                                     [for field in variant.fields {
-                                        splat!{out; [#field.name]: [binary_decode_field(out, &ctx, field)], }
+                                        splat!{out; [#field.name]: [binary_decode_field(out, ctx, field)], }
                                     }]
                                 }
                             }
@@ -686,7 +684,7 @@ fn enum_from_binary(
             }
         ]}
     };
-    impl_from_binary(out, &ctx, body)
+    impl_from_binary(out, ctx, body)
 }
 
 fn handle_enum(
@@ -702,7 +700,7 @@ fn handle_enum(
             max_tuples = max_tuples.max(var.fields.len());
         }
     }
-    ctx.temp = (0..max_tuples).map(|i| var(i)).collect::<Vec<_>>();
+    ctx.temp = (0..max_tuples).map(var).collect::<Vec<_>>();
     if target.from_json {
         enum_from_json(&mut output, &ctx, variants)?;
     }

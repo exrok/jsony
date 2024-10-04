@@ -85,8 +85,7 @@ fn parse_lit_str_raw(mut s: &str) -> Box<str> {
         assert_eq!(end, b'#');
     }
 
-    let content = s[pounds + 1..close].to_owned().into_boxed_str();
-    content
+    s[pounds + 1..close].to_owned().into_boxed_str()
 }
 
 #[allow(clippy::needless_continue)]

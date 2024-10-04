@@ -41,10 +41,10 @@ impl<'a> Decoder<'a> {
             Some(FromBinaryError {
                 message: Cow::Borrowed("Unexpected EOF"),
             })
-        } else if let Some(error) = self.error.take() {
-            Some(FromBinaryError { message: error })
         } else {
-            None
+            self.error
+                .take()
+                .map(|error| FromBinaryError { message: error })
         }
     }
     pub fn new(slice: &'a [u8]) -> Self {
@@ -98,7 +98,7 @@ impl<'a> Decoder<'a> {
     }
     pub fn byte(&mut self) -> u8 {
         unsafe {
-            if !(self.start.as_ptr() < self.end.as_ptr()) {
+            if self.start.as_ptr() >= self.end.as_ptr() {
                 self.eof = true;
                 return 0;
             }
@@ -241,7 +241,7 @@ impl_bincode_via_transmute! {
 
 unsafe impl ToBinary for bool {
     fn binary_encode(&self, encoder: &mut Vec<u8>) {
-        encoder.push((*self as u8))
+        encoder.push(*self as u8)
     }
 }
 
@@ -255,7 +255,7 @@ unsafe impl<'a> FromBinary<'a> for bool {
 fn encode_array_body<T: ToBinary>(slice: &[T], encoder: &mut Vec<u8>) {
     let can_memcopy = const { T::POD && (cfg!(target_endian = "little") || size_of::<T>() == 1) };
     if can_memcopy {
-        let byte_size = slice.len() * std::mem::size_of::<T>();
+        let byte_size = std::mem::size_of_val(slice);
         encoder.reserve(byte_size);
         let initial_length = encoder.len();
         unsafe {
@@ -350,7 +350,7 @@ unsafe impl<'a, T: FromBinary<'a>, const N: usize> FromBinary<'a> for [T; N] {
         }
     }
 }
-unsafe impl<'a, T: ToBinary, const N: usize> ToBinary for [T; N] {
+unsafe impl<T: ToBinary, const N: usize> ToBinary for [T; N] {
     const POD: bool = T::POD;
 
     fn binary_encode(&self, encoder: &mut Vec<u8>) {
@@ -400,7 +400,7 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Vec<T> {
         }
     }
 }
-unsafe impl<'a, T: ToBinary> ToBinary for Vec<T> {
+unsafe impl<T: ToBinary> ToBinary for Vec<T> {
     fn binary_encode(&self, encoder: &mut Vec<u8>) {
         <[T]>::binary_encode(self, encoder);
     }
@@ -418,7 +418,7 @@ unsafe impl<'a, T: ToBinary + ?Sized> ToBinary for &'a T {
     }
 }
 
-unsafe impl<'a, K: ToBinary, V: ToBinary, S> ToBinary for HashMap<K, V, S> {
+unsafe impl<K: ToBinary, V: ToBinary, S> ToBinary for HashMap<K, V, S> {
     fn binary_encode(&self, encoder: &mut Vec<u8>) {
         write_length(encoder, self.len());
         for (k, v) in self {
@@ -443,7 +443,7 @@ unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, V: FromBinary<'a>, S: BuildHasher
     }
 }
 
-unsafe impl<'a, K: ToBinary, S> ToBinary for HashSet<K, S> {
+unsafe impl<K: ToBinary, S> ToBinary for HashSet<K, S> {
     fn binary_encode(&self, encoder: &mut Vec<u8>) {
         write_length(encoder, self.len());
         for k in self {
@@ -465,9 +465,9 @@ unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, S: BuildHasher + Default> FromBin
     }
 }
 
-unsafe impl<'a, T: ToBinary> ToBinary for Box<T> {
+unsafe impl<T: ToBinary> ToBinary for Box<T> {
     fn binary_encode(&self, encoder: &mut Vec<u8>) {
-        T::binary_encode(&*self, encoder)
+        T::binary_encode(self, encoder)
     }
 }
 
@@ -489,7 +489,7 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Box<[T]> {
     }
 }
 
-unsafe impl<'a, T: ToBinary> ToBinary for Option<T> {
+unsafe impl<T: ToBinary> ToBinary for Option<T> {
     fn binary_encode(&self, encoder: &mut Vec<u8>) {
         if let Some(value) = self {
             encoder.push(1);
@@ -565,7 +565,7 @@ mod test {
         let mut b = String::from_utf8(vec![b'a'; 255]).unwrap();
         let mut c = String::from_utf8(vec![b'a'; 256]).unwrap();
         let mut inputs = ["", "hello", &a, &b, &c];
-        let mut encoded = inputs.clone().map(|string| {
+        let mut encoded = inputs.map(|string| {
             let mut buf = Vec::new();
             string.binary_encode(&mut buf);
             buf
@@ -603,7 +603,7 @@ mod test {
         let mut b = vec![b'a'; 255];
         let mut c = vec![b'a'; 256];
         let mut inputs = [&b""[..], b"hello", &a, &b, &c];
-        let mut encoded = inputs.clone().map(|string| {
+        let mut encoded = inputs.map(|string| {
             let mut buf = Vec::new();
             string.binary_encode(&mut buf);
             buf
@@ -635,7 +635,7 @@ mod test {
         let mut b = vec![b'a' as u32; 255];
         let mut c = vec![b'a' as u32; 256];
         let mut inputs = [&[][..], &[1u32, 2, 3, 4, 5], &a, &b, &c];
-        let mut encoded = inputs.clone().map(|string| {
+        let mut encoded = inputs.map(|string| {
             let mut buf = Vec::new();
             string.binary_encode(&mut buf);
             buf
@@ -655,7 +655,7 @@ mod test {
     #[test]
     fn nested_pod_arrays() {
         let mut inputs: [&[[u32; 2]]; 2] = [&[][..], &[[1u32, 2], [3, 4], [5, 3]]];
-        let mut encoded = inputs.clone().map(|array| {
+        let mut encoded = inputs.map(|array| {
             let mut buf = Vec::new();
             array.binary_encode(&mut buf);
             buf

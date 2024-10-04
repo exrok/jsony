@@ -148,7 +148,7 @@ impl<'a> ObjectParser<'a> {
                     continue 'outer;
                 }
                 value_tokens.clear();
-                while let Some(tok) = input.next() {
+                for tok in input.by_ref() {
                     if is_char(&tok, ',') {
                         break;
                     }
@@ -180,7 +180,7 @@ impl<'a> ObjectParser<'a> {
                     }
                     TokenTree::Literal(x) => match literal_inline(x.to_string()) {
                         lit::InlineKind::String(content) => {
-                            self.codegen.text.push_str("\"");
+                            self.codegen.text.push('"');
                             self.codegen.raw_escape_inline_value(&content);
                             self.codegen.text.push_str("\":");
                         }
@@ -219,7 +219,7 @@ struct Codegen {
 }
 fn munch_expr(input: &mut IntoIter, output: &mut Vec<TokenTree>) {
     output.clear();
-    while let Some(tok) = input.next() {
+    for tok in input.by_ref() {
         if is_char(&tok, ',') {
             break;
         }
@@ -371,20 +371,18 @@ impl Codegen {
         if f == Flatten::None {
             self.end_inline_array();
         }
-        return true;
+        true
     }
     fn require_scalar_or_error(&mut self, span: Span) -> bool {
         match self.flatten {
-            Flatten::None => {
-                return false;
-            }
+            Flatten::None => false,
             Flatten::Object => {
                 self.error = Some((span, "Expected object to flatten".into()));
-                return true;
+                true
             }
             Flatten::Array => {
                 self.error = Some((span, "Expected array to flatten".into()));
-                return true;
+                true
             }
         }
     }
@@ -495,7 +493,7 @@ impl Codegen {
             TokenTree::Group(group) => match group.delimiter() {
                 Delimiter::Parenthesis => {
                     if let [_, eq, ge, ..] = &values[..] {
-                        if is_char(eq, '=') && is_char(&ge, '>') {
+                        if is_char(eq, '=') && is_char(ge, '>') {
                             self.inline_into_json(
                                 group.span(),
                                 group.stream(),
@@ -550,21 +548,21 @@ impl Codegen {
                             if self.require_scalar_or_error(ident.span()) {
                                 return;
                             }
-                            self.raw_inline_value(&"null");
+                            self.raw_inline_value("null");
                             return;
                         }
                         "true" => {
                             if self.require_scalar_or_error(ident.span()) {
                                 return;
                             }
-                            self.raw_inline_value(&"true");
+                            self.raw_inline_value("true");
                             return;
                         }
                         "false" => {
                             if self.require_scalar_or_error(ident.span()) {
                                 return;
                             }
-                            self.raw_inline_value(&"false");
+                            self.raw_inline_value("false");
                             return;
                         }
                         _ => (),
@@ -576,7 +574,7 @@ impl Codegen {
                     }
                     "todo" => {
                         if let Some(next) = values.get(1) {
-                            if is_char(&next, '!') {
+                            if is_char(next, '!') {
                                 if let Some(TokenTree::Group(_)) = values.get(2) {
                                     if values.len() == 3 {
                                         self.out.extend(values.drain(..));
@@ -655,7 +653,7 @@ impl Codegen {
             }
             TokenTree::Literal(x) => match literal_inline(x.to_string()) {
                 lit::InlineKind::String(content) => {
-                    self.text.push_str("\"");
+                    self.text.push('"');
                     self.raw_escape_inline_value(&content);
                     self.text.push_str("\":");
                 }
@@ -670,7 +668,7 @@ impl Codegen {
             },
         };
         let mut value_tokens = Vec::new();
-        while let Some(tok) = input.next() {
+        for tok in input.by_ref() {
             if is_char(&tok, ',') {
                 break;
             }
@@ -727,7 +725,7 @@ impl Codegen {
         ]);
     }
     fn dyn_key(&mut self, span: Span, expr: TokenStream) {
-        self.text.push_str("\"");
+        self.text.push('"');
         self.flush_text();
         self.out.extend([
             self.builder(),
@@ -735,17 +733,14 @@ impl Codegen {
             TokenTree::Ident(Ident::new("raw_key", Span::call_site())),
             TokenTree::Group(Group::new(
                 Delimiter::Parenthesis,
-                TokenStream::from_iter([
-                    with_span(chr('&'), span.clone()),
-                    with_span(parend(expr), span),
-                ]),
+                TokenStream::from_iter([with_span(chr('&'), span), with_span(parend(expr), span)]),
             )),
             chr(';'),
         ]);
         self.text.push_str("\":");
     }
     fn pre_escaped_key(&mut self, raw: &str) {
-        self.text.push_str("\"");
+        self.text.push('"');
         self.text.push_str(raw);
         self.text.push_str("\":");
     }
@@ -802,7 +797,7 @@ impl Codegen {
         self.flush_text();
         let expr = with_span(
             TokenTree::Group(Group::new(Delimiter::Parenthesis, expr)),
-            span.clone(),
+            span,
         );
         match self.flatten {
             Flatten::None => {

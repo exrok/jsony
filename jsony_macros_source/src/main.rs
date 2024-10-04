@@ -1,4 +1,4 @@
-// #![allow(unused)]
+#![allow(clippy::question_mark)]
 mod ast;
 mod codegen;
 mod lit;
@@ -58,7 +58,7 @@ impl Error {
     #[track_caller]
     #[rustfmt::skip]
     pub(crate) fn msg_ctx(message: &str, fmt: &dyn std::fmt::Display) -> Error {
-        println!( "{}> {}: {}", std::panic::Location::caller(), message, fmt.to_string());
+        println!( "{}> {}: {}", std::panic::Location::caller(), message, fmt);
         Error(Box::new(InnerError {
             span: Span::call_site(),
             message: format!("{}: {}", message, fmt),

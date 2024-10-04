@@ -27,6 +27,7 @@ pub struct FieldAttr {
     pub rename: Option<Literal>,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for FieldAttr {
     fn default() -> Self {
         Self {
@@ -46,6 +47,7 @@ pub struct DeriveTargetInner<'a> {
     pub from_json: bool,
     pub to_binary: bool,
     pub from_binary: bool,
+    // pub untagged: bool,
 }
 
 #[cfg_attr(feature = "debug", derive(Debug))]
@@ -142,7 +144,7 @@ fn ident_eq(ident: &Ident, value: &str) -> bool {
 fn parse_container_attr(
     target: &mut DeriveTargetInner<'_>,
     attr: Ident,
-    value: &mut Vec<TokenTree>,
+    value: &mut [TokenTree],
 ) -> Result<(), Error> {
     let key = attr.to_string();
     match key.as_str() {
@@ -345,8 +347,23 @@ pub fn extract_derive_target<'a>(
         };
     }
     match next!(toks) {
-        TokenTree::Group(group) => {
-            return Ok((
+        TokenTree::Group(group) => Ok((
+            if group.delimiter() == Delimiter::Parenthesis {
+                DeriveTargetKind::TupleStruct
+            } else {
+                kind
+            },
+            group.stream(),
+        )),
+        TokenTree::Ident(tok) => {
+            if ident_eq(tok, "where") {
+                throw!("Expected where clause" @ tok.span());
+            }
+            let [where_clauses @ .., TokenTree::Group(group)] = toks.as_slice() else {
+                throw!("Expected body after where clauses")
+            };
+            target.where_clauses = where_clauses;
+            Ok((
                 if group.delimiter() == Delimiter::Parenthesis {
                     DeriveTargetKind::TupleStruct
                 } else {
@@ -354,23 +371,6 @@ pub fn extract_derive_target<'a>(
                 },
                 group.stream(),
             ))
-        }
-        TokenTree::Ident(tok) => {
-            if ident_eq(&tok, "where") {
-                throw!("Expected where clause" @ tok.span());
-            }
-            let [where_clauses @ .., TokenTree::Group(group)] = toks.as_slice() else {
-                throw!("Expected body after where clauses")
-            };
-            target.where_clauses = where_clauses;
-            return Ok((
-                if group.delimiter() == Delimiter::Parenthesis {
-                    DeriveTargetKind::TupleStruct
-                } else {
-                    kind
-                },
-                group.stream(),
-            ));
         }
         tok => throw!("Expected either body or where clause", tok),
     }
@@ -416,7 +416,7 @@ fn extract_jsony_attr(group: TokenStream) -> Option<TokenStream> {
     Some(group.stream())
 }
 
-fn parse_attrs<'a>(
+fn parse_attrs(
     toks: TokenStream,
     func: &mut dyn FnMut(Ident, &mut Vec<TokenTree>) -> Result<(), Error>,
 ) -> Result<(), Error> {
@@ -440,7 +440,7 @@ fn parse_attrs<'a>(
                 }
                 _ => throw!("Expected either `=` or `,`" @ sep.span()),
             }
-            while let Some(tok) = toks.next() {
+            for tok in toks.by_ref() {
                 if let TokenTree::Punct(punct) = &tok {
                     if punct.as_char() == ',' {
                         break;
@@ -458,7 +458,7 @@ fn parse_attrs<'a>(
     Ok(())
 }
 
-fn parse_field_attr<'a>(
+fn parse_field_attr(
     current: &mut Option<AttrIndex>,
     attr_buf: &mut Vec<FieldAttr>,
     toks: TokenStream,
@@ -556,7 +556,7 @@ pub fn parse_enum<'a>(
     Ok(temp
         .into_iter()
         .map(|var| EnumVariant {
-            name: &var.name,
+            name: var.name,
             fields: if matches!(var.kind, EnumKind::None) {
                 &[]
             } else {
@@ -648,7 +648,7 @@ fn parse_inner_enum_variants<'a>(
         let start = tt_buffer.len();
         let (name, kind) = match tok {
             TokenTree::Group(group) => {
-                tt_buffer.extend(group.stream().into_iter());
+                tt_buffer.extend(group.stream());
                 let Some(TokenTree::Ident(ident)) = fields.get(i.saturating_sub(2)) else {
                     throw!("Expected ident" @ group.span())
                 };

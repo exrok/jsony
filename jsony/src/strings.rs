@@ -4,17 +4,17 @@ use memchr::memchr;
 
 use crate::json::DecodeError;
 
-pub fn escape_to_str<'a>(input: &'a str) -> Result<&'a str, ()> {
+pub fn escape_to_str(input: &str) -> Result<&str, ()> {
     if let Some(_index) = memchr(b'\\', input.as_bytes()) {
         Err(())
     } else {
         Ok(input)
     }
 }
-pub fn escape_to_string<'a>(input: &'a str) -> Result<String, ()> {
+pub fn escape_to_string(input: &str) -> Result<String, ()> {
     Ok(escape_to_cow(input).map_err(|_| ())?.into_owned())
 }
-pub fn escape_to_cow<'a>(input: &'a str) -> Result<Cow<'a, str>, &'static DecodeError> {
+pub fn escape_to_cow(input: &str) -> Result<Cow<'_, str>, &'static DecodeError> {
     let Some(mut index) = memchr(b'\\', input.as_bytes()) else {
         return Ok(Cow::Borrowed(input));
     };
@@ -43,13 +43,13 @@ pub fn escape_to_cow<'a>(input: &'a str) -> Result<Cow<'a, str>, &'static Decode
     }
 }
 
-fn parse_escape<'de>(
+fn parse_escape(
     mut index: usize,
     read: &[u8],
     validate: bool,
     scratch: &mut Vec<u8>,
 ) -> Result<usize, ()> {
-    let Some(ch) = read.get(0) else {
+    let Some(ch) = read.first() else {
         return Err(());
     };
     index += 1;
@@ -99,81 +99,79 @@ fn parse_unicode_escape(
     // representing UTF-16 surrogates. If deserializing a utf-8 string the
     // surrogates are required to be paired, whereas deserializing a byte string
     // accepts lone surrogates.
-    if validate && n >= 0xDC00 && n <= 0xDFFF {
+    if validate && (0xDC00..=0xDFFF).contains(&n) {
         // XXX: This is actually a trailing surrogate.
         return Err(());
     }
 
-    loop {
-        if n < 0xD800 || n > 0xDBFF {
-            // Every u16 outside of the surrogate ranges is guaranteed to be a
-            // legal char.
-            push_wtf8_codepoint(n as u32, scratch);
-            return Ok(index);
-        }
-
-        // n is a leading surrogate, we now expect a trailing surrogate.
-        let n1 = n;
-
-        if read.get(index..index + 2) != Some(b"\\u") {
-            return Err(());
-        }
-        index += 2;
-        // if tri!(peek_or_eof(read)) == b'\\' {
-        //     read.discard();
-        // } else {
-        //     return Err(());
-        //     // return if validate {
-        //     //     read.discard();
-        //     //     return Err(());
-        //     // } else {
-        //     //     push_wtf8_codepoint(n1 as u32, scratch);
-        //     //     Ok(index)
-        //     // };
-        // }
-
-        // if tri!(peek_or_eof(read)) == b'u' {
-        //     read.discard();
-        // } else {
-        //     return if validate {
-        //         read.discard();
-        //         error(read, ErrorCode::UnexpectedEndOfHexEscape)
-        //     } else {
-        //         push_wtf8_codepoint(n1 as u32, scratch);
-        //         // The \ prior to this byte started an escape sequence, so we
-        //         // need to parse that now. This recursive call does not blow the
-        //         // stack on malicious input because the escape is not \u, so it
-        //         // will be handled by one of the easy nonrecursive cases.
-        //         parse_escape(read, validate, scratch)
-        //     };
-        // }
-
-        let n2 = match read[index..] {
-            [a, b, c, d, ..] => {
-                index += 4;
-                match decode_four_hex_digits(a, b, c, d) {
-                    Some(val) => val,
-                    // None => error(self, ErrorCode::InvalidEscape),
-                    None => return Err(()),
-                }
-            }
-            _ => {
-                // index = self.slice.len();
-                // error(self, ErrorCode::EofWhileParsingString)
-                return Err(());
-            }
-        };
-
-        if n2 < 0xDC00 || n2 > 0xDFFF {
-            return Err(());
-        }
-
-        // This value is in range U+10000..=U+10FFFF, which is always a valid
-        // codepoint.
-        let n = (((n1 - 0xD800) as u32) << 10 | (n2 - 0xDC00) as u32) + 0x1_0000;
-        push_wtf8_codepoint(n, scratch);
+    if !(0xD800..=0xDBFF).contains(&n) {
+        // Every u16 outside of the surrogate ranges is guaranteed to be a
+        // legal char.
+        push_wtf8_codepoint(n as u32, scratch);
         return Ok(index);
     }
+
+    // n is a leading surrogate, we now expect a trailing surrogate.
+    let n1 = n;
+
+    if read.get(index..index + 2) != Some(b"\\u") {
+        return Err(());
+    }
+    index += 2;
+    // if tri!(peek_or_eof(read)) == b'\\' {
+    //     read.discard();
+    // } else {
+    //     return Err(());
+    //     // return if validate {
+    //     //     read.discard();
+    //     //     return Err(());
+    //     // } else {
+    //     //     push_wtf8_codepoint(n1 as u32, scratch);
+    //     //     Ok(index)
+    //     // };
+    // }
+
+    // if tri!(peek_or_eof(read)) == b'u' {
+    //     read.discard();
+    // } else {
+    //     return if validate {
+    //         read.discard();
+    //         error(read, ErrorCode::UnexpectedEndOfHexEscape)
+    //     } else {
+    //         push_wtf8_codepoint(n1 as u32, scratch);
+    //         // The \ prior to this byte started an escape sequence, so we
+    //         // need to parse that now. This recursive call does not blow the
+    //         // stack on malicious input because the escape is not \u, so it
+    //         // will be handled by one of the easy nonrecursive cases.
+    //         parse_escape(read, validate, scratch)
+    //     };
+    // }
+
+    let n2 = match read[index..] {
+        [a, b, c, d, ..] => {
+            index += 4;
+            match decode_four_hex_digits(a, b, c, d) {
+                Some(val) => val,
+                // None => error(self, ErrorCode::InvalidEscape),
+                None => return Err(()),
+            }
+        }
+        _ => {
+            // index = self.slice.len();
+            // error(self, ErrorCode::EofWhileParsingString)
+            return Err(());
+        }
+    };
+
+    if !(0xDC00..=0xDFFF).contains(&n2) {
+        return Err(());
+    }
+
+    // This value is in range U+10000..=U+10FFFF, which is always a valid
+    // codepoint.
+    let n = (((n1 - 0xD800) as u32) << 10 | (n2 - 0xDC00) as u32) + 0x1_0000;
+    push_wtf8_codepoint(n, scratch);
+    Ok(index)
 }
 
 /// Adds a WTF-8 codepoint to the end of the buffer. This is a more efficient

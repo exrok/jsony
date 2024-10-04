@@ -179,9 +179,9 @@ fn extract_raw_string(
     if let Some(ste) = index_of_string_end2(&bytes[index..]) {
         let end = index + ste;
         let output = unsafe { std::str::from_utf8_unchecked(&bytes[index..end]) };
-        return Ok((output, end + 1));
+        Ok((output, end + 1))
     } else {
-        return Err(&EOF_WHILE_PARSING_STRING);
+        Err(&EOF_WHILE_PARSING_STRING)
     }
 }
 
@@ -358,8 +358,8 @@ impl<'j> Parser<'j> {
     pub fn index_into_next_object(&self, key: &str) -> JsonResult<Option<Parser<'j>>> {
         match crate::lazy_parser::object_index(&self.data[self.index..], key.as_bytes()) {
             Ok(value) => {
-                return Ok(Some(Parser {
-                    data: &self.data,
+                Ok(Some(Parser {
+                    data: self.data,
                     index: self.index + (self.data.len() - value.len()),
                     error_context: None,
                 }))
@@ -379,22 +379,22 @@ impl<'j> Parser<'j> {
                     self.index += 1;
                     Ok(None)
                 }
-                _ => return Err(&KEY_MUST_BE_A_STRING),
+                _ => Err(&KEY_MUST_BE_A_STRING),
             }
         } else {
-            return Err(&EOF_WHILE_PARSING_OBJECT);
+            Err(&EOF_WHILE_PARSING_OBJECT)
         }
     }
     pub fn discard_colon(&mut self) -> JsonResult<()> {
         if let Some(next) = self.eat_whitespace() {
             if next == b':' {
                 self.index += 1;
-                return Ok(());
+                Ok(())
             } else {
-                return Err(&EXPECTED_COLON);
+                Err(&EXPECTED_COLON)
             }
         } else {
-            return Err(&EOF_WHILE_PARSING_OBJECT);
+            Err(&EOF_WHILE_PARSING_OBJECT)
         }
     }
     pub fn enter_object(&mut self) -> JsonResult<Option<&'j str>> {
@@ -414,10 +414,10 @@ impl<'j> Parser<'j> {
                     self.index += 1;
                     Ok(None)
                 }
-                _ => return Err(&KEY_MUST_BE_A_STRING),
+                _ => Err(&KEY_MUST_BE_A_STRING),
             }
         } else {
-            return Err(&EOF_WHILE_PARSING_OBJECT);
+            Err(&EOF_WHILE_PARSING_OBJECT)
         }
     }
 
@@ -427,10 +427,10 @@ impl<'j> Parser<'j> {
                 b',' => {
                     self.index += 1;
                     match self.eat_whitespace() {
-                        Some(b'"') => return Ok(Some(())),
-                        Some(b'}') => return Err(&TRAILING_COMMA),
-                        Some(_) => return Err(&KEY_MUST_BE_A_STRING),
-                        None => return Err(&EOF_WHILE_PARSING_VALUE),
+                        Some(b'"') => Ok(Some(())),
+                        Some(b'}') => Err(&TRAILING_COMMA),
+                        Some(_) => Err(&KEY_MUST_BE_A_STRING),
+                        None => Err(&EOF_WHILE_PARSING_VALUE),
                     }
                 }
                 b'}' => {
@@ -451,9 +451,9 @@ impl<'j> Parser<'j> {
                     self.index += 1;
                     match self.eat_whitespace() {
                         Some(b'"') => self.read_seen_unescaped_object_key().map(Some),
-                        Some(b'}') => return Err(&TRAILING_COMMA),
-                        Some(_) => return Err(&KEY_MUST_BE_A_STRING),
-                        None => return Err(&EOF_WHILE_PARSING_VALUE),
+                        Some(b'}') => Err(&TRAILING_COMMA),
+                        Some(_) => Err(&KEY_MUST_BE_A_STRING),
+                        None => Err(&EOF_WHILE_PARSING_VALUE),
                     }
                 }
                 b'}' => {
@@ -599,7 +599,7 @@ impl<'j> Parser<'j> {
     pub fn take_string(&mut self) -> JsonResult<&'j str> {
         //todo opt
         self.eat_whitespace();
-        let (output, index) = extract_raw_string(&self.data, self.index)?;
+        let (output, index) = extract_raw_string(self.data, self.index)?;
         self.index = index;
         Ok(output)
     }
@@ -628,7 +628,7 @@ impl<'j> Parser<'j> {
         }
         let output = unsafe { std::str::from_utf8_unchecked(&self.data[start..self.index]) };
         self.index += 1;
-        return Ok(output);
+        Ok(output)
     }
 
     pub fn read_string_unescaped(&mut self) -> JsonResult<&'j str> {
@@ -639,7 +639,7 @@ impl<'j> Parser<'j> {
     }
 
     pub fn consume_numeric_literal(&mut self) -> JsonResult<&'j str> {
-        let (output, index) = extract_numeric_literal(&self.data, self.index)?;
+        let (output, index) = extract_numeric_literal(self.data, self.index)?;
         self.index = index;
         Ok(output)
     }
@@ -717,7 +717,7 @@ fn consume_ident<const SIZE: usize>(
                     _ => break,
                 }
             }
-            return Err(&EOF_WHILE_PARSING_LIST);
+            Err(&EOF_WHILE_PARSING_LIST)
         }
     }
 }

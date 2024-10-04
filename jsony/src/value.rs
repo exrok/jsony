@@ -169,9 +169,9 @@ fn fast_string_ord(a: &str, b: &str) -> Ordering {
                 }
             }
             if a.len() & 0b1 == 0 {
-                return Ordering::Equal;
+                Ordering::Equal
             } else {
-                return (*aa.cast::<u8>()).cmp(&(*bb.cast::<u8>()));
+                (*aa.cast::<u8>()).cmp(&(*bb.cast::<u8>()))
             }
         },
         Ordering::Greater => Ordering::Greater,
@@ -210,7 +210,7 @@ impl<'a> JsonKey<'a> {
     }
     pub fn try_from_string(mut string: String) -> Option<Self> {
         let len = string.len();
-        if len > MAX_LENGTH as usize {
+        if len > MAX_LENGTH {
             return None;
         }
         if string.capacity() > u32::MAX as usize {
@@ -270,7 +270,7 @@ impl<'a> Drop for JsonKey<'a> {
         if (self.capacity > 0) {
             unsafe {
                 Vec::from_raw_parts(
-                    self.ptr.as_ptr() as *mut u8,
+                    self.ptr.as_ptr(),
                     self.length as usize,
                     self.capacity as usize,
                 );
@@ -619,7 +619,7 @@ impl<'a> JsonItem<'a> {
                 }
             } else {
                 let hashes = unsafe {
-                    std::slice::from_raw_parts(ptr.add(len).cast::<u32>(), (len as usize * 4) - 1)
+                    std::slice::from_raw_parts(ptr.add(len).cast::<u32>(), (len * 4) - 1)
                 };
                 let index = hash_bytes(key.as_bytes()) as usize % hashes.len();
                 let first_cell = hashes[index];

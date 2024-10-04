@@ -197,7 +197,7 @@ fn simple_match() {
                     },
                     6 => data.other.field2,
                     7 => data.other.vector.len(),
-                    _ => (1+1+1+1)
+                    _ => 1+1+1+1
                 },
             },
             expect

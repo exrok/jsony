@@ -26,7 +26,7 @@ impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
     }
     // called on Err
     unsafe fn destroy(&mut self) {
-        vec!["asdfasd".to_string()].join(",");
+        ["asdfasd".to_string()].join(",");
         todo!()
     }
     fn visit(
@@ -42,11 +42,7 @@ impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
                         message: "Duplicate field",
                     });
                 } else {
-                    if let Err(err) =
-                        unsafe { (field.decode)(self.destination.byte_add(field.offset), parser) }
-                    {
-                        return Err(err);
-                    }
+                    unsafe { (field.decode)(self.destination.byte_add(field.offset), parser) }?;
                     self.bitset |= mask;
                 }
                 return Ok(());
@@ -148,10 +144,8 @@ impl<'a> ObjectSchema<'a> {
                     if let Err(err) = unsued_processor.visit(key, parser) {
                         break 'with_next_key err;
                     }
-                } else {
-                    if let Err(error) = parser.skip_value() {
-                        break 'with_next_key error;
-                    }
+                } else if let Err(error) = parser.skip_value() {
+                    break 'with_next_key error;
                 }
             }
 
@@ -186,7 +180,7 @@ impl<'a> ObjectSchema<'a> {
                 drop(dest.byte_add(field.offset));
             }
         }
-        return Err(error);
+        Err(error)
     }
 }
 
@@ -245,9 +239,7 @@ unsafe fn decode_object<'a, 'b>(
             }
         }
         if let Some(ref mut unsued_processor) = unsued {
-            if let Err(err) = unsued_processor.visit(key, parser) {
-                return Err(err);
-            }
+            unsued_processor.visit(key, parser)?
         }
     }
     for (i, (drop, offset)) in drops.iter().enumerate() {
@@ -255,5 +247,5 @@ unsafe fn decode_object<'a, 'b>(
             drop(dest.byte_add(*offset));
         }
     }
-    return Err(&DecodeError { message: "TODO" });
+    Err(&DecodeError { message: "TODO" })
 }

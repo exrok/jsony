@@ -10,24 +10,82 @@ struct Formatter {
 }
 
 fn is_rust_builtin_type(ident: &str) -> bool {
-    match ident {
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
-        | "isize" | "f32" | "f64" | "bool" | "char" | "str" | "Self" => true,
-        _ => false,
-    }
+    matches!(
+        ident,
+        "u8" | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+            | "bool"
+            | "char"
+            | "str"
+            | "Self"
+    )
 }
 fn is_rust_keyword(ident: &str) -> bool {
-    match ident {
-        "as" | "async" | "await" | "break" | "const" | "continue" | "crate" | "dyn" | "else"
-        | "enum" | "extern" | "false" | "fn" | "for" | "if" | "impl" | "in" | "let" | "loop"
-        | "match" | "mod" | "move" | "mut" | "pub" | "ref" | "return" | "self" | "Self"
-        | "static" | "struct" | "super" | "trait" | "true" | "type" | "unsafe" | "use"
-        | "where" | "while" | "abstract" | "become" | "box" | "do" | "final" | "macro"
-        | "override" | "priv" | "typeof" | "unsized" | "virtual" | "yield" | "try" | "union" => {
-            true
-        }
-        _ => false,
-    }
+    matches!(
+        ident,
+        "as" | "async"
+            | "await"
+            | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "dyn"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "abstract"
+            | "become"
+            | "box"
+            | "do"
+            | "final"
+            | "macro"
+            | "override"
+            | "priv"
+            | "typeof"
+            | "unsized"
+            | "virtual"
+            | "yield"
+            | "try"
+            | "union"
+    )
 }
 const RED: &str = "\x1b[31m";
 const BLUE: &str = "\x1b[34m";
@@ -157,16 +215,14 @@ impl Formatter {
                         self.yellow();
                     } else if is_rust_keyword(&fmt) {
                         self.purple();
-                    } else {
-                        if let Some(ch) = fmt.as_bytes().first() {
-                            if ch.is_ascii_uppercase() {
-                                self.yellow();
-                            } else {
-                                self.clsx();
-                            }
+                    } else if let Some(ch) = fmt.as_bytes().first() {
+                        if ch.is_ascii_uppercase() {
+                            self.yellow();
                         } else {
                             self.clsx();
                         }
+                    } else {
+                        self.clsx();
                     }
                     self.output.extend_from_slice(fmt.as_bytes());
                     self.cls();
@@ -189,7 +245,7 @@ impl Formatter {
                             } else {
                                 false
                             };
-                            self.output.push(':' as u8);
+                            self.output.push(b':');
                             if x {
                                 self.force_space();
                             }
@@ -197,15 +253,15 @@ impl Formatter {
                             if last_was_ident {
                                 self.color_last_ident(ORANGE)
                             }
-                            self.output.push(':' as u8);
+                            self.output.push(b':');
                         }
                     }
                     '>' => {
                         if self.output.last() == Some(&b'=') {
-                            self.output.push('>' as u8);
+                            self.output.push(b'>');
                             self.space();
                         } else {
-                            self.output.push('>' as u8);
+                            self.output.push(b'>');
                         }
                     }
                     '=' => {
@@ -217,7 +273,7 @@ impl Formatter {
                         } else {
                             self.space();
                         }
-                        self.output.push('=' as u8);
+                        self.output.push(b'=');
                     }
                     '-' => {
                         if self.output.last() == Some(&b')') {
