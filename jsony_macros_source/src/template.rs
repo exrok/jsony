@@ -922,7 +922,7 @@ impl Codegen {
 
         let res = TokenStream::from_iter(toks![
             use jsony%:{braces!(OutputBuffer, ToJson)};
-            let mut {self.builder()} = jsony%:RawBuf %:with_capacity({
+            let mut {self.builder()} = jsony%:json%:RawBuf %:with_capacity({
                 TokenTree::Literal(Literal::usize_unsuffixed(capacity))
             });
             {{braced(self.out)}}

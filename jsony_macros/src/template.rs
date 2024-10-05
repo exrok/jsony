@@ -106,6 +106,7 @@ impl<'a> ObjectParser<'a> {
                         continue 'outer;
                     }
                     if let TokenTree::Ident(ident) = &t {
+                        #[allow(clippy::cmp_owned)]
                         if ident.to_string() != "for" {
                             {
                                 if self.error.is_none() {
@@ -310,6 +311,7 @@ impl Codegen {
         munch_expr(&mut input, &mut token_values);
         if let Some(split) = token_values.iter().position(|tok| is_char(tok, ';')) {
             if let Some(TokenTree::Ident(value)) = token_values.first() {
+                #[allow(clippy::cmp_owned)]
                 if value.to_string() == "for" {
                     let f = self.flatten;
                     self.flatten = Flatten::None;
@@ -874,6 +876,9 @@ impl Codegen {
             self.builder(),
             chr('='),
             TokenTree::Ident(Ident::new("jsony", Span::call_site())),
+            j(':'),
+            chr(':'),
+            TokenTree::Ident(Ident::new("json", Span::call_site())),
             j(':'),
             chr(':'),
             TokenTree::Ident(Ident::new("RawBuf", Span::call_site())),

@@ -72,7 +72,7 @@ struct Struct {
     array: [u32; 2],
 }
 impl ToJson for StructOther {
-    type Into = jsony::RawBuf;
+    type Into = jsony::json::RawBuf;
 
     fn jsonify_into(&self, output: &mut Self::Into) {
         self.field2.jsonify_into(output);
