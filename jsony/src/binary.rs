@@ -255,19 +255,9 @@ fn encode_array_body<T: ToBinary>(slice: &[T], encoder: &mut BytesWriter) {
     let can_memcopy = const { T::POD && (cfg!(target_endian = "little") || size_of::<T>() == 1) };
     if can_memcopy {
         let byte_size = std::mem::size_of_val(slice);
-        unsafe {
-            // TODO ensure size is small
-            encoder.reserve_small(byte_size);
-        }
-        let initial_length = encoder.len();
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                slice.as_ptr().cast::<u8>(),
-                encoder.as_mut_ptr().add(initial_length),
-                byte_size,
-            );
-            encoder.set_len(initial_length + byte_size);
-        }
+        encoder.push_bytes(unsafe {
+            std::slice::from_raw_parts(slice.as_ptr().cast::<u8>(), byte_size)
+        });
     } else {
         for value in slice {
             value.binary_encode(encoder)
