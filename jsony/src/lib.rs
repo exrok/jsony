@@ -1,24 +1,23 @@
-#![allow(unused)]
-use std::{
-    borrow::Cow,
-    collections::{HashMap, HashSet},
-    ptr::NonNull,
-    rc::Rc,
-    sync::Arc,
-};
+use std::ptr::NonNull;
 #[doc(hidden)]
 pub mod __internal;
 pub mod binary;
+mod byte_writer;
 pub mod json;
 mod lazy_parser;
 pub mod parser;
 pub mod strings;
+mod text_writer;
+pub use byte_writer::BytesWriter;
+pub use text_writer::TextWriter;
 pub mod value;
 use binary::{Decoder, FromBinaryError};
 use json::DecodeError;
+use json::JsonValueKind;
 use parser::Parser;
 
-pub use jsony_macros::{append_object, array, object, Jsony};
+pub use jsony_macros::{array, object, Jsony};
+pub use text_writer::TextSink;
 
 /// If `POD` is `false` then this trait is safe to implement
 /// `POD` = true implies that `Self` is valid for all bit
@@ -76,19 +75,15 @@ pub unsafe trait FromJson<'a>: Sized + 'a {
     }
 }
 
-pub(crate) mod __private {
+mod __private {
     pub trait Sealed {}
-}
-pub trait OutputBuffer: __private::Sealed {
-    #[doc(hidden)]
-    fn from_builder(builder: &mut json::RawBuf) -> &mut Self;
-    #[doc(hidden)]
-    fn terminate(&mut self);
 }
 
 pub trait ToJson {
-    type Into: OutputBuffer;
-    fn jsonify_into(&self, output: &mut Self::Into);
+    type Kind: JsonValueKind;
+    /// The Kind is returned to allow for trivial assertions of kind
+    /// inside of the templating macros that also produce good error messages.
+    fn jsonify_into(&self, output: &mut TextWriter) -> Self::Kind;
 }
 
 /// Lazy JSON parser
@@ -127,14 +122,15 @@ pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, &'static Decod
 }
 
 pub fn to_json<T: ?Sized + ToJson>(value: &T) -> String {
-    let mut buf = json::RawBuf::new();
-    buf.value(value);
-    buf.string
+    let mut buf = TextWriter::new();
+    value.jsonify_into(&mut buf);
+    buf.into_string()
 }
 
-pub fn append_json<T: ?Sized + ToJson>(value: &T, output: &mut String) {
-    let mut buf = unsafe { &mut *(output as *mut _ as *mut json::RawBuf) };
-    buf.value(value);
+pub fn to_json_into<'a, T: ToJson, O: TextSink<'a>>(value: &T, output: O) -> O::Output {
+    let mut buffer = O::buffer(output);
+    value.jsonify_into(&mut buffer);
+    O::finish(buffer)
 }
 
 pub fn from_binary<'a, T: FromBinary<'a>>(slice: &'a [u8]) -> Result<T, FromBinaryError> {

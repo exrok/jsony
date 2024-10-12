@@ -1,3 +1,4 @@
+#![allow(warnings)]
 extern crate proc_macro;
 mod ast;
 mod codegen;
@@ -73,11 +74,6 @@ pub fn array(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn object(input: TokenStream) -> TokenStream {
     template::object(input)
-}
-
-#[proc_macro]
-pub fn append_object(input: TokenStream) -> TokenStream {
-    template::append_object(input)
 }
 
 #[proc_macro_derive(Jsony, attributes(jsony))]

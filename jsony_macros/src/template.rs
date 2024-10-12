@@ -6,21 +6,11 @@ use proc_macro::{
     token_stream::IntoIter, Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream,
     TokenTree,
 };
-fn chr(ch: char) -> TokenTree {
-    TokenTree::Punct(Punct::new(ch, Spacing::Alone))
-}
-fn j(ch: char) -> TokenTree {
-    TokenTree::Punct(Punct::new(ch, Spacing::Joint))
-}
 fn parend(ts: TokenStream) -> TokenTree {
     TokenTree::Group(Group::new(Delimiter::Parenthesis, ts))
 }
 fn braced(ts: TokenStream) -> TokenTree {
     TokenTree::Group(Group::new(Delimiter::Brace, ts))
-}
-fn with_span(mut tt: TokenTree, span: Span) -> TokenTree {
-    tt.set_span(span);
-    tt
 }
 const BB: u8 = b'b';
 const TT: u8 = b't';
@@ -44,7 +34,25 @@ static ESCAPE: [u8; 256] = [
     __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __,
     __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __,
 ];
+fn tt_punct_alone(out: &mut Vec<TokenTree>, chr: char) {
+    out.push(TokenTree::Punct(Punct::new(chr, Spacing::Alone)));
+}
+fn tt_punct_joint(out: &mut Vec<TokenTree>, chr: char) {
+    out.push(TokenTree::Punct(Punct::new(chr, Spacing::Joint)));
+}
+fn tt_ident(out: &mut Vec<TokenTree>, ident: &str) {
+    out.push(TokenTree::Ident(Ident::new(ident, Span::call_site())));
+}
+fn tt_group(out: &mut Vec<TokenTree>, delimiter: Delimiter, from: usize) {
+    let group = TokenTree::Group(Group::new(
+        delimiter,
+        TokenStream::from_iter(out.drain(from..)),
+    ));
+    out.push(group);
+}
+
 struct ObjectParser<'a> {
+    topmost: bool,
     codegen: &'a mut Codegen,
     error: Option<(Span, Box<str>)>,
 }
@@ -64,8 +72,74 @@ impl<'a> ObjectParser<'a> {
     }
     fn parse(&mut self, mut input: IntoIter) {
         let mut value_tokens: Vec<TokenTree> = Vec::new();
+        let mut outer_first_token = true;
+        let mut attr = Attr::None;
         'outer: while let Some(mut t) = input.next() {
             loop {
+                let first_token = outer_first_token;
+                outer_first_token = false;
+                match &t {
+                    TokenTree::Punct(ch) if ch.as_char() == '@' => {
+                        let TokenTree::Group(group) = (if let Some(got) = input.next() {
+                            got
+                        } else {
+                            self.eof(Span::call_site());
+                            return;
+                        }) else {
+                            {
+                                if self.error.is_none() {
+                                    self.error =
+                                        Some((ch.span(), "Expected [] attr".to_string().into()))
+                                }
+                                return;
+                            };
+                        };
+                        let contents: Vec<TokenTree> = group.stream().into_iter().collect();
+                        if let Some(TokenTree::Ident(ident)) = contents.first() {
+                            if ident.to_string() == "if" {
+                                self.codegen.flush_text();
+                                attr = Attr::If {
+                                    contents,
+                                    codegen_height: self.codegen.out.len(),
+                                };
+                            }
+                        }
+                        continue 'outer;
+                    }
+                    TokenTree::Ident(value) => {
+                        let contents = &value.to_string();
+                        if contents == "in" {
+                            if !first_token || !self.topmost {
+                                {
+                                    if self.error.is_none() {
+                                        self.error =
+                                                            Some((value.span(),
+                                                                    "in keyword only allowed at beginning of template macro".to_string().into()))
+                                    }
+                                    return;
+                                }
+                            }
+                            let mut toks: Vec<TokenTree> = Vec::new();
+                            loop {
+                                let tok = if let Some(got) = input.next() {
+                                    got
+                                } else {
+                                    self.eof(Span::call_site());
+                                    return;
+                                };
+                                if is_char(&tok, ';') {
+                                    break;
+                                }
+                                toks.push(tok);
+                            }
+                            outer_first_token = true;
+                            self.topmost = false;
+                            self.codegen.in_writer(toks);
+                            continue 'outer;
+                        }
+                    }
+                    _ => {}
+                }
                 let col = 'value: {
                     if let Some(col) = input.next() {
                         if !is_char(&col, ',') {
@@ -74,12 +148,12 @@ impl<'a> ObjectParser<'a> {
                     }
                     match t {
                         TokenTree::Ident(value) => {
-                            self.codegen.pre_escaped_key(&value.to_string());
-                            self.codegen.value_from_expression(
-                                value.span(),
-                                TokenStream::from_iter([TokenTree::Ident(value)]),
-                            );
+                            let contents = &value.to_string();
+                            self.codegen.pre_escaped_key(&contents);
+                            self.codegen
+                                .value_from_expression(value.span(), TokenTree::Ident(value));
                             self.codegen.text.push(',');
+                            self.codegen.entry_completed(&mut attr);
                             continue 'outer;
                         }
                         _ => {
@@ -103,6 +177,7 @@ impl<'a> ObjectParser<'a> {
                         self.codegen.flatten = Flatten::Object;
                         self.codegen.insert_value(col.span(), &mut value_tokens);
                         self.codegen.flatten = prev;
+                        self.codegen.entry_completed(&mut attr);
                         continue 'outer;
                     }
                     if let TokenTree::Ident(ident) = &t {
@@ -110,15 +185,30 @@ impl<'a> ObjectParser<'a> {
                         if ident.to_string() != "for" {
                             {
                                 if self.error.is_none() {
-                                    self.error = Some((col.span(), "Unexpected".to_string().into()))
+                                    self.error =
+                                        Some((col.span(), "Unexpected 1".to_string().into()))
                                 }
                                 return;
+                            }
+                        } else {
+                            if !first_token {
+                                {
+                                    if self.error.is_none() {
+                                        self.error = Some((
+                                            col.span(),
+                                            "For comprehensions must be in there own object"
+                                                .to_string()
+                                                .into(),
+                                        ))
+                                    }
+                                    return;
+                                }
                             }
                         }
                     } else {
                         {
                             if self.error.is_none() {
-                                self.error = Some((col.span(), "Unexpected".to_string().into()))
+                                self.error = Some((col.span(), "Unexpected 2".to_string().into()))
                             }
                             return;
                         }
@@ -126,7 +216,6 @@ impl<'a> ObjectParser<'a> {
                     value_tokens.clear();
                     value_tokens.push(t);
                     value_tokens.push(col);
-                    let span;
                     loop {
                         let tok = if let Some(got) = input.next() {
                             got
@@ -135,18 +224,23 @@ impl<'a> ObjectParser<'a> {
                             return;
                         };
                         if is_char(&tok, ';') {
-                            span = tok.span();
                             break;
                         }
                         value_tokens.push(tok);
                     }
                     self.codegen.flush_text();
                     self.codegen.out.extend(value_tokens.drain(..));
-                    let stream = self.codegen.wrapped(|gen| {
-                        gen.parser_key_value(span, &mut input);
-                    });
-                    self.codegen.out.extend([braced(stream)]);
-                    continue 'outer;
+                    {
+                        {
+                            let at = (&mut self.codegen.out).len();
+                            {
+                                self.parse(input);
+                                self.codegen.flush_text();
+                            };
+                            tt_group((&mut self.codegen.out), Delimiter::Brace, at);
+                        };
+                    };
+                    return;
                 }
                 value_tokens.clear();
                 for tok in input.by_ref() {
@@ -201,6 +295,7 @@ impl<'a> ObjectParser<'a> {
                 };
                 self.codegen.insert_value(col.span(), &mut value_tokens);
                 self.codegen.text.push(',');
+                self.codegen.entry_completed(&mut attr);
                 if let Some(tt) = input.next() {
                     t = tt;
                 } else {
@@ -211,12 +306,14 @@ impl<'a> ObjectParser<'a> {
     }
 }
 struct Codegen {
-    out: TokenStream,
+    out: Vec<TokenTree>,
+    need_mut_builder: bool,
     builder: Ident,
     text: String,
     initial_capacity: usize,
     error: Option<(Span, Box<str>)>,
     flatten: Flatten,
+    writer: Option<Vec<TokenTree>>,
 }
 fn munch_expr(input: &mut IntoIter, output: &mut Vec<TokenTree>) {
     output.clear();
@@ -234,37 +331,125 @@ fn is_flatten(toks: &[TokenTree]) -> bool {
         false
     }
 }
+fn str_lit(lit: &str) -> TokenTree {
+    TokenTree::Literal(Literal::string(lit))
+}
+enum Attr {
+    None,
+    If {
+        contents: Vec<TokenTree>,
+        codegen_height: usize,
+    },
+}
 impl Codegen {
+    fn entry_completed(&mut self, attr: &mut Attr) {
+        if match attr {
+            Attr::None => true,
+            _ => false,
+        } {
+            return;
+        }
+        let attr = std::mem::replace(attr, Attr::None);
+        match attr {
+            Attr::None => unsafe { std::hint::unreachable_unchecked() },
+            Attr::If {
+                contents,
+                codegen_height,
+            } => {
+                self.flush_text();
+                let body = TokenTree::Group(Group::new(
+                    Delimiter::Brace,
+                    self.out.drain(codegen_height..).collect(),
+                ));
+                self.out.extend(contents);
+                self.out.push(body);
+            }
+        }
+    }
+    fn in_writer(&mut self, writer: Vec<TokenTree>) {
+        self.text.clear();
+        self.writer = Some(writer);
+    }
     fn new(builder: Ident) -> Codegen {
         Codegen {
-            out: TokenStream::new(),
+            out: Vec::new(),
+            need_mut_builder: false,
             builder,
             initial_capacity: 0,
             text: String::with_capacity(64),
             error: None,
+            writer: None,
             flatten: Flatten::None,
         }
-    }
-    fn builder(&self) -> TokenTree {
-        TokenTree::Ident(self.builder.clone())
     }
     fn flush_text(&mut self) {
         if self.text.is_empty() {
             return;
         }
         self.initial_capacity += self.text.len();
-        self.out.extend([
-            self.builder(),
-            chr('.'),
-            TokenTree::Ident(Ident::new("string", Span::call_site())),
-            chr('.'),
-            TokenTree::Ident(Ident::new("push_str", Span::call_site())),
-            TokenTree::Group(Group::new(
-                Delimiter::Parenthesis,
-                TokenStream::from_iter([TokenTree::Literal(Literal::string(&self.text))]),
-            )),
-            chr(';'),
-        ]);
+        if self.text.len() == 1 {
+            let out = &mut self.out;
+            let byte = self.text.as_bytes()[0];
+            match byte {
+                b':' => {
+                    {
+                        out.push(TokenTree::from(self.builder.clone()));
+                        tt_punct_alone(out, '.');
+                        tt_ident(out, "push_colon");
+                        {
+                            let at = out.len();
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_punct_alone(out, ';');
+                    };
+                }
+                b',' => {
+                    {
+                        out.push(TokenTree::from(self.builder.clone()));
+                        tt_punct_alone(out, '.');
+                        tt_ident(out, "push_comma");
+                        {
+                            let at = out.len();
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_punct_alone(out, ';');
+                    };
+                }
+                _ => {
+                    {
+                        tt_ident(out, "unsafe");
+                        {
+                            let at = out.len();
+                            out.push(TokenTree::from(self.builder.clone()));
+                            tt_punct_alone(out, '.');
+                            tt_ident(out, "push_unchecked_ascii");
+                            {
+                                let at = out.len();
+                                out.push(TokenTree::Literal(Literal::byte_character(
+                                    self.text.as_bytes()[0],
+                                )));
+                                tt_group(out, Delimiter::Parenthesis, at);
+                            };
+                            tt_punct_alone(out, ';');
+                            tt_group(out, Delimiter::Brace, at);
+                        };
+                    };
+                }
+            }
+        } else {
+            let out = &mut self.out;
+            {
+                out.push(TokenTree::from(self.builder.clone()));
+                tt_punct_alone(out, '.');
+                tt_ident(out, "push_str");
+                {
+                    let at = out.len();
+                    out.push(str_lit(&self.text));
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(out, ';');
+            };
+        }
         self.text.clear();
     }
     fn expand_match(&mut self, values: &mut Vec<TokenTree>) {
@@ -278,32 +463,37 @@ impl Codegen {
             self.error = Some((group.span(), "Expected Blocked for Match Patterns".into()));
             return;
         };
-        let mut patterns = TokenStream::default();
+        let start = self.out.len();
         let mut input = group.stream().into_iter();
         let mut peq = false;
         let mut value_tokens: Vec<TokenTree> = Vec::new();
         while let Some(tok) = input.next() {
             if !(peq && is_char(&tok, '>')) {
                 peq = is_char(&tok, '=');
-                patterns.extend([tok]);
+                self.out.push(tok);
                 continue;
             }
             let span = tok.span();
-            patterns.extend([tok]);
+            self.out.push(tok);
             munch_expr(&mut input, &mut value_tokens);
-            let stream = self.wrapped(|gen| gen.insert_value(span, &mut value_tokens));
-            patterns.extend([braced(stream), chr(',')]);
+            {
+                {
+                    let at = (&mut self.out).len();
+                    {
+                        self.insert_value(span, &mut value_tokens);
+                        self.flush_text();
+                    };
+                    tt_group(&mut self.out, Delimiter::Brace, at);
+                };
+            };
         }
+        let mut matches = Group::new(Delimiter::Brace, self.out.drain(start..).collect());
+        matches.set_span(group.span());
         self.out.extend(values.drain(..));
-        self.out
-            .extend([with_span(braced(patterns), group.span()), chr(';')]);
-    }
-    fn wrapped(&mut self, mut func: impl FnMut(&mut Self)) -> TokenStream {
-        self.flush_text();
-        let old = std::mem::take(&mut self.out);
-        func(self);
-        self.flush_text();
-        std::mem::replace(&mut self.out, old)
+        {
+            (&mut self.out).push(TokenTree::Group(matches));
+            tt_punct_alone(&mut self.out, ';');
+        };
     }
     fn parse_inline_array(&mut self, span: Span, stream: TokenStream) -> bool {
         let mut token_values: Vec<TokenTree> = Vec::new();
@@ -316,26 +506,33 @@ impl Codegen {
                     let f = self.flatten;
                     self.flatten = Flatten::None;
                     if f == Flatten::None {
-                        self.begin_inline_array();
+                        self.text.push('[');
                     }
                     self.flush_text();
                     self.out.extend(token_values.drain(..split + 1).take(split));
-                    let stream = self.wrapped(|gen| {
-                        gen.insert_value(span, &mut token_values);
-                        gen.text.push(',');
-                    });
-                    self.out.extend([braced(stream)]);
+                    {
+                        {
+                            let at = (&mut self.out).len();
+                            {
+                                self.insert_value(span, &mut token_values);
+                                self.text.push(',');
+                                self.flush_text();
+                            };
+                            tt_group(&mut self.out, Delimiter::Brace, at);
+                        };
+                    };
                     if f == Flatten::None {
-                        self.out.extend([
-                            self.builder(),
-                            chr('.'),
-                            TokenTree::Ident(Ident::new("smart_close_array", Span::call_site())),
-                            TokenTree::Group(Group::new(
-                                Delimiter::Parenthesis,
-                                TokenStream::default(),
-                            )),
-                            chr(';'),
-                        ]);
+                        self.flush_text();
+                        {
+                            (&mut self.out).push(TokenTree::from(self.builder.clone()));
+                            tt_punct_alone(&mut self.out, '.');
+                            tt_ident(&mut self.out, "end_json_array");
+                            {
+                                let at = (&mut self.out).len();
+                                tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                            };
+                            tt_punct_alone(&mut self.out, ';');
+                        };
                     }
                     return true;
                 }
@@ -346,6 +543,12 @@ impl Codegen {
         self.flatten = Flatten::None;
         if f == Flatten::None {
             self.begin_inline_array();
+        }
+        if token_values.is_empty() {
+            if f == Flatten::None {
+                self.end_inline_array();
+            }
+            return true;
         }
         if is_flatten(&token_values) {
             let prev = self.flatten;
@@ -388,104 +591,7 @@ impl Codegen {
             }
         }
     }
-    fn inline_into_json(&mut self, span: Span, args: TokenStream, body: TokenStream) {
-        self.flush_text();
-        let mut args = args.into_iter();
-        let Some(ident) = args.next() else {
-            self.error(span, "Expected binding in inline");
-            return;
-        };
-        let mut x = TokenStream::from_iter([
-            TokenTree::Ident(Ident::new("let", Span::call_site())),
-            ident.clone(),
-        ]);
-        x.extend(args);
-        match self.flatten {
-            Flatten::None => {
-                x.extend([
-                    chr('='),
-                    chr('<'),
-                    TokenTree::Ident(Ident::new("_", Span::call_site())),
-                    TokenTree::Ident(Ident::new("as", Span::call_site())),
-                    TokenTree::Ident(Ident::new("jsony", Span::call_site())),
-                    j(':'),
-                    chr(':'),
-                    TokenTree::Ident(Ident::new("OutputBuffer", Span::call_site())),
-                    chr('>'),
-                    j(':'),
-                    chr(':'),
-                    TokenTree::Ident(Ident::new("from_builder", Span::call_site())),
-                    TokenTree::Group(Group::new(
-                        Delimiter::Parenthesis,
-                        TokenStream::from_iter([
-                            chr('&'),
-                            TokenTree::Ident(Ident::new("mut", Span::call_site())),
-                            self.builder(),
-                        ]),
-                    )),
-                    chr(';'),
-                    braced(body),
-                    chr('<'),
-                    TokenTree::Ident(Ident::new("_", Span::call_site())),
-                    TokenTree::Ident(Ident::new("as", Span::call_site())),
-                    TokenTree::Ident(Ident::new("OutputBuffer", Span::call_site())),
-                    chr('>'),
-                    j(':'),
-                    chr(':'),
-                    TokenTree::Ident(Ident::new("terminate", Span::call_site())),
-                    TokenTree::Group(Group::new(
-                        Delimiter::Parenthesis,
-                        TokenStream::from_iter([ident]),
-                    )),
-                ]);
-            }
-            Flatten::Object => {
-                x.extend([
-                    chr('='),
-                    TokenTree::Ident(Ident::new("jsony", Span::call_site())),
-                    j(':'),
-                    chr(':'),
-                    TokenTree::Ident(Ident::new("ObjectBuf", Span::call_site())),
-                    j(':'),
-                    chr(':'),
-                    TokenTree::Ident(Ident::new("from_builder_raw", Span::call_site())),
-                    TokenTree::Group(Group::new(
-                        Delimiter::Parenthesis,
-                        TokenStream::from_iter([
-                            chr('&'),
-                            TokenTree::Ident(Ident::new("mut", Span::call_site())),
-                            self.builder(),
-                        ]),
-                    )),
-                    chr(';'),
-                    braced(body),
-                ]);
-            }
-            Flatten::Array => {
-                x.extend([
-                    chr('='),
-                    TokenTree::Ident(Ident::new("jsony", Span::call_site())),
-                    j(':'),
-                    chr(':'),
-                    TokenTree::Ident(Ident::new("ArrayBuf", Span::call_site())),
-                    j(':'),
-                    chr(':'),
-                    TokenTree::Ident(Ident::new("from_builder_raw", Span::call_site())),
-                    TokenTree::Group(Group::new(
-                        Delimiter::Parenthesis,
-                        TokenStream::from_iter([
-                            chr('&'),
-                            TokenTree::Ident(Ident::new("mut", Span::call_site())),
-                            self.builder(),
-                        ]),
-                    )),
-                    chr(';'),
-                    braced(body),
-                ]);
-            }
-        }
-        self.out.extend([braced(x)]);
-    }
+    /// This was for function calls
     fn insert_value(&mut self, span: Span, values: &mut Vec<TokenTree>) {
         if values.is_empty() {
             self.error = Some((span, "Expected value after colon".into()));
@@ -494,19 +600,12 @@ impl Codegen {
         match &values[0] {
             TokenTree::Group(group) => match group.delimiter() {
                 Delimiter::Parenthesis => {
-                    if let [_, eq, ge, ..] = &values[..] {
-                        if is_char(eq, '=') && is_char(ge, '>') {
-                            self.inline_into_json(
-                                group.span(),
-                                group.stream(),
-                                TokenStream::from_iter(values.drain(3..)),
-                            );
-                            return;
-                        }
-                    }
+                    self.error = Some((span, "Unhandled".into()));
+                    return;
                 }
                 Delimiter::Brace => {
                     let mut parser = ObjectParser {
+                        topmost: false,
                         codegen: self,
                         error: None,
                     };
@@ -580,7 +679,9 @@ impl Codegen {
                                 if let Some(TokenTree::Group(_)) = values.get(2) {
                                     if values.len() == 3 {
                                         self.out.extend(values.drain(..));
-                                        self.out.extend([chr(';')]);
+                                        {
+                                            tt_punct_alone(&mut self.out, ';');
+                                        };
                                         return;
                                     }
                                 }
@@ -613,71 +714,123 @@ impl Codegen {
                     }
                 }
             }
-            TokenTree::Punct(_) => (),
+            TokenTree::Punct(start) => {
+                if start.as_char() == '|' {
+                    if let [_, TokenTree::Ident(binding), TokenTree::Punct(end), ..] = &values[..] {
+                        if end.as_char() == '|' {
+                            self.flush_text();
+                            let out = &mut self.out;
+                            {
+                                {
+                                    let at = out.len();
+                                    tt_ident(out, "let");
+                                    tt_ident(out, "mut");
+                                    out.push(TokenTree::from(binding.clone()));
+                                    tt_punct_alone(out, '=');
+                                    {
+                                        match self.flatten {
+                                            Flatten::None => {
+                                                tt_punct_joint(out, ':');
+                                                tt_punct_alone(out, ':');
+                                                tt_ident(out, "jsony");
+                                                tt_punct_joint(out, ':');
+                                                tt_punct_alone(out, ':');
+                                                tt_ident(out, "json");
+                                                tt_punct_joint(out, ':');
+                                                tt_punct_alone(out, ':');
+                                                tt_ident(out, "ValueWriter");
+                                                tt_punct_joint(out, ':');
+                                                tt_punct_alone(out, ':');
+                                                tt_ident(out, "new");
+                                                {
+                                                    let at = out.len();
+                                                    out.push(TokenTree::from(self.builder.clone()));
+                                                    tt_group(out, Delimiter::Parenthesis, at);
+                                                };
+                                            }
+                                            Flatten::Object => {
+                                                self.need_mut_builder = true;
+                                                {
+                                                    tt_punct_joint(out, ':');
+                                                    tt_punct_alone(out, ':');
+                                                    tt_ident(out, "jsony");
+                                                    tt_punct_joint(out, ':');
+                                                    tt_punct_alone(out, ':');
+                                                    tt_ident(out, "json");
+                                                    tt_punct_joint(out, ':');
+                                                    tt_punct_alone(out, ':');
+                                                    tt_ident(out, "ObjectWriter");
+                                                    tt_punct_joint(out, ':');
+                                                    tt_punct_alone(out, ':');
+                                                    tt_ident(out, "non_terminating");
+                                                    {
+                                                        let at = out.len();
+                                                        tt_punct_alone(out, '&');
+                                                        tt_ident(out, "mut");
+                                                        out.push(TokenTree::from(
+                                                            self.builder.clone(),
+                                                        ));
+                                                        tt_group(out, Delimiter::Parenthesis, at);
+                                                    };
+                                                };
+                                            }
+                                            Flatten::Array => {
+                                                self.need_mut_builder = true;
+                                                {
+                                                    tt_punct_joint(out, ':');
+                                                    tt_punct_alone(out, ':');
+                                                    tt_ident(out, "jsony");
+                                                    tt_punct_joint(out, ':');
+                                                    tt_punct_alone(out, ':');
+                                                    tt_ident(out, "json");
+                                                    tt_punct_joint(out, ':');
+                                                    tt_punct_alone(out, ':');
+                                                    tt_ident(out, "ArrayWriter");
+                                                    tt_punct_joint(out, ':');
+                                                    tt_punct_alone(out, ':');
+                                                    tt_ident(out, "non_terminating");
+                                                    {
+                                                        let at = out.len();
+                                                        tt_punct_alone(out, '&');
+                                                        tt_ident(out, "mut");
+                                                        out.push(TokenTree::from(
+                                                            self.builder.clone(),
+                                                        ));
+                                                        tt_group(out, Delimiter::Parenthesis, at);
+                                                    };
+                                                };
+                                            }
+                                        }
+                                    };
+                                    tt_punct_alone(out, ';');
+                                    out.push(TokenTree::Group(Group::new(
+                                        Delimiter::Brace,
+                                        values.drain(3..).collect(),
+                                    )));
+                                    tt_punct_alone(out, ';');
+                                    tt_group(out, Delimiter::Brace, at);
+                                };
+                            };
+                            return;
+                        }
+                    }
+                }
+            }
         }
-        self.value_from_expression(values[0].span(), TokenStream::from_iter(values.drain(..)))
+        if values.len() == 1 {
+            self.value_from_expression(values[0].span(), values.pop().unwrap())
+        } else {
+            self.value_from_expression(
+                values[0].span(),
+                TokenTree::Group(Group::new(
+                    Delimiter::Parenthesis,
+                    TokenStream::from_iter(values.drain(..)),
+                )),
+            )
+        }
     }
     fn begin_inline_array(&mut self) {
         self.text.push('[');
-    }
-    fn error(&mut self, span: Span, msg: impl Into<String>) {
-        if self.error.is_none() {
-            self.error = Some((span, msg.into().into()));
-        }
-    }
-    fn parser_key_value(&mut self, span: Span, input: &mut IntoIter) {
-        let Some(key) = input.next() else {
-            self.error(span, "Expected key, value pair after for in object");
-            return;
-        };
-        let Some(colon) = input.next() else {
-            self.error(key.span(), "Expected colon after key");
-            return;
-        };
-        if !is_char(&colon, ':') {
-            self.error(colon.span(), "Expected colon after key");
-            return;
-        }
-        match &key {
-            TokenTree::Group(g) => {
-                if g.delimiter() != Delimiter::Bracket {
-                    self.error(colon.span(), "Expected [key], key or \"key\".");
-                    return;
-                }
-                self.dyn_key(g.span(), g.stream());
-            }
-            TokenTree::Ident(ident) => {
-                self.pre_escaped_key(&ident.to_string());
-            }
-            TokenTree::Punct(_x) => {
-                self.error(colon.span(), "Expected [key], key or \"key\".");
-                return;
-            }
-            TokenTree::Literal(x) => match literal_inline(x.to_string()) {
-                lit::InlineKind::String(content) => {
-                    self.text.push('"');
-                    self.raw_escape_inline_value(&content);
-                    self.text.push_str("\":");
-                }
-                lit::InlineKind::Raw(_) => {
-                    self.error(colon.span(), "Expected [key], key or \"key\".");
-                    return;
-                }
-                lit::InlineKind::None => {
-                    self.error(colon.span(), "Expected [key], key or \"key\".");
-                    return;
-                }
-            },
-        };
-        let mut value_tokens = Vec::new();
-        for tok in input.by_ref() {
-            if is_char(&tok, ',') {
-                break;
-            }
-            value_tokens.push(tok);
-        }
-        self.insert_value(colon.span(), &mut value_tokens);
-        self.text.push(',');
     }
     fn end_inline_array(&mut self) {
         unsafe {
@@ -693,13 +846,16 @@ impl Codegen {
             }
         }
         self.flush_text();
-        self.out.extend([
-            self.builder(),
-            chr('.'),
-            TokenTree::Ident(Ident::new("smart_close_array", Span::call_site())),
-            TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::default())),
-            chr(';'),
-        ]);
+        {
+            (&mut self.out).push(TokenTree::from(self.builder.clone()));
+            tt_punct_alone(&mut self.out, '.');
+            tt_ident(&mut self.out, "end_json_array");
+            {
+                let at = (&mut self.out).len();
+                tt_group(&mut self.out, Delimiter::Parenthesis, at);
+            };
+            tt_punct_alone(&mut self.out, ';');
+        };
     }
     fn begin_inline_object(&mut self) {
         self.text.push('{');
@@ -718,28 +874,57 @@ impl Codegen {
             }
         }
         self.flush_text();
-        self.out.extend([
-            self.builder(),
-            chr('.'),
-            TokenTree::Ident(Ident::new("smart_close_object", Span::call_site())),
-            TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::default())),
-            chr(';'),
-        ]);
+        {
+            (&mut self.out).push(TokenTree::from(self.builder.clone()));
+            tt_punct_alone(&mut self.out, '.');
+            tt_ident(&mut self.out, "end_json_object");
+            {
+                let at = (&mut self.out).len();
+                tt_group(&mut self.out, Delimiter::Parenthesis, at);
+            };
+            tt_punct_alone(&mut self.out, ';');
+        };
     }
-    fn dyn_key(&mut self, span: Span, expr: TokenStream) {
-        self.text.push('"');
+    fn dyn_key(&mut self, _span: Span, expr: TokenStream) {
         self.flush_text();
-        self.out.extend([
-            self.builder(),
-            chr('.'),
-            TokenTree::Ident(Ident::new("raw_key", Span::call_site())),
-            TokenTree::Group(Group::new(
-                Delimiter::Parenthesis,
-                TokenStream::from_iter([with_span(chr('&'), span), with_span(parend(expr), span)]),
-            )),
-            chr(';'),
-        ]);
-        self.text.push_str("\":");
+        {
+            tt_ident(&mut self.out, "let");
+            tt_ident(&mut self.out, "_");
+            tt_punct_alone(&mut self.out, ':');
+            tt_punct_joint(&mut self.out, ':');
+            tt_punct_alone(&mut self.out, ':');
+            tt_ident(&mut self.out, "jsony");
+            tt_punct_joint(&mut self.out, ':');
+            tt_punct_alone(&mut self.out, ':');
+            tt_ident(&mut self.out, "json");
+            tt_punct_joint(&mut self.out, ':');
+            tt_punct_alone(&mut self.out, ':');
+            tt_ident(&mut self.out, "StringValue");
+            tt_punct_alone(&mut self.out, '=');
+            tt_punct_alone(&mut self.out, '<');
+            tt_ident(&mut self.out, "_");
+            tt_ident(&mut self.out, "as");
+            tt_punct_joint(&mut self.out, ':');
+            tt_punct_alone(&mut self.out, ':');
+            tt_ident(&mut self.out, "jsony");
+            tt_punct_joint(&mut self.out, ':');
+            tt_punct_alone(&mut self.out, ':');
+            tt_ident(&mut self.out, "ToJson");
+            tt_punct_alone(&mut self.out, '>');
+            tt_punct_joint(&mut self.out, ':');
+            tt_punct_alone(&mut self.out, ':');
+            tt_ident(&mut self.out, "jsonify_into");
+            {
+                let at = (&mut self.out).len();
+                tt_punct_alone(&mut self.out, '&');
+                (&mut self.out).push(parend(expr));
+                tt_punct_alone(&mut self.out, ',');
+                (&mut self.out).push(TokenTree::from(self.builder.clone()));
+                tt_group(&mut self.out, Delimiter::Parenthesis, at);
+            };
+            tt_punct_alone(&mut self.out, ';');
+        };
+        self.text.push_str(":");
     }
     fn pre_escaped_key(&mut self, raw: &str) {
         self.text.push('"');
@@ -794,108 +979,263 @@ impl Codegen {
             buf.extend_from_slice(&bytes[start..]);
         }
     }
-    fn value_from_expression(&mut self, span: Span, expr: TokenStream) {
+    fn value_from_expression(&mut self, _span: Span, expr: TokenTree) {
         self.initial_capacity += 2;
         self.flush_text();
-        let expr = with_span(
-            TokenTree::Group(Group::new(Delimiter::Parenthesis, expr)),
-            span,
-        );
         match self.flatten {
             Flatten::None => {
-                self.out.extend([
-                    self.builder(),
-                    chr('.'),
-                    TokenTree::Ident(Ident::new("value", Span::call_site())),
-                    TokenTree::Group(Group::new(
-                        Delimiter::Parenthesis,
-                        TokenStream::from_iter([with_span(chr('&'), span), expr]),
-                    )),
-                    chr(';'),
-                ]);
+                tt_punct_alone(&mut self.out, '<');
+                tt_ident(&mut self.out, "_");
+                tt_ident(&mut self.out, "as");
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "jsony");
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "ToJson");
+                tt_punct_alone(&mut self.out, '>');
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "jsonify_into");
+                {
+                    let at = (&mut self.out).len();
+                    tt_punct_alone(&mut self.out, '&');
+                    (&mut self.out).push(expr);
+                    tt_punct_alone(&mut self.out, ',');
+                    (&mut self.out).push(TokenTree::from(self.builder.clone()));
+                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(&mut self.out, ';');
             }
             Flatten::Object => {
-                self.out.extend([
-                    self.builder(),
-                    chr('.'),
-                    TokenTree::Ident(Ident::new("raw_object", Span::call_site())),
-                    TokenTree::Group(Group::new(
-                        Delimiter::Parenthesis,
-                        TokenStream::from_iter([with_span(chr('&'), span), expr]),
-                    )),
-                    chr(';'),
-                ]);
+                (&mut self.out).push(TokenTree::from(self.builder.clone()));
+                tt_punct_alone(&mut self.out, '.');
+                tt_ident(&mut self.out, "join_parent_json_value_with_next");
+                {
+                    let at = (&mut self.out).len();
+                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(&mut self.out, ';');
+                tt_ident(&mut self.out, "let");
+                tt_ident(&mut self.out, "_");
+                tt_punct_alone(&mut self.out, ':');
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "jsony");
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "json");
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "ObjectValue");
+                tt_punct_alone(&mut self.out, '=');
+                tt_punct_alone(&mut self.out, '<');
+                tt_ident(&mut self.out, "_");
+                tt_ident(&mut self.out, "as");
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "jsony");
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "ToJson");
+                tt_punct_alone(&mut self.out, '>');
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "jsonify_into");
+                {
+                    let at = (&mut self.out).len();
+                    tt_punct_alone(&mut self.out, '&');
+                    (&mut self.out).push(expr);
+                    tt_punct_alone(&mut self.out, ',');
+                    (&mut self.out).push(TokenTree::from(self.builder.clone()));
+                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(&mut self.out, ';');
+                (&mut self.out).push(TokenTree::from(self.builder.clone()));
+                tt_punct_alone(&mut self.out, '.');
+                tt_ident(&mut self.out, "join_object_with_next_value");
+                {
+                    let at = (&mut self.out).len();
+                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(&mut self.out, ';');
             }
             Flatten::Array => {
-                self.out.extend([
-                    self.builder(),
-                    chr('.'),
-                    TokenTree::Ident(Ident::new("raw_array", Span::call_site())),
-                    TokenTree::Group(Group::new(
-                        Delimiter::Parenthesis,
-                        TokenStream::from_iter([with_span(chr('&'), span), expr]),
-                    )),
-                    chr(';'),
-                ]);
+                (&mut self.out).push(TokenTree::from(self.builder.clone()));
+                tt_punct_alone(&mut self.out, '.');
+                tt_ident(&mut self.out, "join_parent_json_value_with_next");
+                {
+                    let at = (&mut self.out).len();
+                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(&mut self.out, ';');
+                tt_ident(&mut self.out, "let");
+                tt_ident(&mut self.out, "_");
+                tt_punct_alone(&mut self.out, ':');
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "jsony");
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "json");
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "ArrayValue");
+                tt_punct_alone(&mut self.out, '=');
+                tt_punct_alone(&mut self.out, '<');
+                tt_ident(&mut self.out, "_");
+                tt_ident(&mut self.out, "as");
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "jsony");
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "ToJson");
+                tt_punct_alone(&mut self.out, '>');
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "jsonify_into");
+                {
+                    let at = (&mut self.out).len();
+                    tt_punct_alone(&mut self.out, '&');
+                    (&mut self.out).push(expr);
+                    tt_punct_alone(&mut self.out, ',');
+                    (&mut self.out).push(TokenTree::from(self.builder.clone()));
+                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(&mut self.out, ';');
+                (&mut self.out).push(TokenTree::from(self.builder.clone()));
+                tt_punct_alone(&mut self.out, '.');
+                tt_ident(&mut self.out, "join_array_with_next_value");
+                {
+                    let at = (&mut self.out).len();
+                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(&mut self.out, ';');
             }
         }
     }
     fn finish_creating(mut self) -> TokenStream {
         self.flush_error();
+        if let Some(writer) = self.writer.take() {
+            self.flush_text();
+            let braced = braced(self.out.drain(..).collect());
+            return {
+                let len = (&mut self.out).len();
+                {
+                    let at = (&mut self.out).len();
+                    tt_ident(&mut self.out, "let");
+                    tt_ident(&mut self.out, "mut");
+                    tt_ident(&mut self.out, "object_writer");
+                    tt_punct_alone(&mut self.out, ':');
+                    tt_punct_alone(&mut self.out, '&');
+                    tt_ident(&mut self.out, "mut");
+                    tt_punct_joint(&mut self.out, ':');
+                    tt_punct_alone(&mut self.out, ':');
+                    tt_ident(&mut self.out, "jsony");
+                    tt_punct_joint(&mut self.out, ':');
+                    tt_punct_alone(&mut self.out, ':');
+                    tt_ident(&mut self.out, "json");
+                    tt_punct_joint(&mut self.out, ':');
+                    tt_punct_alone(&mut self.out, ':');
+                    tt_ident(&mut self.out, "ObjectWriter");
+                    tt_punct_alone(&mut self.out, '=');
+                    (&mut self.out).extend_from_slice(&writer);
+                    tt_punct_alone(&mut self.out, ';');
+                    tt_ident(&mut self.out, "let");
+                    if self.need_mut_builder {
+                        tt_ident(&mut self.out, "mut");
+                    };
+                    tt_ident(&mut self.out, "builder");
+                    tt_punct_alone(&mut self.out, '=');
+                    tt_ident(&mut self.out, "object_writer");
+                    tt_punct_alone(&mut self.out, '.');
+                    tt_ident(&mut self.out, "inner_writer");
+                    {
+                        let at = (&mut self.out).len();
+                        tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                    };
+                    tt_punct_alone(&mut self.out, ';');
+                    tt_ident(&mut self.out, "builder");
+                    tt_punct_alone(&mut self.out, '.');
+                    tt_ident(&mut self.out, "smart_object_comma");
+                    {
+                        let at = (&mut self.out).len();
+                        tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                    };
+                    tt_punct_alone(&mut self.out, ';');
+                    (&mut self.out).push(braced);
+                    tt_group(&mut self.out, Delimiter::Brace, at);
+                };
+                TokenStream::from_iter((&mut self.out).drain(len..))
+            };
+        }
         if self.out.is_empty() {
-            return TokenStream::from_iter([
-                TokenTree::Ident(Ident::new("String", Span::call_site())),
-                j(':'),
-                chr(':'),
-                TokenTree::Ident(Ident::new("from", Span::call_site())),
-                TokenTree::Group(Group::new(
-                    Delimiter::Parenthesis,
-                    TokenStream::from_iter([TokenTree::Literal(Literal::string(&self.text))]),
-                )),
-            ]);
+            return {
+                let len = (&mut self.out).len();
+                tt_ident(&mut self.out, "String");
+                tt_punct_joint(&mut self.out, ':');
+                tt_punct_alone(&mut self.out, ':');
+                tt_ident(&mut self.out, "from");
+                {
+                    let at = (&mut self.out).len();
+                    (&mut self.out).push(str_lit(&self.text));
+                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                };
+                TokenStream::from_iter((&mut self.out).drain(len..))
+            };
         }
         self.flush_text();
-        let builder = self.builder();
         let capacity = (self.initial_capacity + 16) & (!0b1111);
-        let res = TokenStream::from_iter([
-            TokenTree::Ident(Ident::new("use", Span::call_site())),
-            TokenTree::Ident(Ident::new("jsony", Span::call_site())),
-            j(':'),
-            chr(':'),
-            TokenTree::Group(Group::new(
-                Delimiter::Brace,
-                TokenStream::from_iter([
-                    TokenTree::Ident(Ident::new("OutputBuffer", Span::call_site())),
-                    chr(','),
-                    TokenTree::Ident(Ident::new("ToJson", Span::call_site())),
-                ]),
-            )),
-            chr(';'),
-            TokenTree::Ident(Ident::new("let", Span::call_site())),
-            TokenTree::Ident(Ident::new("mut", Span::call_site())),
-            self.builder(),
-            chr('='),
-            TokenTree::Ident(Ident::new("jsony", Span::call_site())),
-            j(':'),
-            chr(':'),
-            TokenTree::Ident(Ident::new("json", Span::call_site())),
-            j(':'),
-            chr(':'),
-            TokenTree::Ident(Ident::new("RawBuf", Span::call_site())),
-            j(':'),
-            chr(':'),
-            TokenTree::Ident(Ident::new("with_capacity", Span::call_site())),
-            TokenTree::Group(Group::new(
-                Delimiter::Parenthesis,
-                TokenStream::from_iter([TokenTree::Literal(Literal::usize_unsuffixed(capacity))]),
-            )),
-            chr(';'),
-            { braced(self.out) },
-            builder,
-            chr('.'),
-            TokenTree::Ident(Ident::new("string", Span::call_site())),
-        ]);
-        TokenStream::from_iter([TokenTree::Group(Group::new(Delimiter::Brace, res))])
+        let braced = braced(self.out.drain(..).collect());
+        let out = &mut self.out;
+        {
+            let len = out.len();
+            {
+                let at = out.len();
+                tt_ident(out, "let");
+                tt_ident(out, "mut");
+                tt_ident(out, "_builder");
+                tt_punct_alone(out, '=');
+                tt_ident(out, "jsony");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "TextWriter");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "with_capacity");
+                {
+                    let at = out.len();
+                    out.push(TokenTree::from(Literal::usize_unsuffixed(capacity).clone()));
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(out, ';');
+                {
+                    let at = out.len();
+                    tt_ident(out, "let");
+                    if self.need_mut_builder {
+                        tt_ident(out, "mut");
+                    };
+                    out.push(TokenTree::from(self.builder.clone()));
+                    tt_punct_alone(out, '=');
+                    tt_punct_alone(out, '&');
+                    tt_ident(out, "mut");
+                    tt_ident(out, "_builder");
+                    tt_punct_alone(out, ';');
+                    out.push(braced);
+                    tt_group(out, Delimiter::Brace, at);
+                };
+                tt_ident(out, "_builder");
+                tt_punct_alone(out, '.');
+                tt_ident(out, "into_string");
+                {
+                    let at = out.len();
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                tt_group(out, Delimiter::Brace, at);
+            };
+            TokenStream::from_iter(out.drain(len..))
+        }
     }
     fn flush_error(&mut self) {
         if let Some((span, error)) = self.error.take() {
@@ -914,36 +1254,6 @@ impl Codegen {
             ]);
         }
     }
-    fn finish_append_object(mut self, name: Ident) -> TokenStream {
-        self.flush_error();
-        self.flush_text();
-        let res = TokenStream::from_iter([
-            TokenTree::Ident(Ident::new("use", Span::call_site())),
-            TokenTree::Ident(Ident::new("jsony", Span::call_site())),
-            j(':'),
-            chr(':'),
-            TokenTree::Group(Group::new(
-                Delimiter::Brace,
-                TokenStream::from_iter([
-                    TokenTree::Ident(Ident::new("OutputBuffer", Span::call_site())),
-                    chr(','),
-                    TokenTree::Ident(Ident::new("ToJson", Span::call_site())),
-                ]),
-            )),
-            chr(';'),
-            TokenTree::Ident(Ident::new("let", Span::call_site())),
-            self.builder(),
-            chr('='),
-            chr('&'),
-            TokenTree::Ident(Ident::new("mut", Span::call_site())),
-            TokenTree::Ident(name.clone()),
-            chr('.'),
-            TokenTree::Ident(Ident::new("buffer", Span::call_site())),
-            chr(';'),
-            { braced(self.out) },
-        ]);
-        TokenStream::from_iter([TokenTree::Group(Group::new(Delimiter::Brace, res))])
-    }
 }
 pub fn array(input: TokenStream) -> TokenStream {
     let mut codegen = Codegen::new(Ident::new("builder", Span::call_site()));
@@ -953,12 +1263,15 @@ pub fn array(input: TokenStream) -> TokenStream {
 pub fn object(input: TokenStream) -> TokenStream {
     let mut codegen = Codegen::new(Ident::new("builder", Span::call_site()));
     let mut parser = ObjectParser {
+        topmost: true,
         codegen: &mut codegen,
         error: None,
     };
     parser.codegen.begin_inline_object();
     parser.parse(input.into_iter());
-    parser.codegen.end_inline_object();
+    if parser.codegen.writer.is_none() {
+        parser.codegen.end_inline_object();
+    }
     if let Some((span, error)) = parser.error {
         let mut group = TokenTree::Group(Group::new(
             Delimiter::Parenthesis,
@@ -975,33 +1288,4 @@ pub fn object(input: TokenStream) -> TokenStream {
         ]);
     }
     codegen.finish_creating()
-}
-pub fn append_object(input: TokenStream) -> TokenStream {
-    let mut input = input.into_iter();
-    let Some(TokenTree::Ident(ident)) = input.next() else {
-        return TokenStream::new();
-    };
-    let _ = input.next();
-    let mut codegen = Codegen::new(Ident::new("builder", Span::call_site()));
-    let mut parser = ObjectParser {
-        codegen: &mut codegen,
-        error: None,
-    };
-    parser.parse(input);
-    if let Some((span, error)) = parser.error {
-        let mut group = TokenTree::Group(Group::new(
-            Delimiter::Parenthesis,
-            TokenStream::from_iter([TokenTree::Literal(Literal::string(&error))]),
-        ));
-        let mut punc = TokenTree::Punct(Punct::new('!', Spacing::Alone));
-        punc.set_span(span);
-        group.set_span(span);
-        return TokenStream::from_iter([
-            TokenTree::Ident(Ident::new("compile_error", span)),
-            punc,
-            group,
-            TokenTree::Punct(Punct::new(';', Spacing::Alone)),
-        ]);
-    }
-    codegen.finish_append_object(ident)
 }

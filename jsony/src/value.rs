@@ -10,7 +10,7 @@ pub enum Kind {
     Array,
     Empty,
 }
-use std::{cmp::Ordering, ops::Index, ptr::NonNull};
+use std::{ops::Index, ptr::NonNull};
 
 use Kind::{Empty, False, Map, Null, Number, True};
 
@@ -33,10 +33,10 @@ impl Kind {
     }
 }
 
-#[cfg(target_pointer_width = "64")]
-const K: usize = 0xf1357aea2e62a9c5;
-#[cfg(target_pointer_width = "32")]
-const K: usize = 0x93d765dd;
+// #[cfg(target_pointer_width = "64")]
+// const K: usize = 0xf1357aea2e62a9c5;
+// #[cfg(target_pointer_width = "32")]
+// const K: usize = 0x93d765dd;
 
 // Nothing special, digits of pi.
 const SEED1: u64 = 0x243f6a8885a308d3;
@@ -141,41 +141,7 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
         s1 ^= u64::from_le_bytes(suffix[8..16].try_into().unwrap());
     }
 
-    (multiply_mix(s0, s1) ^ (len as u64))
-}
-
-/// Optimized for the expected to be small strings
-/// NOTE: doesn't sort lexicographically because we first sort by length
-/// Also endians may effect ordering.....
-fn fast_string_ord(a: &str, b: &str) -> Ordering {
-    match a.len().cmp(&b.len()) {
-        Ordering::Less => Ordering::Less,
-        Ordering::Equal => unsafe {
-            let len = a.len();
-            let mut aa = a.as_ptr().cast::<u16>();
-            let mut bb = b.as_ptr().cast::<u16>();
-            let aa_end = a.as_ptr().add(len & !1).cast::<u16>();
-            while aa < aa_end {
-                let xx = aa.read_unaligned();
-                let yy = bb.read_unaligned();
-                match xx.cmp(&yy) {
-                    Ordering::Less => return Ordering::Less,
-                    Ordering::Greater => return Ordering::Greater,
-                    Ordering::Equal => {
-                        aa = aa.add(1);
-                        bb = bb.add(1);
-                        continue;
-                    }
-                }
-            }
-            if a.len() & 0b1 == 0 {
-                Ordering::Equal
-            } else {
-                (*aa.cast::<u8>()).cmp(&(*bb.cast::<u8>()))
-            }
-        },
-        Ordering::Greater => Ordering::Greater,
-    }
+    multiply_mix(s0, s1) ^ (len as u64)
 }
 
 // Compact Cow
@@ -267,7 +233,7 @@ impl<'a> std::fmt::Debug for JsonKey<'a> {
 
 impl<'a> Drop for JsonKey<'a> {
     fn drop(&mut self) {
-        if (self.capacity > 0) {
+        if self.capacity > 0 {
             unsafe {
                 Vec::from_raw_parts(
                     self.ptr.as_ptr(),
@@ -451,7 +417,6 @@ impl<'a> JsonItem<'a> {
 
             // - 1 to avoid bad cases.
             let len = (map.len() * 4) - 1;
-            let mut run_total = 0;
             unsafe {
                 // println!("{:?}", map.spare_capacity_mut().len());
                 let extra = map.spare_capacity_mut().as_mut_ptr().cast::<u64>();
@@ -464,7 +429,6 @@ impl<'a> JsonItem<'a> {
 
                 // TODO be more careful about not invalidating the pointers via not accessing map
                 'next_key: for (i, (key, _)) in map.iter().enumerate() {
-                    let mut run_length = 0;
                     let index = hash_bytes(key.as_bytes()) as usize % hashes.len();
                     for x in &mut hashes[index..] {
                         if *x == 0 {
@@ -623,7 +587,6 @@ impl<'a> JsonItem<'a> {
                 };
                 let index = hash_bytes(key.as_bytes()) as usize % hashes.len();
                 let first_cell = hashes[index];
-                let mut n = 0;
                 if first_cell >= 0x8000_0000 {
                     let idx = first_cell & 0x1FFF_FFFF;
                     if items[idx as usize].0.as_str() == key {
@@ -674,28 +637,6 @@ impl<'a> std::ops::Index<&str> for JsonItem<'a> {
 
     fn index(&self, index: &str) -> &Self::Output {
         self.index_object(index)
-        // if self.is_ob
-        // if let Some(entries) = self.as_object_entries() {
-        //     // for (key, value) in entries {
-        //     //     if key.as_str() == index {
-        //     //         return value;
-        //     //     }
-        //     // }
-        //     if entries.len() < SORTED_MAP_THRESHHOLD {
-        //         for (key, value) in entries {
-        //             if key.as_str() == index {
-        //                 return value;
-        //             }
-        //         }
-        //     } else {
-        //         if let Ok(value) =
-        //             entries.binary_search_by(|(a, _)| fast_string_ord(a.as_str(), index))
-        //         {
-        //             return &entries[value].1;
-        //         }
-        //     }
-        // }
-        // &EMPTY_ITEM
     }
 }
 

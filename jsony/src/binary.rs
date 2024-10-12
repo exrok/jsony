@@ -2,7 +2,6 @@ use super::{FromBinary, ToBinary};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    fmt::Binary,
     hash::{BuildHasher, Hash},
     ptr::NonNull,
 };
@@ -61,13 +60,13 @@ impl<'a> Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
-    fn report_static_error(&mut self, error: &'static str) {
+    pub fn report_static_error(&mut self, error: &'static str) {
         if self.error.is_none() {
             self.error = Some(Cow::Borrowed(error));
             self.end = self.start;
         }
     }
-    fn report_error(&mut self, error: std::fmt::Arguments) {
+    pub fn report_error(&mut self, error: std::fmt::Arguments) {
         if self.error.is_none() {
             self.error = Some(Cow::Owned(error.to_string()));
             self.end = self.start;
@@ -85,7 +84,7 @@ impl<'a> Decoder<'a> {
             ptr
         }
     }
-    fn byte_array<const N: usize>(&mut self) -> &'a [u8; N] {
+    pub fn byte_array<const N: usize>(&mut self) -> &'a [u8; N] {
         unsafe {
             let nstart = self.start.add(N);
             if nstart > self.end {
@@ -93,7 +92,7 @@ impl<'a> Decoder<'a> {
             }
             let ptr = self.start.as_ptr() as *const [u8; N];
             self.start = nstart;
-            unsafe { &*ptr }
+            &*ptr
         }
     }
     pub fn byte(&mut self) -> u8 {
@@ -328,8 +327,7 @@ unsafe impl<'a, T: FromBinary<'a>, const N: usize> FromBinary<'a> for [T; N] {
             let byte_size = N * std::mem::size_of::<T>();
             let bytes = decoder.byte_slice(byte_size);
             if bytes.len() >= byte_size {
-                let mut array =
-                    unsafe { std::ptr::read_unaligned::<[T; N]>(bytes.as_ptr().cast()) };
+                let array = unsafe { std::ptr::read_unaligned::<[T; N]>(bytes.as_ptr().cast()) };
 
                 #[cfg(not(target_endian = "little"))]
                 for value in &mut array {
@@ -561,11 +559,11 @@ mod test {
 
     #[test]
     fn strings() {
-        let mut a = String::from_utf8(vec![b'a'; 254]).unwrap();
-        let mut b = String::from_utf8(vec![b'a'; 255]).unwrap();
-        let mut c = String::from_utf8(vec![b'a'; 256]).unwrap();
-        let mut inputs = ["", "hello", &a, &b, &c];
-        let mut encoded = inputs.map(|string| {
+        let a = String::from_utf8(vec![b'a'; 254]).unwrap();
+        let b = String::from_utf8(vec![b'a'; 255]).unwrap();
+        let c = String::from_utf8(vec![b'a'; 256]).unwrap();
+        let inputs = ["", "hello", &a, &b, &c];
+        let encoded = inputs.map(|string| {
             let mut buf = Vec::new();
             string.binary_encode(&mut buf);
             buf
@@ -599,11 +597,11 @@ mod test {
 
     #[test]
     fn byte_arrays() {
-        let mut a = vec![b'a'; 254];
-        let mut b = vec![b'a'; 255];
-        let mut c = vec![b'a'; 256];
-        let mut inputs = [&b""[..], b"hello", &a, &b, &c];
-        let mut encoded = inputs.map(|string| {
+        let a = vec![b'a'; 254];
+        let b = vec![b'a'; 255];
+        let c = vec![b'a'; 256];
+        let inputs = [&b""[..], b"hello", &a, &b, &c];
+        let encoded = inputs.map(|string| {
             let mut buf = Vec::new();
             string.binary_encode(&mut buf);
             buf
@@ -629,13 +627,13 @@ mod test {
     }
     #[test]
     fn pod_arrays() {
-        let mut a: Vec<u32> = (0..254u32)
+        let a: Vec<u32> = (0..254u32)
             .map(|i| 0xdeadbeafu32.wrapping_mul(i) ^ i)
             .collect();
-        let mut b = vec![b'a' as u32; 255];
-        let mut c = vec![b'a' as u32; 256];
-        let mut inputs = [&[][..], &[1u32, 2, 3, 4, 5], &a, &b, &c];
-        let mut encoded = inputs.map(|string| {
+        let b = vec![b'a' as u32; 255];
+        let c = vec![b'a' as u32; 256];
+        let inputs = [&[][..], &[1u32, 2, 3, 4, 5], &a, &b, &c];
+        let encoded = inputs.map(|string| {
             let mut buf = Vec::new();
             string.binary_encode(&mut buf);
             buf
@@ -654,8 +652,8 @@ mod test {
     }
     #[test]
     fn nested_pod_arrays() {
-        let mut inputs: [&[[u32; 2]]; 2] = [&[][..], &[[1u32, 2], [3, 4], [5, 3]]];
-        let mut encoded = inputs.map(|array| {
+        let inputs: [&[[u32; 2]]; 2] = [&[][..], &[[1u32, 2], [3, 4], [5, 3]]];
+        let encoded = inputs.map(|array| {
             let mut buf = Vec::new();
             array.binary_encode(&mut buf);
             buf
@@ -666,7 +664,7 @@ mod test {
     }
     #[test]
     fn complex_arrays() {
-        let mut inputs: &[&str] = &["hello", "", "nice"];
+        let inputs: &[&str] = &["hello", "", "nice"];
         let encoded = crate::to_binary(inputs);
         assert_eq!(&from_binary::<Vec<&str>>(&encoded).unwrap(), inputs)
     }

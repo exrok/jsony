@@ -1,4 +1,4 @@
-use jsony::{object, ToJson};
+use jsony::{json::AnyValue, object, TextWriter, ToJson};
 
 #[test]
 fn empty_object() {
@@ -72,10 +72,11 @@ struct Struct {
     array: [u32; 2],
 }
 impl ToJson for StructOther {
-    type Into = jsony::json::RawBuf;
+    type Kind = AnyValue;
 
-    fn jsonify_into(&self, output: &mut Self::Into) {
+    fn jsonify_into(&self, output: &mut TextWriter) -> AnyValue {
         self.field2.jsonify_into(output);
+        AnyValue
     }
 }
 
@@ -186,7 +187,7 @@ fn simple_match() {
                 value: match i {
                     0 => "hello",
                     1 => false,
-                    2 => [1,2,3,4],
+                    2 => [1,2,3,4], // <-- TODO should detection missing comma here
                     3 => u32::MIN,
                     4 => {
                         nested: "works"
@@ -328,112 +329,36 @@ fn basic_control_flow() {
     )
 }
 
-// #[test]
-// fn if_condition() {
-//     assert_object_eq!(
-//         {
-//             [for value in [0, 1]] value: {
-//                 [if value == 1] only_1: 1
-//             },
-//         },
-//         {
-//             "value": [{}, {"only_1": 1}]
-//         }
-//     );
+#[no_mangle]
+fn name(ptr: *mut u8) {
+    unsafe {
+        std::ptr::copy_nonoverlapping((&0xdeadbeafu32) as *const _ as *const u8, ptr, 1);
+    }
+}
 
-//     let value1: Option<u32> = None;
-//     let value2: Option<u32> = Some(1);
-//     assert_object_eq!(
-//         {
-//             [if let Some(value) = value1] got1: value,
-//             [if let Some(value) = value2] got2: value,
-//         },
-//         {
-//             "got2": 1
-//         }
-//     )
-// }
+#[test]
+fn if_guard() {
+    assert_object_eq!(
+        {
+            @[if false]
+            foo: "discarded",
+            @[if true]
+            bar: "kept",
+        },
+        {
+            "bar": "kept"
+        }
+    );
 
-// #[test]
-// fn if_flatten() {
-//     let value1: Option<u32> = None;
-//     let value2: Option<u32> = Some(2);
-//     assert_object_eq!(
-//         {
-//             [if let Some(value) = value1] r#flatten: {
-//                 value,
-//                 other1: false
-//             },
-//             [if let Some(value) = value2] r#flatten: {
-//                 value,
-//                 other2: true
-//             },
-//         },
-//         {
-//             "value": 2,
-//             "other2": true
-//         }
-//     )
-// }
-
-// #[test]
-// fn func() {
-//     let borrow = vec![1, 2, 3, 4];
-//     assert_object_eq!(
-//         {
-//             nothing: |value| {},
-//             scalar: |value| { value.value(&32) },
-//             array: |value| {
-//                 let mut array = value.array();
-//                 array.value(&3);
-//                 array.value(&false);
-//                 array.value(&"wow");
-//             },
-//             object: |value| {
-//                 let mut obj = value.object();
-//                 obj.key("hello").value(&123);
-//                 obj.key("wow").value(&321);
-//             },
-//             borrowed: |value| {
-//                 value.value(&borrow);
-//             },
-//         },
-//         {
-//             "nothing": null,
-//             "scalar": 32,
-//             "array": [3, false, "wow"],
-//             "object": {
-//                 "hello": 123,
-//                 "wow": 321
-//             },
-//             "borrowed": [1,2,3,4]
-//         }
-//     );
-//     drop(borrow);
-// }
-
-// #[test]
-// fn func_flatten() {
-//     assert_object_eq!(
-//         {
-//             r#flatten: |obj| {
-//                 obj.key("hello").value(&123);
-//                 obj.key("wow").value(&321);
-//             },
-//         },
-//         {
-//             "hello": 123,
-//             "wow": 321
-//         }
-//     );
-
-//     assert_object_eq!(
-//         {
-//             r#flatten: |obj| {},
-//             nice: false
-//         },
-//         {
-//             "nice": false
-//         }
-//     );
-// }
+    assert_object_eq!(
+        {
+            @[if false]
+            ..{foo: "discarded",},
+            @[if true]
+            ..{bar: "kept"}
+        },
+        {
+            "bar": "kept"
+        }
+    )
+}

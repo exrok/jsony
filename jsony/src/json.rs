@@ -1,10 +1,11 @@
 // #[cfg(test)]
 // mod tests;
-use crate::{FromJson, OutputBuffer, ToJson};
+use crate::{text_writer::TextWriter, FromJson, ToJson};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     hash::Hash,
+    marker::PhantomData,
     ptr::NonNull,
     rc::Rc,
     sync::Arc,
@@ -66,13 +67,14 @@ impl<'a> FromJsonStr<'a> for Cow<'a, str> {
         }
     }
 }
+
 impl<'a> FromJsonStr<'a> for String {
-    fn from_json_str(inner: &str, parser: &Parser<'a>) -> Result<Self, &'static DecodeError> {
+    fn from_json_str(inner: &str, _parser: &Parser<'a>) -> Result<Self, &'static DecodeError> {
         Ok(inner.into())
     }
 }
 impl<'a> FromJsonStr<'a> for Box<str> {
-    fn from_json_str(inner: &str, parser: &Parser<'a>) -> Result<Self, &'static DecodeError> {
+    fn from_json_str(inner: &str, _parser: &Parser<'a>) -> Result<Self, &'static DecodeError> {
         Ok(inner.into())
     }
 }
@@ -84,7 +86,7 @@ where
 {
     type Vistor = FuncFieldVisitor<'a>;
 
-    unsafe fn new_field_visitor(ptr: NonNull<()>, parser: &Parser<'a>) -> Self::Vistor {
+    unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Vistor {
         ptr.cast::<Self>().write(Self::new());
         // this common pattern can be generlized safely once we get safe transmute
         FuncFieldVisitor {
@@ -111,7 +113,7 @@ where
 {
     type Vistor = FuncFieldVisitor<'a>;
 
-    unsafe fn new_field_visitor(ptr: NonNull<()>, parser: &Parser<'a>) -> Self::Vistor {
+    unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Vistor {
         ptr.cast::<Self>().write(Self::new());
         // this common pattern can be generlized safely once we get safe transmute
         FuncFieldVisitor {
@@ -131,7 +133,7 @@ where
     }
 }
 
-unsafe trait FromJsonFieldVisitor<'a> {
+pub unsafe trait FromJsonFieldVisitor<'a> {
     type Vistor: FieldVistor<'a>;
     unsafe fn new_field_visitor(ptr: NonNull<()>, parser: &Parser<'a>) -> Self::Vistor;
 }
@@ -253,7 +255,7 @@ fn decode_array_sequence<'de, K: FromJson<'de>>(
     mut func: impl FnMut(K) -> Result<(), &'static DecodeError>,
 ) -> Result<(), &'static DecodeError> {
     match parser.enter_array() {
-        Ok(Some(value)) => (),
+        Ok(Some(_)) => (),
         Ok(None) => return Ok(()),
         Err(err) => return Err(err),
     };
@@ -475,7 +477,7 @@ unsafe impl<'a> FromJson<'a> for char {
             Ok(raw_str) => {
                 if let Ok(value) = crate::strings::escape_to_str(raw_str) {
                     let mut chars = value.chars();
-                    let mut ch = chars.next();
+                    let ch = chars.next();
                     if chars.next().is_some() {
                         return Err(&DecodeError {
                             message: "Expected a single char",
@@ -501,7 +503,7 @@ unsafe fn decode_into_array<'de>(
     decode: unsafe fn(NonNull<()>, &mut Parser<'de>) -> Result<(), &'static DecodeError>,
     drop_func: Option<impl Fn(NonNull<()>)>,
 ) -> Result<(), &'static DecodeError> {
-    let mut value = parser.enter_array()?;
+    parser.enter_array()?;
     let mut current = dest;
     let err = 'error: {
         for i in 0..n {
@@ -543,14 +545,14 @@ static ARRAY_LENGTH_MISMATCH: DecodeError = DecodeError {
 
 unsafe impl<'de> FromJson<'de> for () {
     unsafe fn emplace_from_json(
-        dest: NonNull<()>,
+        _dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        let mut value = parser.enter_array()?;
-        if value.is_none() {
-            return Ok(());
+        match parser.enter_array() {
+            Ok(None) => Ok(()),
+            Ok(_) => Err(&ARRAY_LENGTH_MISMATCH),
+            Err(err) => Err(err),
         }
-        Err(&ARRAY_LENGTH_MISMATCH)
     }
 }
 
@@ -559,7 +561,7 @@ unsafe impl<'de, T0: FromJson<'de>> FromJson<'de> for (T0,) {
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        let mut value = parser.enter_array()?;
+        let value = parser.enter_array()?;
         if value.is_none() {
             return Err(&ARRAY_LENGTH_MISMATCH);
         }
@@ -586,7 +588,7 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>> FromJson<'de> for (T0, T1
         if parser.enter_array()?.is_none() {
             return Err(&ARRAY_LENGTH_MISMATCH);
         }
-        let mut error: &'static DecodeError;
+        let error: &'static DecodeError;
         't0: {
             if let Err(err) = <T0 as FromJson<'de>>::emplace_from_json(
                 dest.byte_add(std::mem::offset_of!(Self, 0)),
@@ -630,7 +632,7 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>, T2: FromJson<'de>> FromJs
         if parser.enter_array()?.is_none() {
             return Err(&ARRAY_LENGTH_MISMATCH);
         }
-        let mut error: &'static DecodeError;
+        let error: &'static DecodeError;
         't0: {
             if let Err(err) = <T0 as FromJson<'de>>::emplace_from_json(
                 dest.byte_add(std::mem::offset_of!(Self, 0)),
@@ -686,10 +688,10 @@ unsafe fn dyn_tuple_decode<'a>(
         usize,
         unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>,
     )],
-    drops: &[(unsafe fn(NonNull<()>))],
+    drops: &[unsafe fn(NonNull<()>)],
 ) -> Result<(), &'static DecodeError> {
     if parser.enter_array()?.is_none() {
-        if (fields.is_empty()) {
+        if fields.is_empty() {
             return Ok(());
         } else {
             return Err(&ARRAY_LENGTH_MISMATCH);
@@ -763,7 +765,7 @@ unsafe impl<'de, T: FromJson<'de>, const N: usize> FromJson<'de> for [T; N] {
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        if (N == 0) {
+        if N == 0 {
             return match parser.enter_array() {
                 Ok(None) => Ok(()),
                 Err(err) => Err(err),
@@ -787,277 +789,30 @@ unsafe impl<'de, T: FromJson<'de>, const N: usize> FromJson<'de> for [T; N] {
     }
 }
 
-#[repr(transparent)]
-pub struct ArrayBuf {
-    pub buffer: RawBuf,
-}
+pub struct ArrayValue;
+pub struct ObjectValue;
+pub struct StringValue;
+pub struct AnyValue;
 
-impl ArrayBuf {
-    pub fn push<T: ToJson>(&mut self, value: &T) {
-        self.buffer.value(value);
-        self.buffer.push_comma();
-    }
-}
-
-#[repr(transparent)]
-pub struct ObjectBuf {
-    pub buffer: RawBuf,
-}
-
-impl ObjectBuf {
-    pub fn key<'a, T: ToJson<Into = StringBuf> + ?Sized>(
-        &'a mut self,
-        key: &T,
-    ) -> ObjectValueWriter<'a> {
-        self.buffer.key(key);
-        self.buffer.push_colon();
-        ObjectValueWriter {
-            buffer: &mut self.buffer,
-        }
-    }
-}
-
-#[repr(transparent)]
-pub struct ObjectValueWriter<'a> {
-    pub buffer: &'a mut RawBuf,
-}
-
-impl<'a> ObjectValueWriter<'a> {
-    pub fn value<T: ToJson>(mut self, value: &T) {
-        self.buffer.value(value);
-        self.buffer.push_comma();
-    }
-}
-
-#[repr(transparent)]
-pub struct StringBuf {
-    pub buffer: RawBuf,
-}
-
-impl StringBuf {
-    fn push(&mut self, ch: char) {
-        ch.encode_utf8(&mut [0; 4]).jsonify_into(self);
-    }
-    fn push_str(&mut self, s: &str) {
-        s.jsonify_into(self);
-    }
-}
-
-impl std::fmt::Write for StringBuf {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        s.jsonify_into(self);
-        Ok(())
-    }
-}
-
-#[repr(transparent)]
-pub struct RawBuf {
-    pub string: String,
-}
-
-impl Default for RawBuf {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RawBuf {
-    #[inline]
-    pub fn push_close_array(&mut self) {
-        unsafe {
-            self.string.as_mut_vec().push(b']');
-        }
-    }
-    #[inline]
-    pub fn push_open_array(&mut self) {
-        unsafe {
-            self.string.as_mut_vec().push(b'[');
-        }
-    }
-    #[inline]
-    pub fn push_open_object(&mut self) {
-        unsafe {
-            self.string.as_mut_vec().push(b'{');
-        }
-    }
-    #[inline]
-    pub fn push_close_object(&mut self) {
-        unsafe {
-            self.string.as_mut_vec().push(b'}');
-        }
-    }
-    #[inline]
-    pub fn push_colon(&mut self) {
-        unsafe {
-            self.string.as_mut_vec().push(b':');
-        }
-    }
-    #[inline]
-    pub fn smart_close_object(&mut self) {
-        unsafe {
-            let buf = self.string.as_mut_vec();
-            if let Some(x @ b',') = buf.last_mut() {
-                *x = b'}';
-            } else {
-                buf.push(b'}');
-            }
-        }
-    }
-    #[inline]
-    pub fn smart_close_array(&mut self) {
-        unsafe {
-            let buf = self.string.as_mut_vec();
-            if let Some(x @ b',') = buf.last_mut() {
-                *x = b']';
-            } else {
-                buf.push(b']');
-            }
-        }
-    }
-    #[inline]
-    pub fn push_comma(&mut self) {
-        unsafe {
-            self.string.as_mut_vec().push(b',');
-        }
-    }
-    pub const fn new() -> RawBuf {
-        RawBuf {
-            string: String::new(),
-        }
-    }
-    pub fn with_capacity(capacity: usize) -> RawBuf {
-        RawBuf {
-            string: String::with_capacity(capacity),
-        }
-    }
-    pub fn raw_array<'a>(&'a mut self, value: &impl ToJson<Into = ArrayBuf>) {
-        let field: &'a mut _ = unsafe { &mut *(self as *mut _ as *mut ArrayBuf) };
-        value.jsonify_into(field);
-    }
-    pub fn raw_object<'a>(&'a mut self, value: &impl ToJson<Into = ObjectBuf>) {
-        let field: &'a mut _ = unsafe { &mut *(self as *mut _ as *mut ObjectBuf) };
-        value.jsonify_into(field);
-    }
-    pub fn raw_key<'a>(&'a mut self, value: &impl ToJson<Into = StringBuf>) {
-        let field: &'a mut _ = unsafe { &mut *(self as *mut _ as *mut StringBuf) };
-        value.jsonify_into(field);
-    }
-    pub fn key<K: ToJson<Into = StringBuf> + ?Sized>(&mut self, value: &K) {
-        let field: &mut _ = StringBuf::from_builder(self);
-        value.jsonify_into(field);
-        field.terminate()
-    }
-    pub fn value<K: ToJson + ?Sized>(&mut self, value: &K) {
-        let field: &mut _ = <_ as OutputBuffer>::from_builder(self);
-        value.jsonify_into(field);
-        field.terminate()
-    }
-}
-
-impl<'a, K: OutputBuffer> std::ops::Deref for Writer<'a, K> {
-    type Target = K;
-
-    fn deref(&self) -> &Self::Target {
-        &*self.0
-    }
-}
-impl<'a, K: OutputBuffer> std::ops::DerefMut for Writer<'a, K> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0
-    }
-}
-pub struct Writer<'a, K: OutputBuffer>(&'a mut K);
-
-impl<'a, K: OutputBuffer> Drop for Writer<'a, K> {
-    fn drop(&mut self) {
-        self.0.terminate();
-    }
-}
-impl crate::__private::Sealed for ArrayBuf {}
-impl crate::__private::Sealed for RawBuf {}
-impl crate::__private::Sealed for StringBuf {}
-impl crate::__private::Sealed for ObjectBuf {}
-
-impl OutputBuffer for RawBuf {
-    #[inline]
-    fn from_builder(builder: &mut RawBuf) -> &mut Self {
-        builder
-    }
-    fn terminate(&mut self) {}
-}
-impl RawBuf {
-    pub fn writer<K: OutputBuffer>(&mut self) -> Writer<'_, K> {
-        Writer(K::from_builder(self))
-    }
-}
-
-impl OutputBuffer for StringBuf {
-    #[inline]
-    fn from_builder(builder: &mut RawBuf) -> &mut Self {
-        unsafe {
-            builder.string.as_mut_vec().push(b'"');
-            &mut *(builder as *mut _ as *mut StringBuf)
-        }
-    }
-    fn terminate(&mut self) {
-        unsafe {
-            self.buffer.string.as_mut_vec().push(b'"');
-        }
-    }
-}
-impl OutputBuffer for ArrayBuf {
-    #[inline]
-    fn from_builder(builder: &mut RawBuf) -> &mut Self {
-        builder.push_open_array();
-        unsafe { &mut *(builder as *mut _ as *mut ArrayBuf) }
-    }
-    fn terminate(&mut self) {
-        unsafe {
-            let buf = self.buffer.string.as_mut_vec();
-            if let Some(x @ b',') = buf.last_mut() {
-                *x = b']';
-            } else {
-                buf.push(b']');
-            }
-        }
-    }
-}
-impl ArrayBuf {
-    pub fn from_builder_raw(builder: &mut RawBuf) -> &mut ArrayBuf {
-        unsafe { &mut *(builder as *mut _ as *mut ArrayBuf) }
-    }
-}
-impl ObjectBuf {
-    pub fn from_builder_raw(builder: &mut RawBuf) -> &mut ObjectBuf {
-        unsafe { &mut *(builder as *mut _ as *mut ObjectBuf) }
-    }
-}
-impl OutputBuffer for ObjectBuf {
-    #[inline]
-    fn from_builder(builder: &mut RawBuf) -> &mut Self {
-        builder.push_open_object();
-        unsafe { &mut *(builder as *mut _ as *mut ObjectBuf) }
-    }
-    fn terminate(&mut self) {
-        unsafe {
-            let buf = self.buffer.string.as_mut_vec();
-            if let Some(x @ b',') = buf.last_mut() {
-                *x = b'}';
-            } else {
-                buf.push(b'}');
-            }
-        }
-    }
-}
+pub trait JsonValueKind: crate::__private::Sealed {}
+impl crate::__private::Sealed for ArrayValue {}
+impl JsonValueKind for ArrayValue {}
+impl crate::__private::Sealed for AnyValue {}
+impl JsonValueKind for AnyValue {}
+impl crate::__private::Sealed for StringValue {}
+impl JsonValueKind for StringValue {}
+impl crate::__private::Sealed for ObjectValue {}
+impl JsonValueKind for ObjectValue {}
 
 macro_rules! into_json_itoa {
     ($($ty:ty)*) => {
         $(
             impl ToJson for $ty {
-                type Into = RawBuf;
-                fn jsonify_into(&self, x: &mut RawBuf) {
+                type Kind = AnyValue;
+                fn jsonify_into(&self, output: &mut TextWriter) -> AnyValue {
                     let mut buffer = itoa::Buffer::new();
-                    x.string.push_str(buffer.format(*self));
+                    output.push_str(buffer.format(*self));
+                    AnyValue
                 }
             }
         )*
@@ -1066,41 +821,26 @@ macro_rules! into_json_itoa {
 
 into_json_itoa![u8 i8 u16 i16 u32 i32 u64 i64 u128 i128 usize isize];
 
-impl ToJson for char {
-    type Into = StringBuf;
-    fn jsonify_into(&self, output: &mut StringBuf) {
-        output.buffer.string.push(*self);
-    }
-}
-
 impl ToJson for f32 {
-    type Into = RawBuf;
-    fn jsonify_into(&self, x: &mut RawBuf) {
+    type Kind = AnyValue;
+    fn jsonify_into(&self, x: &mut TextWriter) -> AnyValue {
         if !self.is_finite() {
-            x.string.push_str("null");
-            return;
+            x.push_str("null");
+            return AnyValue;
         }
-        unsafe {
-            let v = x.string.as_mut_vec();
-            v.reserve(16);
-            let amount = ryu::raw::format32(*self, v.spare_capacity_mut().as_mut_ptr() as *mut u8);
-            v.set_len(v.len() + amount);
-        }
+        x.finite_f32(*self);
+        AnyValue
     }
 }
 impl ToJson for f64 {
-    type Into = RawBuf;
-    fn jsonify_into(&self, x: &mut RawBuf) {
+    type Kind = AnyValue;
+    fn jsonify_into(&self, x: &mut TextWriter) -> AnyValue {
         if !self.is_finite() {
-            x.string.push_str("null");
-            return;
+            x.push_str("null");
+            return AnyValue;
         }
-        unsafe {
-            let v = x.string.as_mut_vec();
-            v.reserve(24);
-            let amount = ryu::raw::format64(*self, v.spare_capacity_mut().as_mut_ptr() as *mut u8);
-            v.set_len(v.len() + amount);
-        }
+        x.finite_f64(*self);
+        AnyValue
     }
 }
 
@@ -1142,6 +882,7 @@ enum CharEscape {
     /// An escaped reverse solidus `\`
     ReverseSolidus,
     /// An escaped solidus `/`
+    #[allow(dead_code)]
     Solidus,
     /// An escaped backspace character (usually escaped as `\b`)
     Backspace,
@@ -1176,172 +917,343 @@ impl CharEscape {
 }
 
 impl ToJson for str {
-    type Into = StringBuf;
-    fn jsonify_into(&self, output: &mut StringBuf) {
+    type Kind = StringValue;
+    fn jsonify_into(&self, output: &mut TextWriter) -> StringValue {
+        output.start_json_string();
         let bytes = self.as_bytes();
         let mut start = 0;
-        unsafe {
-            let buf = output.buffer.string.as_mut_vec();
-            for (i, &byte) in bytes.iter().enumerate() {
-                let escape = ESCAPE[byte as usize];
-                if escape == 0 {
+        for (i, &byte) in bytes.iter().enumerate() {
+            let escape = ESCAPE[byte as usize];
+            if escape == 0 {
+                continue;
+            }
+
+            if start < i {
+                unsafe {
+                    output.push_unchecked_utf8(&bytes[start..i]);
+                }
+            }
+
+            let char_escape = CharEscape::from_escape_table(escape, byte);
+            use self::CharEscape::*;
+            start = i + 1;
+
+            let s = match char_escape {
+                Quote => b"\\\"",
+                ReverseSolidus => b"\\\\",
+                Solidus => b"\\/",
+                Backspace => b"\\b",
+                FormFeed => b"\\f",
+                LineFeed => b"\\n",
+                CarriageReturn => b"\\r",
+                Tab => b"\\t",
+                AsciiControl(byte) => {
+                    static HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
+                    let bytes = &[
+                        b'\\',
+                        b'u',
+                        b'0',
+                        b'0',
+                        HEX_DIGITS[(byte >> 4) as usize],
+                        HEX_DIGITS[(byte & 0xF) as usize],
+                    ];
+                    unsafe {
+                        output.push_unchecked_utf8(bytes);
+                    }
                     continue;
                 }
-
-                if start < i {
-                    buf.extend_from_slice(&bytes[start..i]);
-                }
-
-                let char_escape = CharEscape::from_escape_table(escape, byte);
-                use self::CharEscape::*;
-                start = i + 1;
-
-                let s = match char_escape {
-                    Quote => b"\\\"",
-                    ReverseSolidus => b"\\\\",
-                    Solidus => b"\\/",
-                    Backspace => b"\\b",
-                    FormFeed => b"\\f",
-                    LineFeed => b"\\n",
-                    CarriageReturn => b"\\r",
-                    Tab => b"\\t",
-                    AsciiControl(byte) => {
-                        static HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
-                        let bytes = &[
-                            b'\\',
-                            b'u',
-                            b'0',
-                            b'0',
-                            HEX_DIGITS[(byte >> 4) as usize],
-                            HEX_DIGITS[(byte & 0xF) as usize],
-                        ];
-                        buf.extend_from_slice(bytes);
-                        continue;
-                    }
-                };
-                buf.extend_from_slice(s);
+            };
+            unsafe {
+                output.push_unchecked_utf8(s);
             }
-
-            if start == bytes.len() {
-                return;
-            }
-
-            buf.extend_from_slice(&bytes[start..]);
         }
+
+        if start != bytes.len() {
+            unsafe {
+                output.push_unchecked_utf8(&bytes[start..]);
+            }
+        }
+        output.end_json_string();
+        StringValue
     }
 }
 
 impl<T: ToJson> ToJson for Option<T> {
-    type Into = RawBuf;
-    fn jsonify_into(&self, output: &mut RawBuf) {
+    type Kind = AnyValue;
+    fn jsonify_into(&self, output: &mut TextWriter) -> AnyValue {
         if let Some(value) = self {
-            output.value(value);
+            value.jsonify_into(output);
         } else {
-            output.string.push_str("null");
+            output.push_str("null");
         }
+        AnyValue
     }
 }
 
 impl<T: ToJson, const N: usize> ToJson for [T; N] {
-    type Into = ArrayBuf;
-    fn jsonify_into(&self, array: &mut ArrayBuf) {
+    type Kind = ArrayValue;
+    fn jsonify_into(&self, array: &mut TextWriter) -> ArrayValue {
         self.as_slice().jsonify_into(array)
     }
 }
 
 impl<T: ToJson> ToJson for Vec<T> {
-    type Into = ArrayBuf;
-    fn jsonify_into(&self, array: &mut ArrayBuf) {
-        self.as_slice().jsonify_into(array);
+    type Kind = ArrayValue;
+    fn jsonify_into(&self, array: &mut TextWriter) -> ArrayValue {
+        self.as_slice().jsonify_into(array)
     }
 }
 
 impl<T: ToJson> ToJson for [T] {
-    type Into = ArrayBuf;
-    fn jsonify_into(&self, array: &mut ArrayBuf) {
+    type Kind = ArrayValue;
+    fn jsonify_into(&self, output: &mut TextWriter) -> ArrayValue {
+        output.start_json_array();
         for value in self {
-            let x = T::Into::from_builder(&mut array.buffer);
-            <_ as ToJson>::jsonify_into(&value, x);
-            x.terminate();
-            array.buffer.push_comma();
+            value.jsonify_into(output);
+            output.push_comma();
         }
+        output.end_json_array()
     }
 }
 
 impl<'a, T: ToJson + Clone> ToJson for Cow<'a, T> {
-    type Into = T::Into;
+    type Kind = T::Kind;
 
-    fn jsonify_into(&self, output: &mut Self::Into) {
+    fn jsonify_into(&self, output: &mut TextWriter) -> T::Kind {
         <T as ToJson>::jsonify_into(self, output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for Rc<T> {
-    type Into = T::Into;
+    type Kind = T::Kind;
 
-    fn jsonify_into(&self, output: &mut Self::Into) {
+    fn jsonify_into(&self, output: &mut TextWriter) -> T::Kind {
         <T as ToJson>::jsonify_into(self, output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for Box<T> {
-    type Into = T::Into;
+    type Kind = T::Kind;
 
-    fn jsonify_into(&self, output: &mut Self::Into) {
+    fn jsonify_into(&self, output: &mut TextWriter) -> T::Kind {
         <T as ToJson>::jsonify_into(self, output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for Arc<T> {
-    type Into = T::Into;
+    type Kind = T::Kind;
 
-    fn jsonify_into(&self, output: &mut Self::Into) {
+    fn jsonify_into(&self, output: &mut TextWriter) -> T::Kind {
         <T as ToJson>::jsonify_into(self, output)
     }
 }
 
 impl ToJson for String {
-    type Into = StringBuf;
+    type Kind = StringValue;
 
-    fn jsonify_into(&self, output: &mut Self::Into) {
+    fn jsonify_into(&self, output: &mut TextWriter) -> StringValue {
         self.as_str().jsonify_into(output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for &T {
-    type Into = T::Into;
+    type Kind = T::Kind;
 
-    fn jsonify_into(&self, output: &mut Self::Into) {
+    fn jsonify_into(&self, output: &mut TextWriter) -> T::Kind {
         <T as ToJson>::jsonify_into(*self, output)
     }
 }
 
 impl<V: ToJson, S> ToJson for HashSet<V, S> {
-    type Into = ArrayBuf;
+    type Kind = ArrayValue;
 
-    fn jsonify_into(&self, output: &mut Self::Into) {
+    fn jsonify_into(&self, output: &mut TextWriter) -> ArrayValue {
+        output.start_json_array();
         for value in self {
-            output.buffer.value(value);
-            output.buffer.push_comma();
+            value.jsonify_into(output);
+            output.push_comma();
         }
+        output.end_json_array()
     }
 }
-impl<K: ToJson<Into = StringBuf>, V: ToJson, S> ToJson for HashMap<K, V, S> {
-    type Into = ObjectBuf;
+impl<K: ToJson<Kind = StringValue>, V: ToJson, S> ToJson for HashMap<K, V, S> {
+    type Kind = ObjectValue;
 
-    fn jsonify_into(&self, output: &mut Self::Into) {
-        for (key, value) in self {
-            output.buffer.key(key);
-            output.buffer.push_colon();
-            output.buffer.value(value);
-            output.buffer.push_comma();
+    fn jsonify_into(&self, output: &mut TextWriter) -> ObjectValue {
+        output.start_json_object();
+        for (_key, value) in self {
+            value.jsonify_into(output);
+            output.push_colon();
+            value.jsonify_into(output);
+            output.push_comma();
         }
+        output.end_json_object()
     }
 }
 
 impl ToJson for bool {
-    type Into = RawBuf;
-    fn jsonify_into(&self, output: &mut RawBuf) {
+    type Kind = AnyValue;
+    fn jsonify_into(&self, output: &mut TextWriter) -> AnyValue {
         if *self {
-            output.string.push_str("true");
+            output.push_str("true");
         } else {
-            output.string.push_str("false");
+            output.push_str("false");
         }
+        AnyValue
+    }
+}
+
+pub struct ArrayWriter<'a, 'b> {
+    writer: &'a mut TextWriter<'b>,
+}
+impl<'a, 'b> Drop for ArrayWriter<'a, 'b> {
+    fn drop(&mut self) {
+        self.writer.end_json_array();
+    }
+}
+impl<'a, 'b> ArrayWriter<'a, 'b> {
+    pub fn new(writer: &'a mut TextWriter<'b>) -> Self {
+        writer.start_json_array();
+        ArrayWriter { writer }
+    }
+    pub fn non_terminating<'k>(value: &'k mut &'a mut TextWriter<'b>) -> &'k mut Self {
+        unsafe { std::mem::transmute(value) }
+    }
+    pub fn value_writer<'k>(&'k mut self) -> ValueWriter<'k, 'b> {
+        self.writer.smart_array_comma();
+        ValueWriter {
+            writer: self.writer,
+        }
+    }
+    pub fn object<'k>(&'k mut self) -> ObjectWriter<'k, 'b> {
+        self.writer.smart_array_comma();
+        ObjectWriter::new(self.writer)
+    }
+    pub fn array<'k>(&'k mut self) -> ArrayWriter<'k, 'b> {
+        self.writer.smart_array_comma();
+        ArrayWriter::new(self.writer)
+    }
+    #[doc(hidden)]
+    pub fn inner_writer<'j>(&'j mut self) -> &'j mut TextWriter<'b> {
+        &mut self.writer
+    }
+    pub fn push<'k, Kind: JsonValueKind>(
+        &'k mut self,
+        a: &(impl ToJson<Kind = Kind> + ?Sized),
+    ) -> ValueExtender<'k, 'b, Kind> {
+        self.writer.smart_array_comma();
+        a.jsonify_into(self.writer);
+        ValueExtender {
+            writer: self.writer,
+            phantom: PhantomData,
+        }
+    }
+    pub fn extend(&mut self, a: &dyn ToJson<Kind = ArrayValue>) {
+        self.writer.smart_array_comma();
+        self.writer.join_parent_json_value_with_next();
+        a.jsonify_into(self.writer);
+        self.writer.join_array_with_next_value();
+        self.writer.joining = false;
+    }
+}
+pub struct ObjectWriter<'a, 'b> {
+    writer: &'a mut TextWriter<'b>,
+}
+impl<'a, 'b> Drop for ObjectWriter<'a, 'b> {
+    fn drop(&mut self) {
+        self.writer.end_json_object();
+    }
+}
+impl<'a, 'b> ObjectWriter<'a, 'b> {
+    pub fn new(writer: &'a mut TextWriter<'b>) -> Self {
+        writer.start_json_object();
+        ObjectWriter { writer }
+    }
+    pub fn non_terminating<'k>(value: &'k mut &'a mut TextWriter<'b>) -> &'k mut Self {
+        unsafe { std::mem::transmute(value) }
+    }
+    #[doc(hidden)]
+    pub fn inner_writer<'j>(&'j mut self) -> &'j mut TextWriter<'b> {
+        &mut self.writer
+    }
+    pub fn extend(&mut self, a: &dyn ToJson<Kind = ObjectValue>) {
+        self.writer.smart_object_comma();
+        self.writer.join_parent_json_value_with_next();
+        a.jsonify_into(self.writer);
+        self.writer.join_object_with_next_value();
+        self.writer.joining = false;
+    }
+    pub fn dyn_key<'q>(&'q mut self, a: &dyn ToJson<Kind = StringValue>) -> ValueWriter<'q, 'b> {
+        self.writer.smart_object_comma();
+        a.jsonify_into(self.writer);
+        self.writer.push_colon();
+        ValueWriter {
+            writer: self.writer,
+        }
+    }
+    pub fn key<'q>(&'q mut self, a: &str) -> ValueWriter<'q, 'b> {
+        self.writer.smart_object_comma();
+        a.jsonify_into(self.writer);
+        self.writer.push_colon();
+        ValueWriter {
+            writer: self.writer,
+        }
+    }
+}
+pub struct ValueWriter<'a, 'b> {
+    writer: &'a mut TextWriter<'b>,
+}
+#[repr(transparent)]
+pub struct ValueExtender<'a, 'b, T> {
+    writer: &'a mut TextWriter<'b>,
+    phantom: PhantomData<T>,
+}
+
+impl<'a, 'b> Drop for ValueWriter<'a, 'b> {
+    fn drop(&mut self) {
+        self.writer.push_str("null");
+    }
+}
+
+impl<'a, 'b> ValueExtender<'a, 'b, ObjectValue> {
+    pub fn extend(&mut self, value: &dyn ToJson<Kind = ObjectValue>) {
+        self.writer.join_object_with_next_value();
+        value.jsonify_into(self.writer);
+    }
+}
+
+impl<'a, 'b> ValueExtender<'a, 'b, ArrayValue> {
+    pub fn extend(&mut self, value: &dyn ToJson<Kind = ArrayValue>) {
+        self.writer.join_array_with_next_value();
+        value.jsonify_into(self.writer);
+    }
+}
+
+impl<'a, 'b> ValueExtender<'a, 'b, StringValue> {
+    pub fn extend(&mut self, value: &dyn ToJson<Kind = StringValue>) {
+        self.writer.join_string_with_next_value();
+        value.jsonify_into(self.writer);
+    }
+}
+
+impl<'a, 'b> ValueWriter<'a, 'b> {
+    pub fn new(writer: &'a mut TextWriter<'b>) -> Self {
+        ValueWriter { writer }
+    }
+    pub fn into_inner(self) -> &'a mut TextWriter<'b> {
+        unsafe { std::mem::transmute(self) }
+    }
+    pub fn value<Kind: JsonValueKind>(
+        self,
+        a: &(impl ToJson<Kind = Kind> + ?Sized),
+    ) -> ValueExtender<'a, 'b, Kind> {
+        let writer = self.into_inner();
+        a.jsonify_into(writer);
+        ValueExtender {
+            writer,
+            phantom: PhantomData,
+        }
+    }
+    pub fn object(self) -> ObjectWriter<'a, 'b> {
+        ObjectWriter::new(self.into_inner())
+    }
+    pub fn array(self) -> ArrayWriter<'a, 'b> {
+        ArrayWriter::new(self.into_inner())
     }
 }

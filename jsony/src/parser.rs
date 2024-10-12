@@ -1,10 +1,9 @@
 use std::borrow::Cow;
 use std::fmt;
 use std::ops::Range;
-use std::sync::Arc;
 
 use crate::json::DecodeError;
-use crate::lazy_parser::{self, index_of_string_end2};
+use crate::lazy_parser::index_of_string_end2;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Peek(u8);
@@ -56,8 +55,6 @@ impl Peek {
 static TRUE_REST: [u8; 3] = [b'r', b'u', b'e'];
 static FALSE_REST: [u8; 4] = [b'a', b'l', b's', b'e'];
 static NULL_REST: [u8; 3] = [b'u', b'l', b'l'];
-static NAN_REST: [u8; 2] = [b'a', b'N'];
-static INFINITY_REST: [u8; 7] = [b'n', b'f', b'i', b'n', b'i', b't', b'y'];
 
 #[derive(Clone)]
 pub struct Parser<'j> {
@@ -121,9 +118,6 @@ static EXPECTED_COLON: DecodeError = DecodeError {
 
 static EXPECTED_SOME_IDENT: DecodeError = DecodeError {
     message: "Expected some ident",
-};
-static EXPECTED_ARRAY: DecodeError = DecodeError {
-    message: "Expected array",
 };
 
 pub static UNKNOWN_VARIANT: DecodeError = DecodeError {
@@ -305,7 +299,9 @@ impl<'j> Parser<'j> {
             Peek::Array => {
                 if self.enter_seen_array()?.is_some() {
                     loop {
-                        self.skip_value();
+                        if let Err(err) = self.skip_value() {
+                            return Err(err);
+                        }
                         if self.array_step()?.is_none() {
                             break;
                         }
@@ -316,7 +312,9 @@ impl<'j> Parser<'j> {
             Peek::Object => {
                 if self.enter_seen_object()?.is_some() {
                     loop {
-                        self.skip_value();
+                        if let Err(err) = self.skip_value() {
+                            return Err(err);
+                        }
                         if self.object_step()?.is_none() {
                             break;
                         }
@@ -357,13 +355,11 @@ impl<'j> Parser<'j> {
     // todo should make this fuzzy and optimzied
     pub fn index_into_next_object(&self, key: &str) -> JsonResult<Option<Parser<'j>>> {
         match crate::lazy_parser::object_index(&self.data[self.index..], key.as_bytes()) {
-            Ok(value) => {
-                Ok(Some(Parser {
-                    data: self.data,
-                    index: self.index + (self.data.len() - value.len()),
-                    error_context: None,
-                }))
-            }
+            Ok(value) => Ok(Some(Parser {
+                data: self.data,
+                index: self.index + (self.data.len() - value.len()),
+                error_context: None,
+            })),
             Err(_) => Err(&TODO_ERROR),
         }
     }
@@ -689,14 +685,6 @@ impl<'j> Parser<'j> {
         }
         None
     }
-}
-
-pub(crate) fn consume_infinity(data: &[u8], index: usize) -> JsonResult<usize> {
-    consume_ident(data, index, INFINITY_REST)
-}
-
-pub(crate) fn consume_nan(data: &[u8], index: usize) -> JsonResult<usize> {
-    consume_ident(data, index, NAN_REST)
 }
 
 fn consume_ident<const SIZE: usize>(

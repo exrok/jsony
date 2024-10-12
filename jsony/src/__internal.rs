@@ -1,17 +1,17 @@
 use std::{marker::PhantomData, ptr::NonNull};
-struct NestedDynamicFieldDecoder<'a, T: FieldVistor<'a>> {
-    inner: T,
-    destination: NonNull<()>,
-    schema: ObjectSchema<'a>,
-    bitset: u64,
-    required: u64,
+pub struct NestedDynamicFieldDecoder<'a, T: FieldVistor<'a>> {
+    pub inner: T,
+    pub destination: NonNull<()>,
+    pub schema: ObjectSchema<'a>,
+    pub bitset: u64,
+    pub required: u64,
 }
 
-struct DynamicFieldDecoder<'a> {
-    destination: NonNull<()>,
-    schema: ObjectSchema<'a>,
-    bitset: u64,
-    required: u64,
+pub struct DynamicFieldDecoder<'a> {
+    pub destination: NonNull<()>,
+    pub schema: ObjectSchema<'a>,
+    pub bitset: u64,
+    pub required: u64,
 }
 
 pub const unsafe fn erase<'a>(
@@ -26,7 +26,6 @@ impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
     }
     // called on Err
     unsafe fn destroy(&mut self) {
-        ["asdfasd".to_string()].join(",");
         todo!()
     }
     fn visit(
@@ -59,7 +58,7 @@ use super::DecodeError;
 
 // maximum number fields.
 // currently 63 based on how we compute the bit masks.
-const MAX_FIELDS: usize = 63;
+pub const MAX_FIELDS: usize = 63;
 pub struct Field<'a> {
     pub name: &'static str,
     pub offset: usize,
@@ -99,7 +98,7 @@ impl<'a> ObjectSchema<'a> {
         mut unsued: Option<&mut dyn FieldVistor<'a>>,
     ) -> Result<(), &'static DecodeError> {
         // let defaults = (1u64 << self.inner.defaults.len()) - 1;
-        let all = ((1u64 << self.inner.fields.len()) - 1);
+        let all = (1u64 << self.inner.fields.len()) - 1;
         let mut bitset = 0;
         let mut key = match parser.enter_object() {
             Ok(Some(key)) => key,
@@ -182,70 +181,4 @@ impl<'a> ObjectSchema<'a> {
         }
         Err(error)
     }
-}
-
-#[inline(never)]
-unsafe fn decode_object<'a, 'b>(
-    dest: NonNull<()>,
-    parser: &'b mut Parser<'a>,
-    target: u64,
-    fields: &[(
-        &'static str,
-        u64,
-        usize,
-        unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>,
-    )],
-    drops: &[(unsafe fn(NonNull<()>), usize)],
-    mut unsued: Option<&mut dyn FieldVistor<'a>>,
-) -> Result<(), &'static DecodeError> {
-    let mut bitset = 0u64;
-    let mut key = match parser.enter_object() {
-        Ok(Some(key)) => key,
-        Ok(None) => {
-            //todo should actually check which fiedls where reuured
-            return Err(&DecodeError {
-                message: "Missing All fields",
-            });
-        }
-        Err(err) => return Err(err),
-    };
-    'with_next_key: loop {
-        for (field_key, mask, offset, func) in fields {
-            if key == *field_key {
-                if bitset & mask != 0 {
-                    break 'with_next_key;
-                } else {
-                    //todo porpotogate error
-                    if func(dest.byte_add(*offset), parser).is_err() {
-                        break 'with_next_key;
-                    }
-                    bitset |= mask;
-                }
-                if bitset & target == target {
-                    // todo can opimtize
-                    while let Ok(Some(_)) = parser.object_step() {
-                        if parser.skip_value().is_err() {
-                            break;
-                        }
-                    }
-                    return Ok(());
-                }
-                if let Ok(Some(next_key2)) = parser.object_step() {
-                    key = next_key2;
-                    continue 'with_next_key;
-                } else {
-                    break 'with_next_key;
-                }
-            }
-        }
-        if let Some(ref mut unsued_processor) = unsued {
-            unsued_processor.visit(key, parser)?
-        }
-    }
-    for (i, (drop, offset)) in drops.iter().enumerate() {
-        if bitset & (1 << i) != 0 {
-            drop(dest.byte_add(*offset));
-        }
-    }
-    Err(&DecodeError { message: "TODO" })
 }

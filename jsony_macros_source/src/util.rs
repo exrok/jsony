@@ -7,6 +7,7 @@ struct Formatter {
     line_index: usize,
     last_indent: usize,
     line_pre_index: usize,
+    colors: bool,
 }
 
 fn is_rust_builtin_type(ident: &str) -> bool {
@@ -124,29 +125,43 @@ impl Formatter {
         self.output.len() - self.line_index
     }
     fn cls(&mut self) {
-        self.output.extend_from_slice(b"\x1b[0m")
+        if self.colors {
+            self.output.extend_from_slice(b"\x1b[0m")
+        }
     }
     fn clsx(&mut self) {
-        self.output.extend_from_slice(b"\x1b[39m")
+        if self.colors {
+            self.output.extend_from_slice(b"\x1b[39m")
+        }
     }
     fn green(&mut self) {
-        self.output.extend_from_slice(b"\x1b[32m")
+        if self.colors {
+            self.output.extend_from_slice(b"\x1b[32m")
+        }
     }
     fn yellow(&mut self) {
-        self.output.extend_from_slice(b"\x1b[93m")
+        if self.colors {
+            self.output.extend_from_slice(b"\x1b[93m")
+        }
     }
     fn red(&mut self) {
-        self.output.extend_from_slice(b"\x1b[31m")
+        if self.colors {
+            self.output.extend_from_slice(b"\x1b[31m")
+        }
     }
     fn purple(&mut self) {
-        self.output.extend_from_slice(b"\x1b[35m")
+        if self.colors {
+            self.output.extend_from_slice(b"\x1b[35m")
+        }
     }
     fn color_last_ident(&mut self, color: &str) {
-        let Some(range) = self.output.get_mut(self.last_indent..self.last_indent + 5) else {
-            return;
-        };
-        if range == b"\x1b[39m" {
-            range.copy_from_slice(color.as_bytes())
+        if self.colors {
+            let Some(range) = self.output.get_mut(self.last_indent..self.last_indent + 5) else {
+                return;
+            };
+            if range == b"\x1b[39m" {
+                range.copy_from_slice(color.as_bytes())
+            }
         }
     }
     fn rec(&mut self, indent: usize, tokens: Tokens, colon_break: bool) {
@@ -295,6 +310,7 @@ impl Formatter {
                     }
                 },
                 proc_macro::TokenTree::Literal(literal) => {
+                    self.space();
                     let fmt = literal.to_string();
                     if fmt.starts_with(['\'', '"']) {
                         self.green();
@@ -313,6 +329,7 @@ pub fn print_pretty(tokens: TokenStream) {
         line_index: 0,
         last_indent: 0,
         line_pre_index: 0,
+        colors: true,
     };
     buffer.rec(0, tokens.into_iter(), false);
     let _ = std::io::stdout().write_all(&buffer.output);

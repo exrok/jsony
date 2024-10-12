@@ -20,34 +20,6 @@ use memchr::memchr;
 use crate::{from_json, json::DecodeError, FromJson};
 // use serde::de::Error;
 
-fn index_of_string_end2_no_ub(s: &[u8]) -> Option<usize> {
-    let mut i = 1;
-    #[cfg(target_arch = "x86_64")]
-    let searcher = unsafe { memchr::arch::x86_64::sse2::memchr::One::new_unchecked(b'"') };
-    #[cfg(not(target_arch = "x86_64"))]
-    let searcher = memchr::arch::all::memchr::One::new_unchecked(b'"');
-    'outer: while let Some(offset) = searcher.find(s.get(i..)?) {
-        i += offset;
-        let mut x = i - 1;
-        if s[x] == b'\\' {
-            let mut escaped = true;
-            loop {
-                x -= 1;
-                if s[x] != b'\\' {
-                    if escaped {
-                        continue 'outer;
-                    } else {
-                        break;
-                    }
-                }
-                escaped ^= true;
-            }
-        }
-        return Some(i);
-    }
-    None
-}
-
 #[inline(always)]
 pub fn index_of_string_end2(s: &[u8]) -> Option<usize> {
     unsafe {

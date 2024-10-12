@@ -3,10 +3,11 @@ mod ast;
 mod codegen;
 mod lit;
 mod template;
+// mod template2;
+#[allow(unused)]
 mod util;
 
 use std::str::FromStr;
-use util::print_pretty;
 
 use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
@@ -95,16 +96,8 @@ macro_rules! tokens {
 
 fn main() {
     if false {
-        template::append_object(tokens!());
         template::array(tokens!());
         template::object(tokens!());
+        codegen::derive(tokens!());
     }
-    let res = codegen::derive(tokens! {
-        #[derive(Jsony)]
-        struct Borrow<'a> {
-            foo: &'a str,
-            bail: bool,
-        }
-    });
-    print_pretty(res);
 }

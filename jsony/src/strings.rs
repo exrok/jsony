@@ -27,7 +27,7 @@ pub fn escape_to_cow(input: &str) -> Result<Cow<'_, str>, &'static DecodeError> 
         index += 1;
         let nindex = match parse_escape(index, bytes, true, &mut scratch) {
             Ok(nindex) => nindex,
-            Err(err) => {
+            Err(_err) => {
                 return Err(&DecodeError {
                     message: "invalid escape",
                 })
@@ -35,11 +35,11 @@ pub fn escape_to_cow(input: &str) -> Result<Cow<'_, str>, &'static DecodeError> 
         };
         index = nindex;
         start = index;
-        let Some(mut index) = memchr(b'\\', &bytes[start..]) else {
+        let Some(index2) = memchr(b'\\', &bytes[start..]) else {
             scratch.extend_from_slice(&bytes[start..]);
             return Ok(Cow::Owned(unsafe { String::from_utf8_unchecked(scratch) }));
         };
-        index += start;
+        index = index2;
     }
 }
 

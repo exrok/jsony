@@ -291,6 +291,16 @@ fn main() {
     for (name, body) in modules(&data) {
         if name == "ast" {
             let res = line_by_line_transform(body);
+            let tx = pipe_rustfmt(res.as_bytes());
+            let res = std::str::from_utf8(&tx).unwrap();
+            let res = res.replace("((&mut output),", "(&mut output,");
+            let res = res.replace(" (&mut output).", " output.");
+            let res = res.replace("((&mut out),", "(&mut out,");
+            let res = res.replace(" (&mut out).", " out.");
+            let res = res.replace(
+                "::core::panicking::panic(\"not yet implemented\")",
+                "todo!()",
+            );
             std::fs::write(
                 final_crate_path.join("src/ast.rs"),
                 pipe_rustfmt(res.as_bytes()),
@@ -304,12 +314,27 @@ fn main() {
             let res = res.replace(" (&mut output).", " output.");
             let res = res.replace("((&mut out),", "(&mut out,");
             let res = res.replace(" (&mut out).", " out.");
+            let res = res.replace(
+                "::core::panicking::panic(\"not yet implemented\")",
+                "todo!()",
+            );
             let res = res.as_bytes();
             // let res = merge_tts(res);
 
             std::fs::write(final_crate_path.join("src/codegen.rs"), pipe_rustfmt(&res)).unwrap();
         } else if name == "template" {
             let res = line_by_line_transform(body);
+            let tx = pipe_rustfmt(res.as_bytes());
+            let res = std::str::from_utf8(&tx).unwrap();
+            let res = res.replace("((&mut output),", "(&mut output,");
+            let res = res.replace("((&mut self.out),", "(&mut self.out,");
+            let res = res.replace(" (&mut output).", " output.");
+            let res = res.replace("((&mut out),", "(&mut out,");
+            let res = res.replace(" (&mut out).", " out.");
+            let res = res.replace(
+                "::core::panicking::panic(\"not yet implemented\")",
+                "todo!()",
+            );
 
             std::fs::write(
                 final_crate_path.join("src/template.rs"),

@@ -7,22 +7,11 @@ use proc_macro2::{
     TokenTree,
 };
 
-fn chr(ch: char) -> TokenTree {
-    TokenTree::Punct(Punct::new(ch, Spacing::Alone))
-}
-fn j(ch: char) -> TokenTree {
-    TokenTree::Punct(Punct::new(ch, Spacing::Joint))
-}
-
 fn parend(ts: TokenStream) -> TokenTree {
     TokenTree::Group(Group::new(Delimiter::Parenthesis, ts))
 }
 fn braced(ts: TokenStream) -> TokenTree {
     TokenTree::Group(Group::new(Delimiter::Brace, ts))
-}
-fn with_span(mut tt: TokenTree, span: Span) -> TokenTree {
-    tt.set_span(span);
-    tt
 }
 
 const BB: u8 = b'b'; // \x08
@@ -57,100 +46,85 @@ static ESCAPE: [u8; 256] = [
     __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // F
 ];
 
-macro_rules! tok {
-    ($ident:ident) => {
-        TokenTree::Ident(Ident::new(stringify!($ident), Span::call_site()))
-    };
-    (_) => {
-        TokenTree::Ident(Ident::new("_", Span::call_site()))
-    };
-    (()) => {
-        TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::default()))
-    };
-    (( $($tt:tt)*) ) => {
-        TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::from_iter(toks!($($tt)*))))
-    };
-    ([{ $($tt:tt)* }] ) => {
-        TokenTree::Group(Group::new(Delimiter::Brace, TokenStream::from_iter(toks!($($tt)*))))
-    };
-    ([[ $($tt:tt)* ]] ) => {
-        TokenTree::Group(Group::new(Delimiter::Bracket, TokenStream::from_iter(toks!($($tt)*))))
-    };
-    ({$($tt:tt)*}) => {
-        $($tt)*
-    };
-    ([$com:literal]) => {
-        TokenTree::Literal(Literal::string($com))
-    };
-    ([$com:literal; $ident:ident]) => {
-        TokenTree::Literal(Literal::$ident($com))
-    };
-    ([_, $span: expr]) => {
-        TokenTree::Ident(Ident::new("_", $span))
-    };
-    ([$ident:ident, $span: expr]) => {
-        TokenTree::Ident(Ident::new(stringify!($ident), $span))
-    };
-    (<) => {
-        chr('<')
-    };
-    (%) => {
-        j(':')
-    };
-    (:) => {
-        chr(':')
-    };
-    (>) => {
-        chr('>')
-    };
-    (!) => {
-        chr('!')
-    };
-    (.) => {
-        chr('.')
-    };
-    (~) => {
-        j('-')
-    };
-    (;) => {
-       chr(';')
-    };
-    (&) => {
-        chr('&')
-    };
-    (=) => {
-        chr('=')
-    };
-    (,) => {
-        chr(',')
-    };
-    (*) => {
-        chr('*')
-    };
-    (#) => {
-        j('\'')
-    };
-    ($com:ident; $tt:tt) => {
-        TokenTree::from($com.$tt.clone())
-    };
+fn tt_punct_alone(out: &mut Vec<TokenTree>, chr: char) {
+    out.push(TokenTree::Punct(Punct::new(chr, Spacing::Alone)));
+}
+fn tt_punct_joint(out: &mut Vec<TokenTree>, chr: char) {
+    out.push(TokenTree::Punct(Punct::new(chr, Spacing::Joint)));
+}
+fn tt_ident(out: &mut Vec<TokenTree>, ident: &str) {
+    out.push(TokenTree::Ident(Ident::new(ident, Span::call_site())));
+}
+fn tt_group(out: &mut Vec<TokenTree>, delimiter: Delimiter, from: usize) {
+    let group = TokenTree::Group(Group::new(
+        delimiter,
+        TokenStream::from_iter(out.drain(from..)),
+    ));
+    out.push(group);
 }
 
-macro_rules! toks {
-    ($($tt:tt)*) => {
-        [$(tok!($tt)),*]
-    }
-}
-
-macro_rules! braces {
-    ( ) => {
-        TokenTree::Group(Group::new(Delimiter::Brace, TokenStream::default()))
+#[rustfmt::skip]
+macro_rules! append_tok {
+    ($ident:ident $d:tt) => { tt_ident($d, stringify!($ident)) };
+    ({$($tt:tt)*} $d: tt) => {{
+        let at = $d.len(); $(append_tok!($tt $d);)* tt_group($d, Delimiter::Brace, at);
+    }};
+    (($($tt:tt)*) $d: tt) => {{
+        let at = $d.len(); $(append_tok!($tt $d);)* tt_group($d, Delimiter::Parenthesis, at);
+    }};
+    ([[$($tt:tt)*]] $d:tt) => {{
+        let at = $d.len(); $(append_tok!($tt $d);)* tt_group($d, Delimiter::Bracket, at);
+    }};
+    (_ $d:tt) => { tt_ident($d, "_") };
+    ([$ident:ident] $d:tt) => {
+        $d.push($($tt)*)
     };
-    ( $($tt:tt)* ) => {
-        TokenTree::Group(Group::new(Delimiter::Brace, TokenStream::from_iter(toks!($($tt)*))))
-    }
+    ([?($($cond:tt)*) $($body:tt)*] $d:tt) => {
+        if $($cond)* { $(append_tok!($body $d);)* }
+    };
+    ([@$($tt:tt)*] $d:tt) => {
+        $d.push($($tt)*)
+    };
+    ([try $($tt:tt)*] $d:tt) => {
+        if let Err(err) = $($tt)* { return Err(err); }
+    };
+    ([for ($($iter:tt)*) {$($body:tt)*}] $d:tt) => {
+        for $($iter)* { $(append_tok!($body $d);)* }
+    };
+    ([#$($tt:tt)*] $d:tt) => {
+        $d.push(TokenTree::from($($tt)*.clone()))
+    };
+    ([~$($tt:tt)*] $d:tt) => {
+        $d.extend_from_slice($($tt)*)
+    };
+    ([$($rust:tt)*] $d:tt) => {{
+         $($rust)*
+    }};
+    (# $d:tt) => { tt_punct_joint($d, '\'') };
+    (: $d:tt) => { tt_punct_alone($d, ':') };
+    (~ $d:tt) => { tt_punct_joint($d, '-') };
+    (< $d:tt) => { tt_punct_alone($d, '<') };
+    (% $d:tt) => { tt_punct_joint($d, ':') };
+    (:: $d:tt) => { tt_punct_joint($d, ':'); tt_punct_alone($d, ':'); };
+    (-> $d:tt) => { tt_punct_joint($d, '-'); tt_punct_alone($d, '>'); };
+    (=> $d:tt) => { tt_punct_joint($d, '='); tt_punct_alone($d, '>'); };
+    (> $d:tt) => { tt_punct_alone($d, '>') };
+    (! $d:tt) => { tt_punct_alone($d, '!') };
+    (. $d:tt) => { tt_punct_alone($d, '.') };
+    (; $d:tt) => { tt_punct_alone($d, ';') };
+    (& $d:tt) => { tt_punct_alone($d, '&') };
+    (= $d:tt) => { tt_punct_alone($d, '=') };
+    (, $d:tt) => { tt_punct_alone($d, ',') };
+    (* $d:tt) => { tt_punct_alone($d, '*') };
 }
 
+macro_rules! splat { ($d:tt; $($tt:tt)*) => { { $(append_tok!($tt $d);)* } } }
+
+macro_rules! token_stream { ($d:tt; $($tt:tt)*) => {{
+    let len = $d.len(); $(append_tok!($tt $d);)* TokenStream::from_iter($d.drain(len..))
+}}}
 struct ObjectParser<'a> {
+    topmost: bool,
     codegen: &'a mut Codegen,
     // pairs: Vec<Pair>,
     error: Option<(Span, Box<str>)>,
@@ -173,6 +147,8 @@ impl<'a> ObjectParser<'a> {
     fn parse(&mut self, mut input: IntoIter) {
         //todo opt
         let mut value_tokens: Vec<TokenTree> = Vec::new();
+        let mut outer_first_token = true;
+        let mut attr = Attr::None;
         'outer: while let Some(mut t) = input.next() {
             macro_rules! bail {
                 ($span: expr; $str: literal) => {{
@@ -234,25 +210,68 @@ impl<'a> ObjectParser<'a> {
                 };
             }
             loop {
+                let first_token = outer_first_token;
+                outer_first_token = false;
                 // types of supported keys (all one root TokenTree)
                 // - String Literal: "key"
                 // - Ident:           key
                 // - Variable:       [key]
 
+                match &t {
+                    TokenTree::Punct(ch) if ch.as_char() == '@' => {
+                        let TokenTree::Group(group) = expect_next!() else {
+                            bail!(ch.span(); "Expected [] attr");
+                        };
+                        let contents: Vec<TokenTree> = group.stream().into_iter().collect();
+                        if let Some(TokenTree::Ident(ident)) = contents.first() {
+                            if ident.to_string() == "if" {
+                                self.codegen.flush_text();
+                                attr = Attr::If {
+                                    contents,
+                                    codegen_height: self.codegen.out.len(),
+                                };
+                            }
+                        }
+                        continue 'outer;
+                    }
+                    TokenTree::Ident(value) => {
+                        let contents = &value.to_string();
+                        if contents == "in" {
+                            if !first_token || !self.topmost {
+                                bail!(value.span(); "in keyword only allowed at beginning of template macro")
+                            }
+                            let mut toks: Vec<TokenTree> = Vec::new();
+                            loop {
+                                let tok = expect_next!();
+                                if is_char(&tok, ';') {
+                                    break;
+                                }
+                                toks.push(tok);
+                            }
+                            outer_first_token = true;
+                            self.topmost = false;
+                            self.codegen.in_writer(toks);
+                            continue 'outer;
+                        }
+                    }
+                    _ => {}
+                }
+                // There inner block here for parsing the speicifc case
                 let col = 'value: {
                     if let Some(col) = input.next() {
+                        // todo should be handling when there are many commans
                         if !is_char(&col, ',') {
                             break 'value col;
                         }
                     }
                     match t {
                         TokenTree::Ident(value) => {
-                            self.codegen.pre_escaped_key(&value.to_string());
-                            self.codegen.value_from_expression(
-                                value.span(),
-                                TokenStream::from_iter([TokenTree::Ident(value)]),
-                            );
+                            let contents = &value.to_string();
+                            self.codegen.pre_escaped_key(&contents);
+                            self.codegen
+                                .value_from_expression(value.span(), TokenTree::Ident(value));
                             self.codegen.text.push(',');
+                            self.codegen.entry_completed(&mut attr);
                             continue 'outer;
                         }
                         _ => {
@@ -279,36 +298,42 @@ impl<'a> ObjectParser<'a> {
                         self.codegen.flatten = Flatten::Object;
                         self.codegen.insert_value(col.span(), &mut value_tokens);
                         self.codegen.flatten = prev;
+                        self.codegen.entry_completed(&mut attr);
                         continue 'outer;
                     }
                     if let TokenTree::Ident(ident) = &t {
                         #[allow(clippy::cmp_owned)]
                         if ident.to_string() != "for" {
-                            bail!(col.span(); "Unexpected")
+                            bail!(col.span(); "Unexpected 1")
+                        } else {
+                            if !first_token {
+                                bail!(col.span(); "For comprehensions must be in there own object")
+                            }
                         }
                     } else {
-                        bail!(col.span(); "Unexpected")
+                        bail!(col.span(); "Unexpected 2")
                     }
                     value_tokens.clear();
                     value_tokens.push(t);
                     value_tokens.push(col);
-                    let span;
                     loop {
                         let tok = expect_next!();
                         if is_char(&tok, ';') {
-                            span = tok.span();
                             break;
                         }
                         value_tokens.push(tok);
                     }
                     self.codegen.flush_text();
                     self.codegen.out.extend(value_tokens.drain(..));
-                    let stream = self.codegen.wrapped(|gen| {
-                        gen.parser_key_value(span, &mut input);
+                    splat!((&mut self.codegen.out); {
+                        [
+                            self.parse(input);
+                            self.codegen.flush_text();
+                        ]
                     });
-                    self.codegen.out.extend([braced(stream)]);
+                    return;
 
-                    continue 'outer;
+                    // continue 'outer;
                 }
 
                 // Accumulate Expression in
@@ -347,6 +372,7 @@ impl<'a> ObjectParser<'a> {
                 // now we have: key and value
                 self.codegen.insert_value(col.span(), &mut value_tokens);
                 self.codegen.text.push(',');
+                self.codegen.entry_completed(&mut attr);
 
                 if let Some(tt) = input.next() {
                     t = tt;
@@ -359,16 +385,19 @@ impl<'a> ObjectParser<'a> {
 }
 
 struct Codegen {
-    out: TokenStream,
+    out: Vec<TokenTree>,
+    need_mut_builder: bool,
     builder: Ident,
     text: String,
     initial_capacity: usize,
     error: Option<(Span, Box<str>)>,
     flatten: Flatten,
+    writer: Option<Vec<TokenTree>>,
 }
 
 fn munch_expr(input: &mut IntoIter, output: &mut Vec<TokenTree>) {
     output.clear();
+    //Todo this doens't handle generics properly
     for tok in input.by_ref() {
         if is_char(&tok, ',') {
             break;
@@ -384,28 +413,88 @@ fn is_flatten(toks: &[TokenTree]) -> bool {
     }
 }
 
+fn str_lit(lit: &str) -> TokenTree {
+    TokenTree::Literal(Literal::string(lit))
+}
+
+enum Attr {
+    None,
+    If {
+        contents: Vec<TokenTree>,
+        codegen_height: usize,
+    },
+}
+
 impl Codegen {
+    fn entry_completed(&mut self, attr: &mut Attr) {
+        if matches!(attr, Attr::None) {
+            return;
+        }
+        let attr = std::mem::replace(attr, Attr::None);
+        match attr {
+            Attr::None => unsafe { std::hint::unreachable_unchecked() },
+            Attr::If {
+                contents,
+                codegen_height,
+            } => {
+                self.flush_text();
+                let body = TokenTree::Group(Group::new(
+                    Delimiter::Brace,
+                    self.out.drain(codegen_height..).collect(),
+                ));
+                self.out.extend(contents);
+                self.out.push(body);
+            }
+        }
+    }
+    fn in_writer(&mut self, writer: Vec<TokenTree>) {
+        // remove extras
+        self.text.clear();
+        self.writer = Some(writer);
+    }
     fn new(builder: Ident) -> Codegen {
         Codegen {
-            out: TokenStream::new(),
+            out: Vec::new(),
+            need_mut_builder: false,
             builder,
             initial_capacity: 0,
             text: String::with_capacity(64),
             error: None,
+            writer: None,
             flatten: Flatten::None,
         }
-    }
-    fn builder(&self) -> TokenTree {
-        TokenTree::Ident(self.builder.clone())
     }
     fn flush_text(&mut self) {
         if self.text.is_empty() {
             return;
         }
         self.initial_capacity += self.text.len();
-        self.out.extend(toks![
-            {self.builder()}.string.push_str({TokenTree::Literal(Literal::string(&self.text))});
-        ]);
+        if self.text.len() == 1 {
+            let out = &mut self.out;
+            let byte = self.text.as_bytes()[0];
+            match byte {
+                b':' => {
+                    splat!(out; [#self.builder].push_colon(););
+                }
+                b',' => {
+                    splat!(out; [#self.builder].push_comma(););
+                }
+                _ => {
+                    splat!(out; unsafe {
+                        [#self.builder].push_unchecked_ascii(
+                            [@TokenTree::Literal(Literal::byte_character(
+                                self.text.as_bytes()[0]
+                            ))]
+                        );
+                    });
+                }
+            }
+        } else {
+            let out = &mut self.out;
+            splat!(out; [#self.builder].push_str(
+                [@str_lit(&self.text)]
+            ););
+        }
         self.text.clear();
     }
     fn expand_match(&mut self, values: &mut Vec<TokenTree>) {
@@ -420,33 +509,29 @@ impl Codegen {
             self.error = Some((group.span(), "Expected Blocked for Match Patterns".into()));
             return;
         };
-        let mut patterns = TokenStream::default();
+        let start = self.out.len();
         let mut input = group.stream().into_iter();
         let mut peq = false;
         let mut value_tokens: Vec<TokenTree> = Vec::new();
         while let Some(tok) = input.next() {
             if !(peq && is_char(&tok, '>')) {
                 peq = is_char(&tok, '=');
-                patterns.extend([tok]);
+                self.out.push(tok);
                 continue;
             }
             let span = tok.span();
-            patterns.extend([tok]);
+            self.out.push(tok);
             munch_expr(&mut input, &mut value_tokens);
-            let stream = self.wrapped(|gen| gen.insert_value(span, &mut value_tokens));
-            patterns.extend(toks![{ braced(stream) },]);
+            splat!((&mut self.out); {[
+                self.insert_value(span, &mut value_tokens);
+                self.flush_text();
+            ]});
         }
+        // Why this line?
+        let mut matches = Group::new(Delimiter::Brace, self.out.drain(start..).collect());
+        matches.set_span(group.span());
         self.out.extend(values.drain(..));
-        self.out
-            .extend([with_span(braced(patterns), group.span()), tok!(;)]);
-    }
-
-    fn wrapped(&mut self, mut func: impl FnMut(&mut Self)) -> TokenStream {
-        self.flush_text();
-        let old = std::mem::take(&mut self.out);
-        func(self);
-        self.flush_text();
-        std::mem::replace(&mut self.out, old)
+        splat!((&mut self.out); [@TokenTree::Group(matches)];);
     }
 
     fn parse_inline_array(&mut self, span: Span, stream: TokenStream) -> bool {
@@ -464,18 +549,18 @@ impl Codegen {
                     let f = self.flatten;
                     self.flatten = Flatten::None;
                     if f == Flatten::None {
-                        self.begin_inline_array();
+                        self.text.push('[');
                     }
                     self.flush_text();
                     self.out.extend(token_values.drain(..split + 1).take(split));
-                    let stream = self.wrapped(|gen| {
-                        gen.insert_value(span, &mut token_values);
-                        gen.text.push(',');
-                    });
-                    self.out.extend([braced(stream)]);
+                    splat!((&mut self.out); {[
+                        self.insert_value(span, &mut token_values);
+                        self.text.push(',');
+                        self.flush_text();
+                    ]});
                     if f == Flatten::None {
-                        self.out
-                            .extend(toks![{self.builder()}.smart_close_array();]);
+                        self.flush_text();
+                        splat!((&mut self.out); [#self.builder].end_json_array(););
                     }
                     // todo ensure the was the end
                     return true;
@@ -487,6 +572,12 @@ impl Codegen {
         self.flatten = Flatten::None;
         if f == Flatten::None {
             self.begin_inline_array();
+        }
+        if token_values.is_empty() {
+            if f == Flatten::None {
+                self.end_inline_array();
+            }
+            return true;
         }
 
         if is_flatten(&token_values) {
@@ -534,38 +625,50 @@ impl Codegen {
         }
     }
 
-    fn inline_into_json(&mut self, span: Span, args: TokenStream, body: TokenStream) {
-        self.flush_text();
-        let mut args = args.into_iter();
-        let Some(ident) = args.next() else {
-            self.error(span, "Expected binding in inline");
-            return;
-        };
-        let mut x = TokenStream::from_iter(toks![let {ident.clone()}]);
-        x.extend(args);
-        match self.flatten {
-            Flatten::None => {
-                x.extend(toks![
-                    = <_ as jsony%:OutputBuffer>%:from_builder(&mut {self.builder()});
-                    {braced(body)}
-                    <_ as OutputBuffer>%:terminate({ident})
-                ]);
-            }
-            Flatten::Object => {
-                x.extend(toks![
-                    = jsony%:ObjectBuf%:from_builder_raw(&mut {self.builder()});
-                    {braced(body)}
-                ]);
-            }
-            Flatten::Array => {
-                x.extend(toks![
-                    = jsony%:ArrayBuf%:from_builder_raw(&mut {self.builder()});
-                    {braced(body)}
-                ]);
-            }
-        }
-        self.out.extend([braced(x)]);
-    }
+    /// This was for function calls
+    // fn inline_into_json(&mut self, span: Span, args: TokenStream, body: TokenStream) {
+    //     self.flush_text();
+    //     let mut args = args.into_iter();
+    //     let Some(ident) = args.next() else {
+    //         self.error(span, "Expected binding in inline");
+    //         return;
+    //     };
+    //     splat! { (&mut self.out); {
+    //         let [#ident] [self.out.extend(args)] = [match self.flatten {
+    //             Flatten::None => {
+    //                 splat!{ (&mut self.out);
+    //                     <_ as
+    //                 }
+    //             },
+    //             Flatten::Object => todo!(),
+    //             Flatten::Array => todo!(),
+    //         }]
+    //     } };
+    //     let mut x = TokenStream::from_iter(toks![let {ident.clone()}]);
+    //     x.extend(args);
+    //     match self.flatten {
+    //         Flatten::None => {
+    //             x.extend(toks![
+    //                 = <_ as jsony%:OutputBuffer>%:from_builder(&mut {self.builder()});
+    //                 {braced(body)}
+    //                 <_ as OutputBuffer>%:terminate({ident})
+    //             ]);
+    //         }
+    //         Flatten::Object => {
+    //             x.extend(toks![
+    //                 = jsony%:ObjectBuf%:from_builder_raw(&mut {self.builder()});
+    //                 {braced(body)}
+    //             ]);
+    //         }
+    //         Flatten::Array => {
+    //             x.extend(toks![
+    //                 = jsony%:ArrayBuf%:from_builder_raw(&mut {self.builder()});
+    //                 {braced(body)}
+    //             ]);
+    //         }
+    //     }
+    //     self.out.extend([braced(x)]);
+    // }
 
     fn insert_value(&mut self, span: Span, values: &mut Vec<TokenTree>) {
         if values.is_empty() {
@@ -575,19 +678,12 @@ impl Codegen {
         match &values[0] {
             TokenTree::Group(group) => match group.delimiter() {
                 Delimiter::Parenthesis => {
-                    if let [_, eq, ge, ..] = &values[..] {
-                        if is_char(eq, '=') && is_char(ge, '>') {
-                            self.inline_into_json(
-                                group.span(),
-                                group.stream(),
-                                TokenStream::from_iter(values.drain(3..)),
-                            );
-                            return;
-                        }
-                    }
+                    self.error = Some((span, "Unhandled".into()));
+                    return;
                 }
                 Delimiter::Brace => {
                     let mut parser = ObjectParser {
+                        topmost: false,
                         codegen: self,
                         error: None,
                     };
@@ -662,7 +758,7 @@ impl Codegen {
                                 if let Some(TokenTree::Group(_)) = values.get(2) {
                                     if values.len() == 3 {
                                         self.out.extend(values.drain(..));
-                                        self.out.extend(toks!(;));
+                                        splat!((&mut self.out); ;);
                                         return;
                                     }
                                 }
@@ -695,79 +791,51 @@ impl Codegen {
                     }
                 }
             }
-            TokenTree::Punct(_) => (),
+            TokenTree::Punct(start) => {
+                if start.as_char() == '|' {
+                    if let [_, TokenTree::Ident(binding), TokenTree::Punct(end), ..] = &values[..] {
+                        if end.as_char() == '|' {
+                            self.flush_text();
+                            let out = &mut self.out;
+                            splat!(out; {
+                                // TODO need to think about unifying the builder type when in vs not.
+                                // Currently one is ref the other is direct.
+                                let mut [#binding] = [match self.flatten {
+                                    Flatten::None => splat!(out; ::jsony::json::ValueWriter::new([#self.builder])),
+                                    Flatten::Object => {
+                                        self.need_mut_builder = true;
+                                        splat!(out; ::jsony::json::ObjectWriter::non_terminating(&mut [#self.builder]));
+                                    },
+                                    Flatten::Array => {
+                                        self.need_mut_builder = true;
+                                        splat!(out; ::jsony::json::ArrayWriter::non_terminating(&mut [#self.builder]));
+                                    }
+                                }];
+                                [@TokenTree::Group(Group::new(Delimiter::Brace, values.drain(3..).collect()))];
+                            });
+                            return;
+                        }
+                    }
+                }
+            }
         }
 
-        self.value_from_expression(values[0].span(), TokenStream::from_iter(values.drain(..)))
+        if values.len() == 1 {
+            self.value_from_expression(values[0].span(), values.pop().unwrap())
+        } else {
+            self.value_from_expression(
+                values[0].span(),
+                TokenTree::Group(Group::new(
+                    Delimiter::Parenthesis,
+                    TokenStream::from_iter(values.drain(..)),
+                )),
+            )
+        }
     }
     fn begin_inline_array(&mut self) {
         self.text.push('[');
     }
-    fn error(&mut self, span: Span, msg: impl Into<String>) {
-        if self.error.is_none() {
-            self.error = Some((span, msg.into().into()));
-        }
-    }
 
-    fn parser_key_value(&mut self, span: Span, input: &mut IntoIter) {
-        //todo handle null error;
-        let Some(key) = input.next() else {
-            self.error(span, "Expected key, value pair after for in object");
-            return;
-        };
-        let Some(colon) = input.next() else {
-            self.error(key.span(), "Expected colon after key");
-            return;
-        };
-        if !is_char(&colon, ':') {
-            self.error(colon.span(), "Expected colon after key");
-            //todo
-            return;
-        }
-
-        match &key {
-            TokenTree::Group(g) => {
-                if g.delimiter() != Delimiter::Bracket {
-                    self.error(colon.span(), "Expected [key], key or \"key\".");
-                    return;
-                }
-                self.dyn_key(g.span(), g.stream());
-            }
-            TokenTree::Ident(ident) => {
-                self.pre_escaped_key(&ident.to_string());
-            }
-            TokenTree::Punct(_x) => {
-                self.error(colon.span(), "Expected [key], key or \"key\".");
-                return;
-            }
-            TokenTree::Literal(x) => match literal_inline(x.to_string()) {
-                lit::InlineKind::String(content) => {
-                    self.text.push('"');
-                    self.raw_escape_inline_value(&content);
-                    self.text.push_str("\":");
-                }
-                lit::InlineKind::Raw(_) => {
-                    self.error(colon.span(), "Expected [key], key or \"key\".");
-                    return;
-                }
-                lit::InlineKind::None => {
-                    self.error(colon.span(), "Expected [key], key or \"key\".");
-                    return;
-                }
-            },
-        };
-
-        let mut value_tokens = Vec::new();
-        for tok in input.by_ref() {
-            if is_char(&tok, ',') {
-                break;
-            }
-            value_tokens.push(tok);
-        }
-
-        self.insert_value(colon.span(), &mut value_tokens);
-        self.text.push(',');
-    }
     fn end_inline_array(&mut self) {
         unsafe {
             if let Some(ch) = self.text.as_mut_vec().last_mut() {
@@ -782,9 +850,7 @@ impl Codegen {
             }
         }
         self.flush_text();
-        self.out.extend(toks![
-            {self.builder()}.smart_close_array();
-        ]);
+        splat!((&mut self.out); [#self.builder].end_json_array(););
     }
     fn begin_inline_object(&mut self) {
         self.text.push('{');
@@ -803,18 +869,15 @@ impl Codegen {
             }
         }
         self.flush_text();
-        self.out.extend(toks![
-            {self.builder()}.smart_close_object();
-        ]);
+        splat!((&mut self.out); [#self.builder].end_json_object(););
     }
-    fn dyn_key(&mut self, span: Span, expr: TokenStream) {
-        self.text.push('"');
+    fn dyn_key(&mut self, _span: Span, expr: TokenStream) {
         self.flush_text();
-        self.out.extend(toks![{self.builder()}.raw_key(
-            {with_span(tok!(&), span)}
-            {with_span(parend(expr), span) }
-        );]);
-        self.text.push_str("\":");
+        splat! {(&mut self.out);
+            let _: ::jsony::json::StringValue =
+                <_ as ::jsony::ToJson>::jsonify_into(&[@parend(expr)], [#self.builder]);
+        };
+        self.text.push_str(":");
     }
     fn pre_escaped_key(&mut self, raw: &str) {
         self.text.push('"');
@@ -878,57 +941,81 @@ impl Codegen {
         }
     }
 
-    fn value_from_expression(&mut self, span: Span, expr: TokenStream) {
+    fn value_from_expression(&mut self, _span: Span, expr: TokenTree) {
         self.initial_capacity += 2;
         self.flush_text();
-        let expr = with_span(
-            TokenTree::Group(Group::new(Delimiter::Parenthesis, expr)),
-            span,
-        );
         match self.flatten {
             Flatten::None => {
-                self.out.extend(toks![{self.builder()}.value(
-                    {with_span(tok!(&), span)}
-                    { expr }
-                );]);
+                splat! {(&mut self.out);
+                    <_ as ::jsony::ToJson>::jsonify_into(
+                        &[@expr],
+                        [#self.builder]
+                    );
+                }
             }
             Flatten::Object => {
-                self.out.extend(toks![{self.builder()}.raw_object(
-                    {with_span(tok!(&), span)}
-                    { expr }
-                );]);
+                splat! {(&mut self.out);
+                    [#self.builder].join_parent_json_value_with_next();
+                    let _: ::jsony::json::ObjectValue = <_ as ::jsony::ToJson>::jsonify_into(
+                        &[@expr],
+                        [#self.builder]
+                    );
+                    [#self.builder].join_object_with_next_value();
+                }
             }
             Flatten::Array => {
-                self.out.extend(toks![{self.builder()}.raw_array(
-                    {with_span(tok!(&), span)}
-                    { expr }
-                );]);
+                splat! {(&mut self.out);
+                    [#self.builder].join_parent_json_value_with_next();
+                    let _: ::jsony::json::ArrayValue = <_ as ::jsony::ToJson>::jsonify_into(
+                        &[@expr],
+                        [#self.builder]
+                    );
+                    [#self.builder].join_array_with_next_value();
+                }
             }
         }
     }
     fn finish_creating(mut self) -> TokenStream {
         self.flush_error();
+        if let Some(writer) = self.writer.take() {
+            // TODO handle self.out case
+            self.flush_text();
+            let braced = braced(self.out.drain(..).collect());
+            return token_stream! {
+                (&mut self.out);
+                {
+                    let mut object_writer: &mut ::jsony::json::ObjectWriter = [~&writer];
+                    // TODO, detect if mut is needed or not
+                    let [?(self.need_mut_builder) mut] builder = object_writer.inner_writer();
+                    builder.smart_object_comma();
+                    [@braced]
+                }
+            };
+        }
         if self.out.is_empty() {
-            return TokenStream::from_iter(toks![
-                String%:from({
-                    TokenTree::Literal(Literal::string(&self.text))
-                })
-            ]);
+            return token_stream!(
+                (&mut self.out);
+                String::from([@str_lit(&self.text)])
+            );
         }
         self.flush_text();
-        let builder = self.builder();
-
         let capacity = (self.initial_capacity + 16) & (!0b1111);
-
-        let res = TokenStream::from_iter(toks![
-            use jsony%:{braces!(OutputBuffer, ToJson)};
-            let mut {self.builder()} = jsony%:json%:RawBuf %:with_capacity({
-                TokenTree::Literal(Literal::usize_unsuffixed(capacity))
-            });
-            {{braced(self.out)}}
-            { builder }.string
-        ]);
-        TokenStream::from_iter([TokenTree::Group(Group::new(Delimiter::Brace, res))])
+        let braced = braced(self.out.drain(..).collect());
+        let out = &mut self.out;
+        token_stream! {
+            out;
+            {
+                let mut _builder = jsony::TextWriter::with_capacity(
+                    [#Literal::usize_unsuffixed(capacity)]
+                );
+                {
+                    // TODO, detect if mut is needed or not
+                    let [?(self.need_mut_builder) mut] [#self.builder] = &mut _builder;
+                    [@braced]
+                }
+                _builder.into_string()
+            }
+        }
     }
     fn flush_error(&mut self) {
         if let Some((span, error)) = self.error.take() {
@@ -948,18 +1035,18 @@ impl Codegen {
             ]);
         }
     }
-    fn finish_append_object(mut self, name: Ident) -> TokenStream {
-        self.flush_error();
-        self.flush_text();
+    // fn finish_append_object(mut self, name: Ident) -> TokenStream {
+    //     self.flush_error();
+    //     self.flush_text();
 
-        let res = TokenStream::from_iter(toks![
-            use jsony%:{braces!(OutputBuffer, ToJson)};
-            let {self.builder()} = &mut {TokenTree::Ident(name.clone())}.buffer;
-            {{braced(self.out)}}
-        ]);
+    //     let res = TokenStream::from_iter(toks![
+    //         use jsony%:{braces!(OutputBuffer, ToJson)};
+    //         let {self.builder()} = &mut {TokenTree::Ident(name.clone())}.buffer;
+    //         {{braced(self.out)}}
+    //     ]);
 
-        TokenStream::from_iter([TokenTree::Group(Group::new(Delimiter::Brace, res))])
-    }
+    //     TokenStream::from_iter([TokenTree::Group(Group::new(Delimiter::Brace, res))])
+    // }
 }
 
 pub fn array(input: TokenStream) -> TokenStream {
@@ -971,12 +1058,15 @@ pub fn array(input: TokenStream) -> TokenStream {
 pub fn object(input: TokenStream) -> TokenStream {
     let mut codegen = Codegen::new(Ident::new("builder", Span::call_site()));
     let mut parser = ObjectParser {
+        topmost: true,
         codegen: &mut codegen,
         error: None,
     };
     parser.codegen.begin_inline_object();
     parser.parse(input.into_iter());
-    parser.codegen.end_inline_object();
+    if parser.codegen.writer.is_none() {
+        parser.codegen.end_inline_object();
+    }
 
     if let Some((span, error)) = parser.error {
         let mut group = TokenTree::Group(Group::new(
@@ -996,39 +1086,4 @@ pub fn object(input: TokenStream) -> TokenStream {
     }
 
     codegen.finish_creating()
-}
-
-pub fn append_object(input: TokenStream) -> TokenStream {
-    let mut input = input.into_iter();
-    let Some(TokenTree::Ident(ident)) = input.next() else {
-        //todo
-        return TokenStream::new();
-    };
-    let _ = input.next();
-
-    let mut codegen = Codegen::new(Ident::new("builder", Span::call_site()));
-    let mut parser = ObjectParser {
-        codegen: &mut codegen,
-        error: None,
-    };
-    parser.parse(input);
-
-    if let Some((span, error)) = parser.error {
-        let mut group = TokenTree::Group(Group::new(
-            Delimiter::Parenthesis,
-            TokenStream::from_iter([TokenTree::Literal(Literal::string(&error))]),
-        ));
-        let mut punc = TokenTree::Punct(Punct::new('!', Spacing::Alone));
-        punc.set_span(span);
-        group.set_span(span);
-
-        return TokenStream::from_iter([
-            TokenTree::Ident(Ident::new("compile_error", span)),
-            punc,
-            group,
-            TokenTree::Punct(Punct::new(';', Spacing::Alone)),
-        ]);
-    }
-
-    codegen.finish_append_object(ident)
 }
