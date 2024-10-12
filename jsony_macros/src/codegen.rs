@@ -2,8 +2,10 @@ use crate::ast::{
     self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttr, Generic,
     GenericKind,
 };
+use crate::case::RenameRule;
 use crate::Error;
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
+use std::str::FromStr;
 
 #[allow(unused)]
 enum StaticToken {
@@ -530,6 +532,22 @@ fn schema_field_decode(out: &mut Vec<TokenTree>, ctx: &Ctx, field: &Field) -> Re
     }
     Ok(())
 }
+fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
+    if let Some(attr) = &field.attr {
+        if let Some(name) = &ctx.attrs[*attr as usize].rename {
+            return name.clone();
+        }
+    }
+    if ctx.target.rename_all != RenameRule::None {
+        Literal::string(
+            &ctx.target
+                .rename_all
+                .apply_to_field(&field.name.to_string()),
+        )
+    } else {
+        Literal::string(&field.name.to_string())
+    }
+}
 fn struct_schema(
     out: &mut Vec<TokenTree>,
     ctx: &Ctx,
@@ -569,7 +587,7 @@ fn struct_schema(
                 let at = out.len();
                 tt_ident(out, "name");
                 tt_punct_alone(out, ':');
-                out.push(Literal::string(&field.name.to_string()).into());
+                out.push(field_name_literal(ctx, field).into());
                 tt_punct_alone(out, ',');
                 tt_ident(out, "offset");
                 tt_punct_alone(out, ':');
@@ -1780,6 +1798,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
         from_json: false,
         to_binary: false,
         to_json: false,
+        rename_all: crate::case::RenameRule::None,
     };
     let (kind, body) = ast::extract_derive_target(&mut target, &outer_tokens)?;
     if !(target.from_binary || target.to_binary || target.to_json || target.from_json) {

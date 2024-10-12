@@ -76,7 +76,45 @@ impl<'a> ObjectParser<'a> {
             self.error = Some(Error::span_msg(msg, span));
         }
     }
-    fn parse(&mut self, mut input: IntoIter) {
+}
+struct Codegen {
+    out: Vec<TokenTree>,
+    need_mut_builder: bool,
+    builder: Ident,
+    text: String,
+    initial_capacity: usize,
+    error: Option<crate::Error>,
+    flatten: Flatten,
+    writer: Option<Vec<TokenTree>>,
+}
+fn munch_expr(input: &mut IntoIter, output: &mut Vec<TokenTree>) {
+    output.clear();
+    for tok in input.by_ref() {
+        if is_char(&tok, ',') {
+            break;
+        }
+        output.push(tok);
+    }
+}
+fn is_flatten(toks: &[TokenTree]) -> bool {
+    if let [ch1, ch2, ..] = toks {
+        is_char(ch1, '.') && is_char(ch2, '.')
+    } else {
+        false
+    }
+}
+fn str_lit(lit: &str) -> TokenTree {
+    TokenTree::Literal(Literal::string(lit))
+}
+enum Attr {
+    None,
+    If {
+        contents: Vec<TokenTree>,
+        codegen_height: usize,
+    },
+}
+impl Codegen {
+    fn parse_object(&mut self, mut input: IntoIter, top_most: bool) {
         let mut value_tokens: Vec<TokenTree> = Vec::new();
         let mut outer_first_token = true;
         let mut attr = Attr::None;
@@ -100,10 +138,10 @@ impl<'a> ObjectParser<'a> {
                         let contents: Vec<TokenTree> = group.stream().into_iter().collect();
                         if let Some(TokenTree::Ident(ident)) = contents.first() {
                             if ident.to_string() == "if" {
-                                self.codegen.flush_text();
+                                self.flush_text();
                                 attr = Attr::If {
                                     contents,
-                                    codegen_height: self.codegen.out.len(),
+                                    codegen_height: self.out.len(),
                                 };
                             }
                         }
@@ -112,7 +150,7 @@ impl<'a> ObjectParser<'a> {
                     TokenTree::Ident(value) => {
                         let contents = &value.to_string();
                         if contents == "in" {
-                            if !first_token || !self.topmost {
+                            if !first_token || !top_most {
                                 {
                                     self.set_err(
                                         value.span(),
@@ -135,8 +173,7 @@ impl<'a> ObjectParser<'a> {
                                 toks.push(tok);
                             }
                             outer_first_token = true;
-                            self.topmost = false;
-                            self.codegen.in_writer(toks);
+                            self.in_writer(toks);
                             continue 'outer;
                         }
                     }
@@ -151,11 +188,10 @@ impl<'a> ObjectParser<'a> {
                     match t {
                         TokenTree::Ident(value) => {
                             let contents = &value.to_string();
-                            self.codegen.pre_escaped_key(&contents);
-                            self.codegen
-                                .value_from_expression(value.span(), TokenTree::Ident(value));
-                            self.codegen.text.push(',');
-                            self.codegen.entry_completed(&mut attr);
+                            self.pre_escaped_key(&contents);
+                            self.value_from_expression(value.span(), TokenTree::Ident(value));
+                            self.text.push(',');
+                            self.entry_completed(&mut attr);
                             continue 'outer;
                         }
                         _ => {
@@ -175,11 +211,11 @@ impl<'a> ObjectParser<'a> {
                             }
                             value_tokens.push(tok);
                         }
-                        let prev = self.codegen.flatten;
-                        self.codegen.flatten = Flatten::Object;
-                        self.codegen.insert_value(col.span(), &mut value_tokens);
-                        self.codegen.flatten = prev;
-                        self.codegen.entry_completed(&mut attr);
+                        let prev = self.flatten;
+                        self.flatten = Flatten::Object;
+                        self.insert_value(col.span(), &mut value_tokens);
+                        self.flatten = prev;
+                        self.entry_completed(&mut attr);
                         continue 'outer;
                     }
                     if let TokenTree::Ident(ident) = &t {
@@ -221,16 +257,16 @@ impl<'a> ObjectParser<'a> {
                         }
                         value_tokens.push(tok);
                     }
-                    self.codegen.flush_text();
-                    self.codegen.out.extend(value_tokens.drain(..));
+                    self.flush_text();
+                    self.out.extend(value_tokens.drain(..));
                     {
                         {
-                            let at = (&mut self.codegen.out).len();
+                            let at = (&mut self.out).len();
                             {
-                                self.parse(input);
-                                self.codegen.flush_text();
+                                self.parse_object(input, false);
+                                self.flush_text();
                             };
-                            tt_group((&mut self.codegen.out), Delimiter::Brace, at);
+                            tt_group(&mut self.out, Delimiter::Brace, at);
                         };
                     };
                     return;
@@ -250,10 +286,10 @@ impl<'a> ObjectParser<'a> {
                                 return;
                             }
                         }
-                        self.codegen.dyn_key(g.span(), g.stream());
+                        self.dyn_key(g.span(), g.stream());
                     }
                     TokenTree::Ident(ident) => {
-                        self.codegen.pre_escaped_key(&ident.to_string());
+                        self.pre_escaped_key(&ident.to_string());
                     }
                     TokenTree::Punct(x) => {
                         self.set_err(x.span(), "Unexpected Punc");
@@ -261,9 +297,9 @@ impl<'a> ObjectParser<'a> {
                     }
                     TokenTree::Literal(x) => match literal_inline(x.to_string()) {
                         lit::InlineKind::String(content) => {
-                            self.codegen.text.push('"');
-                            self.codegen.raw_escape_inline_value(&content);
-                            self.codegen.text.push_str("\":");
+                            self.text.push('"');
+                            self.raw_escape_inline_value(&content);
+                            self.text.push_str("\":");
                         }
                         lit::InlineKind::Raw(_) => {
                             self.set_err(x.span(), "Unexpected key");
@@ -275,9 +311,9 @@ impl<'a> ObjectParser<'a> {
                         }
                     },
                 };
-                self.codegen.insert_value(col.span(), &mut value_tokens);
-                self.codegen.text.push(',');
-                self.codegen.entry_completed(&mut attr);
+                self.insert_value(col.span(), &mut value_tokens);
+                self.text.push(',');
+                self.entry_completed(&mut attr);
                 if let Some(tt) = input.next() {
                     t = tt;
                 } else {
@@ -286,44 +322,6 @@ impl<'a> ObjectParser<'a> {
             }
         }
     }
-}
-struct Codegen {
-    out: Vec<TokenTree>,
-    need_mut_builder: bool,
-    builder: Ident,
-    text: String,
-    initial_capacity: usize,
-    error: Option<crate::Error>,
-    flatten: Flatten,
-    writer: Option<Vec<TokenTree>>,
-}
-fn munch_expr(input: &mut IntoIter, output: &mut Vec<TokenTree>) {
-    output.clear();
-    for tok in input.by_ref() {
-        if is_char(&tok, ',') {
-            break;
-        }
-        output.push(tok);
-    }
-}
-fn is_flatten(toks: &[TokenTree]) -> bool {
-    if let [ch1, ch2, ..] = toks {
-        is_char(ch1, '.') && is_char(ch2, '.')
-    } else {
-        false
-    }
-}
-fn str_lit(lit: &str) -> TokenTree {
-    TokenTree::Literal(Literal::string(lit))
-}
-enum Attr {
-    None,
-    If {
-        contents: Vec<TokenTree>,
-        codegen_height: usize,
-    },
-}
-impl Codegen {
     fn eof(&mut self, span: Span) {
         if let None = self.error {
             self.error = Some(Error::span_msg("Unexpected EOF", span));
@@ -596,22 +594,17 @@ impl Codegen {
                     return;
                 }
                 Delimiter::Brace => {
-                    let mut parser = ObjectParser {
-                        topmost: false,
-                        codegen: self,
-                        error: None,
-                    };
-                    match parser.codegen.flatten {
+                    match self.flatten {
                         Flatten::None => {
-                            parser.codegen.begin_inline_object();
-                            parser.parse(group.stream().into_iter());
-                            parser.codegen.end_inline_object();
+                            self.begin_inline_object();
+                            self.parse_object(group.stream().into_iter(), false);
+                            self.end_inline_object();
                         }
                         Flatten::Object => {
-                            let prev = parser.codegen.flatten;
-                            parser.codegen.flatten = Flatten::None;
-                            parser.parse(group.stream().into_iter());
-                            parser.codegen.flatten = prev;
+                            let prev = self.flatten;
+                            self.flatten = Flatten::None;
+                            self.parse_object(group.stream().into_iter(), false);
+                            self.flatten = prev;
                         }
                         Flatten::Array => {
                             self.set_err(
@@ -620,9 +613,6 @@ impl Codegen {
                             );
                             return;
                         }
-                    }
-                    if parser.error.is_some() {
-                        self.error = parser.error;
                     }
                     return;
                 }
@@ -1242,17 +1232,12 @@ pub fn array(input: TokenStream) -> TokenStream {
 }
 pub fn object(input: TokenStream) -> TokenStream {
     let mut codegen = Codegen::new(Ident::new("builder", Span::call_site()));
-    let mut parser = ObjectParser {
-        topmost: true,
-        codegen: &mut codegen,
-        error: None,
-    };
-    parser.codegen.begin_inline_object();
-    parser.parse(input.into_iter());
-    if parser.codegen.writer.is_none() {
-        parser.codegen.end_inline_object();
+    codegen.begin_inline_object();
+    codegen.parse_object(input.into_iter(), true);
+    if codegen.writer.is_none() {
+        codegen.end_inline_object();
     }
-    if let Some(error) = parser.error {
+    if let Some(error) = codegen.error {
         return error.to_compiler_error();
     }
     codegen.finish_creating()

@@ -1,6 +1,7 @@
 #![allow(warnings)]
 extern crate proc_macro;
 mod ast;
+mod case;
 mod codegen;
 mod lit;
 mod template;

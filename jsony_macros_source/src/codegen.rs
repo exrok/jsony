@@ -1,7 +1,10 @@
+use std::str::FromStr;
+
 use crate::ast::{
     self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttr, Generic,
     GenericKind,
 };
+use crate::case::RenameRule;
 use crate::Error;
 use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
@@ -345,6 +348,23 @@ fn schema_field_decode(out: &mut Vec<TokenTree>, ctx: &Ctx, field: &Field) -> Re
     Ok(())
 }
 
+fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
+    if let Some(attr) = &field.attr {
+        if let Some(name) = &ctx.attrs[*attr as usize].rename {
+            return name.clone();
+        }
+    }
+    if ctx.target.rename_all != RenameRule::None {
+        Literal::string(
+            &ctx.target
+                .rename_all
+                .apply_to_field(&field.name.to_string()),
+        )
+    } else {
+        Literal::string(&field.name.to_string())
+    }
+}
+
 fn struct_schema(
     out: &mut Vec<TokenTree>,
     ctx: &Ctx,
@@ -375,7 +395,7 @@ fn struct_schema(
     let ts = token_stream!(out; [
         for ((i, field) in fields.iter().enumerate()) {
             [~&ctx.crate_path]::__internal::Field {
-                name: [@Literal::string(&field.name.to_string()).into()],
+                name: [@field_name_literal(ctx, field).into()],
                 offset: ::std::mem::offset_of!([
                     if let Some(ty) = temp_tuple {
                         splat!(out; [#ty], [@Literal::usize_unsuffixed(i).into()])
@@ -725,6 +745,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
         from_json: false,
         to_binary: false,
         to_json: false,
+        rename_all: crate::case::RenameRule::None,
     };
     let (kind, body) = ast::extract_derive_target(&mut target, &outer_tokens)?;
 

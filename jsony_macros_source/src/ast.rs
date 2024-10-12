@@ -1,4 +1,4 @@
-use crate::Error;
+use crate::{case::RenameRule, Error};
 
 use proc_macro2::{Delimiter, Ident, Literal, TokenStream, TokenTree};
 
@@ -47,6 +47,7 @@ pub struct DeriveTargetInner<'a> {
     pub from_json: bool,
     pub to_binary: bool,
     pub from_binary: bool,
+    pub rename_all: RenameRule,
     // pub untagged: bool,
 }
 
@@ -144,7 +145,7 @@ fn ident_eq(ident: &Ident, value: &str) -> bool {
 fn parse_container_attr(
     target: &mut DeriveTargetInner<'_>,
     attr: Ident,
-    value: &mut [TokenTree],
+    mut value: &mut [TokenTree],
 ) -> Result<(), Error> {
     let key = attr.to_string();
     match key.as_str() {
@@ -159,6 +160,19 @@ fn parse_container_attr(
         }
         "FromBinary" => {
             target.from_binary = true;
+        }
+        "rename_all" => {
+            if target.rename_all != RenameRule::None {
+                throw!("Duplicate rename_all attribute" @ attr.span())
+            }
+            let [TokenTree::Literal(rename), rest @ ..] = value else {
+                throw!("Expected a literal" @ attr.span())
+            };
+            value = rest;
+            target.rename_all = match RenameRule::from_literal(&rename) {
+                Ok(value) => value,
+                Err(err) => return Err(err),
+            }
         }
         _ => throw!("Unknown attribute" @ attr.span()),
     }

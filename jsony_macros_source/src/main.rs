@@ -1,5 +1,6 @@
 #![allow(clippy::question_mark)]
 mod ast;
+mod case;
 mod codegen;
 mod lit;
 mod template;
@@ -100,8 +101,9 @@ fn main() {
         template::object(tokens!());
         codegen::derive(tokens!());
     }
-    codegen::derive(tokens!());
-    template::object(tokens! {
-        foo: 32
-    });
+    util::print_pretty(codegen::derive(tokens! {
+        struct Foo {
+            bar_new: u32
+        }
+    }));
 }

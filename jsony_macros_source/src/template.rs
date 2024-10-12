@@ -123,6 +123,7 @@ macro_rules! splat { ($d:tt; $($tt:tt)*) => { { $(append_tok!($tt $d);)* } } }
 macro_rules! token_stream { ($d:tt; $($tt:tt)*) => {{
     let len = $d.len(); $(append_tok!($tt $d);)* TokenStream::from_iter($d.drain(len..))
 }}}
+
 struct ObjectParser<'a> {
     topmost: bool,
     codegen: &'a mut Codegen,
@@ -148,203 +149,6 @@ impl<'a> ObjectParser<'a> {
     fn set_err(&mut self, span: Span, msg: &str) {
         if let None = self.error {
             self.error = Some(Error::span_msg(msg, span));
-        }
-    }
-    fn parse(&mut self, mut input: IntoIter) {
-        //todo opt
-        let mut value_tokens: Vec<TokenTree> = Vec::new();
-        let mut outer_first_token = true;
-        let mut attr = Attr::None;
-        'outer: while let Some(mut t) = input.next() {
-            macro_rules! bail {
-                ($span: expr; $str: literal) => {{
-                    self.set_err($span, $str);
-                    return;
-                    // if self.error.is_none() {
-                    //     self.error = Some(($span, $str.to_string().into()))
-                    // }
-                    // return;
-                }};
-            }
-            macro_rules! expect_next {
-                () => {
-                    if let Some(got) = input.next() {
-                        got
-                    } else {
-                        self.eof(Span::call_site());
-                        return;
-                    }
-                };
-            }
-            loop {
-                let first_token = outer_first_token;
-                outer_first_token = false;
-                // types of supported keys (all one root TokenTree)
-                // - String Literal: "key"
-                // - Ident:           key
-                // - Variable:       [key]
-
-                match &t {
-                    TokenTree::Punct(ch) if ch.as_char() == '@' => {
-                        let TokenTree::Group(group) = expect_next!() else {
-                            bail!(ch.span(); "Expected [] attr");
-                        };
-                        let contents: Vec<TokenTree> = group.stream().into_iter().collect();
-                        if let Some(TokenTree::Ident(ident)) = contents.first() {
-                            if ident.to_string() == "if" {
-                                self.codegen.flush_text();
-                                attr = Attr::If {
-                                    contents,
-                                    codegen_height: self.codegen.out.len(),
-                                };
-                            }
-                        }
-                        continue 'outer;
-                    }
-                    TokenTree::Ident(value) => {
-                        let contents = &value.to_string();
-                        if contents == "in" {
-                            if !first_token || !self.topmost {
-                                bail!(value.span(); "in keyword only allowed at beginning of template macro")
-                            }
-                            let mut toks: Vec<TokenTree> = Vec::new();
-                            loop {
-                                let tok = expect_next!();
-                                if is_char(&tok, ';') {
-                                    break;
-                                }
-                                toks.push(tok);
-                            }
-                            outer_first_token = true;
-                            self.topmost = false;
-                            self.codegen.in_writer(toks);
-                            continue 'outer;
-                        }
-                    }
-                    _ => {}
-                }
-                // There inner block here for parsing the speicifc case
-                let col = 'value: {
-                    if let Some(col) = input.next() {
-                        // todo should be handling when there are many commans
-                        if !is_char(&col, ',') {
-                            break 'value col;
-                        }
-                    }
-                    match t {
-                        TokenTree::Ident(value) => {
-                            let contents = &value.to_string();
-                            self.codegen.pre_escaped_key(&contents);
-                            self.codegen
-                                .value_from_expression(value.span(), TokenTree::Ident(value));
-                            self.codegen.text.push(',');
-                            self.codegen.entry_completed(&mut attr);
-                            continue 'outer;
-                        }
-                        _ => {
-                            if self.error.is_none() {
-                                self.set_err(t.span(), "Expected colon");
-                            }
-                            return;
-                        }
-                    }
-                };
-                if !is_char(&col, ':') {
-                    if is_char(&t, '.') && is_char(&col, '.') {
-                        value_tokens.clear();
-                        while let Some(tok) = input.next() {
-                            if is_char(&tok, ',') {
-                                break;
-                            }
-                            value_tokens.push(tok);
-                        }
-                        //todo handle empty here to
-                        let prev = self.codegen.flatten;
-                        self.codegen.flatten = Flatten::Object;
-                        self.codegen.insert_value(col.span(), &mut value_tokens);
-                        self.codegen.flatten = prev;
-                        self.codegen.entry_completed(&mut attr);
-                        continue 'outer;
-                    }
-                    if let TokenTree::Ident(ident) = &t {
-                        #[allow(clippy::cmp_owned)]
-                        if ident.to_string() != "for" {
-                            bail!(col.span(); "Unexpected 1")
-                        } else {
-                            if !first_token {
-                                bail!(col.span(); "For comprehensions must be in there own object")
-                            }
-                        }
-                    } else {
-                        bail!(col.span(); "Unexpected 2")
-                    }
-                    value_tokens.clear();
-                    value_tokens.push(t);
-                    value_tokens.push(col);
-                    loop {
-                        let tok = expect_next!();
-                        if is_char(&tok, ';') {
-                            break;
-                        }
-                        value_tokens.push(tok);
-                    }
-                    self.codegen.flush_text();
-                    self.codegen.out.extend(value_tokens.drain(..));
-                    splat!((&mut self.codegen.out); {
-                        [
-                            self.parse(input);
-                            self.codegen.flush_text();
-                        ]
-                    });
-                    return;
-
-                    // continue 'outer;
-                }
-
-                // Accumulate Expression in
-                value_tokens.clear();
-                for tok in input.by_ref() {
-                    if is_char(&tok, ',') {
-                        break;
-                    }
-                    value_tokens.push(tok);
-                }
-
-                match &t {
-                    TokenTree::Group(g) => {
-                        if g.delimiter() != Delimiter::Bracket {
-                            bail!(g.span(); "Expected [key], key or \"key\".")
-                        }
-                        self.codegen.dyn_key(g.span(), g.stream());
-                    }
-                    TokenTree::Ident(ident) => {
-                        self.codegen.pre_escaped_key(&ident.to_string());
-                    }
-                    TokenTree::Punct(x) => bail!(x.span(); "Unexpected Punc"),
-                    TokenTree::Literal(x) => match literal_inline(x.to_string()) {
-                        lit::InlineKind::String(content) => {
-                            self.codegen.text.push('"');
-                            self.codegen.raw_escape_inline_value(&content);
-                            self.codegen.text.push_str("\":");
-                        }
-                        lit::InlineKind::Raw(_) => {
-                            bail!(x.span(); "Unexpected key")
-                        }
-                        lit::InlineKind::None => bail!(x.span(); "Unexpected key"),
-                    },
-                };
-
-                // now we have: key and value
-                self.codegen.insert_value(col.span(), &mut value_tokens);
-                self.codegen.text.push(',');
-                self.codegen.entry_completed(&mut attr);
-
-                if let Some(tt) = input.next() {
-                    t = tt;
-                } else {
-                    break;
-                }
-            }
         }
     }
 }
@@ -391,6 +195,197 @@ enum Attr {
 }
 
 impl Codegen {
+    fn parse_object(&mut self, mut input: IntoIter, top_most: bool) {
+        //todo opt
+        let mut value_tokens: Vec<TokenTree> = Vec::new();
+        let mut outer_first_token = true;
+        let mut attr = Attr::None;
+        'outer: while let Some(mut t) = input.next() {
+            macro_rules! bail {
+                ($span: expr; $str: literal) => {{
+                    self.set_err($span, $str);
+                    return;
+                }};
+            }
+            macro_rules! expect_next {
+                () => {
+                    if let Some(got) = input.next() {
+                        got
+                    } else {
+                        self.eof(Span::call_site());
+                        return;
+                    }
+                };
+            }
+            loop {
+                let first_token = outer_first_token;
+                outer_first_token = false;
+                // types of supported keys (all one root TokenTree)
+                // - String Literal: "key"
+                // - Ident:           key
+                // - Variable:       [key]
+
+                match &t {
+                    TokenTree::Punct(ch) if ch.as_char() == '@' => {
+                        let TokenTree::Group(group) = expect_next!() else {
+                            bail!(ch.span(); "Expected [] attr");
+                        };
+                        let contents: Vec<TokenTree> = group.stream().into_iter().collect();
+                        if let Some(TokenTree::Ident(ident)) = contents.first() {
+                            if ident.to_string() == "if" {
+                                self.flush_text();
+                                attr = Attr::If {
+                                    contents,
+                                    codegen_height: self.out.len(),
+                                };
+                            }
+                        }
+                        continue 'outer;
+                    }
+                    TokenTree::Ident(value) => {
+                        let contents = &value.to_string();
+                        if contents == "in" {
+                            if !first_token || !top_most {
+                                bail!(value.span(); "in keyword only allowed at beginning of template macro")
+                            }
+                            let mut toks: Vec<TokenTree> = Vec::new();
+                            loop {
+                                let tok = expect_next!();
+                                if is_char(&tok, ';') {
+                                    break;
+                                }
+                                toks.push(tok);
+                            }
+                            outer_first_token = true;
+                            self.in_writer(toks);
+                            continue 'outer;
+                        }
+                    }
+                    _ => {}
+                }
+                // There inner block here for parsing the speicifc case
+                let col = 'value: {
+                    if let Some(col) = input.next() {
+                        // todo should be handling when there are many commans
+                        if !is_char(&col, ',') {
+                            break 'value col;
+                        }
+                    }
+                    match t {
+                        TokenTree::Ident(value) => {
+                            let contents = &value.to_string();
+                            self.pre_escaped_key(&contents);
+                            self.value_from_expression(value.span(), TokenTree::Ident(value));
+                            self.text.push(',');
+                            self.entry_completed(&mut attr);
+                            continue 'outer;
+                        }
+                        _ => {
+                            if self.error.is_none() {
+                                self.set_err(t.span(), "Expected colon");
+                            }
+                            return;
+                        }
+                    }
+                };
+                if !is_char(&col, ':') {
+                    if is_char(&t, '.') && is_char(&col, '.') {
+                        value_tokens.clear();
+                        while let Some(tok) = input.next() {
+                            if is_char(&tok, ',') {
+                                break;
+                            }
+                            value_tokens.push(tok);
+                        }
+                        //todo handle empty here to
+                        let prev = self.flatten;
+                        self.flatten = Flatten::Object;
+                        self.insert_value(col.span(), &mut value_tokens);
+                        self.flatten = prev;
+                        self.entry_completed(&mut attr);
+                        continue 'outer;
+                    }
+                    if let TokenTree::Ident(ident) = &t {
+                        #[allow(clippy::cmp_owned)]
+                        if ident.to_string() != "for" {
+                            bail!(col.span(); "Unexpected 1")
+                        } else {
+                            if !first_token {
+                                bail!(col.span(); "For comprehensions must be in there own object")
+                            }
+                        }
+                    } else {
+                        bail!(col.span(); "Unexpected 2")
+                    }
+                    value_tokens.clear();
+                    value_tokens.push(t);
+                    value_tokens.push(col);
+                    loop {
+                        let tok = expect_next!();
+                        if is_char(&tok, ';') {
+                            break;
+                        }
+                        value_tokens.push(tok);
+                    }
+                    self.flush_text();
+                    self.out.extend(value_tokens.drain(..));
+                    splat!((&mut self.out); {
+                        [
+                            self.parse_object(input, false);
+                            self.flush_text();
+                        ]
+                    });
+                    return;
+
+                    // continue 'outer;
+                }
+
+                // Accumulate Expression in
+                value_tokens.clear();
+                for tok in input.by_ref() {
+                    if is_char(&tok, ',') {
+                        break;
+                    }
+                    value_tokens.push(tok);
+                }
+
+                match &t {
+                    TokenTree::Group(g) => {
+                        if g.delimiter() != Delimiter::Bracket {
+                            bail!(g.span(); "Expected [key], key or \"key\".")
+                        }
+                        self.dyn_key(g.span(), g.stream());
+                    }
+                    TokenTree::Ident(ident) => {
+                        self.pre_escaped_key(&ident.to_string());
+                    }
+                    TokenTree::Punct(x) => bail!(x.span(); "Unexpected Punc"),
+                    TokenTree::Literal(x) => match literal_inline(x.to_string()) {
+                        lit::InlineKind::String(content) => {
+                            self.text.push('"');
+                            self.raw_escape_inline_value(&content);
+                            self.text.push_str("\":");
+                        }
+                        lit::InlineKind::Raw(_) => {
+                            bail!(x.span(); "Unexpected key")
+                        }
+                        lit::InlineKind::None => bail!(x.span(); "Unexpected key"),
+                    },
+                };
+
+                // now we have: key and value
+                self.insert_value(col.span(), &mut value_tokens);
+                self.text.push(',');
+                self.entry_completed(&mut attr);
+
+                if let Some(tt) = input.next() {
+                    t = tt;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
     fn eof(&mut self, span: Span) {
         if let None = self.error {
             self.error = Some(Error::span_msg("Unexpected EOF", span));
@@ -657,22 +652,17 @@ impl Codegen {
                     return;
                 }
                 Delimiter::Brace => {
-                    let mut parser = ObjectParser {
-                        topmost: false,
-                        codegen: self,
-                        error: None,
-                    };
-                    match parser.codegen.flatten {
+                    match self.flatten {
                         Flatten::None => {
-                            parser.codegen.begin_inline_object();
-                            parser.parse(group.stream().into_iter());
-                            parser.codegen.end_inline_object();
+                            self.begin_inline_object();
+                            self.parse_object(group.stream().into_iter(), false);
+                            self.end_inline_object();
                         }
                         Flatten::Object => {
-                            let prev = parser.codegen.flatten;
-                            parser.codegen.flatten = Flatten::None;
-                            parser.parse(group.stream().into_iter());
-                            parser.codegen.flatten = prev;
+                            let prev = self.flatten;
+                            self.flatten = Flatten::None;
+                            self.parse_object(group.stream().into_iter(), false);
+                            self.flatten = prev;
                         }
                         Flatten::Array => {
                             self.set_err(
@@ -681,10 +671,6 @@ impl Codegen {
                             );
                             return;
                         }
-                    }
-
-                    if parser.error.is_some() {
-                        self.error = parser.error;
                     }
                     return;
                 }
@@ -1035,18 +1021,13 @@ pub fn array(input: TokenStream) -> TokenStream {
 }
 pub fn object(input: TokenStream) -> TokenStream {
     let mut codegen = Codegen::new(Ident::new("builder", Span::call_site()));
-    let mut parser = ObjectParser {
-        topmost: true,
-        codegen: &mut codegen,
-        error: None,
-    };
-    parser.codegen.begin_inline_object();
-    parser.parse(input.into_iter());
-    if parser.codegen.writer.is_none() {
-        parser.codegen.end_inline_object();
+    codegen.begin_inline_object();
+    codegen.parse_object(input.into_iter(), true);
+    if codegen.writer.is_none() {
+        codegen.end_inline_object();
     }
 
-    if let Some(error) = parser.error {
+    if let Some(error) = codegen.error {
         return error.to_compiler_error();
     }
 
