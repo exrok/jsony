@@ -1,39 +1,5 @@
 // mod template2;
 
-// fn mix_strength(sample: &[u16], output: &mut [u16], strenght: f64) {}
-
-// let mut samples = vec![0u16; 2400];
-// mix_strength(&[3, 34, 45], &mut samples[5..], 0.5);
-// let text = "asdfasdf";
-// let res = template::object(tokens! {
-//     foo: text
-// });
-// let mut buf = Vec::<TokenTree>::new();
-// print_pretty(template::object(tokens! {
-//     in writer;
-//     foo: |w| w.value(&64u32)
-// }));
-// render_to_playground(token_stream!(
-//     (&mut buf);
-//     let dog = [#Literal::u32_suffixed(32)];
-//     let hash_map: std::collections::HashMap<&str, &str> = [[
-//         ("nice", "foo"),
-//         ("billy", "bob"),
-//     ]].into_iter().collect();
-//     let data = [[ [ #Literal::u32_suffixed(1) ], [ #Literal::u32_suffixed(2) ] ]];
-//     let value = [buf.extend(
-//         template::object(tokens! {
-//             foo: match a {
-//                 0 => b,
-//                 _ => a
-//             },
-//             // nested: [for value in data; [value]],
-//             // object: [for value in data; {value}],
-//             // expr: [for value in data; value * value],
-//         })
-//     )];
-//     println!("{}", value);
-// ));
 use crate::Error;
 use proc_macro::{Delimiter, Ident, Literal, TokenStream, TokenTree};
 pub enum GenericKind {

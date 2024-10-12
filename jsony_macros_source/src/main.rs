@@ -100,4 +100,8 @@ fn main() {
         template::object(tokens!());
         codegen::derive(tokens!());
     }
+    codegen::derive(tokens!());
+    template::object(tokens! {
+        foo: 32
+    });
 }

@@ -54,7 +54,7 @@ fn tt_group(out: &mut Vec<TokenTree>, delimiter: Delimiter, from: usize) {
 struct ObjectParser<'a> {
     topmost: bool,
     codegen: &'a mut Codegen,
-    error: Option<(Span, Box<str>)>,
+    error: Option<crate::Error>,
 }
 fn is_char(tt: &TokenTree, ch: char) -> bool {
     if let TokenTree::Punct(p) = tt {
@@ -64,10 +64,16 @@ fn is_char(tt: &TokenTree, ch: char) -> bool {
     }
     false
 }
+use crate::Error;
 impl<'a> ObjectParser<'a> {
     fn eof(&mut self, span: Span) {
-        if self.error.is_none() {
-            self.error = Some((span, "Unexpected EOF".into()))
+        if let None = self.error {
+            self.error = Some(Error::span_msg("Unexpected EOF", span));
+        }
+    }
+    fn set_err(&mut self, span: Span, msg: &str) {
+        if let None = self.error {
+            self.error = Some(Error::span_msg(msg, span));
         }
     }
     fn parse(&mut self, mut input: IntoIter) {
@@ -87,10 +93,7 @@ impl<'a> ObjectParser<'a> {
                             return;
                         }) else {
                             {
-                                if self.error.is_none() {
-                                    self.error =
-                                        Some((ch.span(), "Expected [] attr".to_string().into()))
-                                }
+                                self.set_err(ch.span(), "Expected [] attr");
                                 return;
                             };
                         };
@@ -111,11 +114,10 @@ impl<'a> ObjectParser<'a> {
                         if contents == "in" {
                             if !first_token || !self.topmost {
                                 {
-                                    if self.error.is_none() {
-                                        self.error =
-                                                            Some((value.span(),
-                                                                    "in keyword only allowed at beginning of template macro".to_string().into()))
-                                    }
+                                    self.set_err(
+                                        value.span(),
+                                        "in keyword only allowed at beginning of template macro",
+                                    );
                                     return;
                                 }
                             }
@@ -158,7 +160,7 @@ impl<'a> ObjectParser<'a> {
                         }
                         _ => {
                             if self.error.is_none() {
-                                self.error = Some((t.span(), "Expected colon".into()))
+                                self.set_err(t.span(), "Expected colon");
                             }
                             return;
                         }
@@ -184,32 +186,23 @@ impl<'a> ObjectParser<'a> {
                         #[allow(clippy::cmp_owned)]
                         if ident.to_string() != "for" {
                             {
-                                if self.error.is_none() {
-                                    self.error =
-                                        Some((col.span(), "Unexpected 1".to_string().into()))
-                                }
+                                self.set_err(col.span(), "Unexpected 1");
                                 return;
                             }
                         } else {
                             if !first_token {
                                 {
-                                    if self.error.is_none() {
-                                        self.error = Some((
-                                            col.span(),
-                                            "For comprehensions must be in there own object"
-                                                .to_string()
-                                                .into(),
-                                        ))
-                                    }
+                                    self.set_err(
+                                        col.span(),
+                                        "For comprehensions must be in there own object",
+                                    );
                                     return;
                                 }
                             }
                         }
                     } else {
                         {
-                            if self.error.is_none() {
-                                self.error = Some((col.span(), "Unexpected 2".to_string().into()))
-                            }
+                            self.set_err(col.span(), "Unexpected 2");
                             return;
                         }
                     }
@@ -253,12 +246,7 @@ impl<'a> ObjectParser<'a> {
                     TokenTree::Group(g) => {
                         if g.delimiter() != Delimiter::Bracket {
                             {
-                                if self.error.is_none() {
-                                    self.error = Some((
-                                        g.span(),
-                                        "Expected [key], key or \"key\".".to_string().into(),
-                                    ))
-                                }
+                                self.set_err(g.span(), "Expected [key], key or \"key\".");
                                 return;
                             }
                         }
@@ -268,9 +256,7 @@ impl<'a> ObjectParser<'a> {
                         self.codegen.pre_escaped_key(&ident.to_string());
                     }
                     TokenTree::Punct(x) => {
-                        if self.error.is_none() {
-                            self.error = Some((x.span(), "Unexpected Punc".to_string().into()))
-                        }
+                        self.set_err(x.span(), "Unexpected Punc");
                         return;
                     }
                     TokenTree::Literal(x) => match literal_inline(x.to_string()) {
@@ -280,15 +266,11 @@ impl<'a> ObjectParser<'a> {
                             self.codegen.text.push_str("\":");
                         }
                         lit::InlineKind::Raw(_) => {
-                            if self.error.is_none() {
-                                self.error = Some((x.span(), "Unexpected key".to_string().into()))
-                            }
+                            self.set_err(x.span(), "Unexpected key");
                             return;
                         }
                         lit::InlineKind::None => {
-                            if self.error.is_none() {
-                                self.error = Some((x.span(), "Unexpected key".to_string().into()))
-                            }
+                            self.set_err(x.span(), "Unexpected key");
                             return;
                         }
                     },
@@ -311,7 +293,7 @@ struct Codegen {
     builder: Ident,
     text: String,
     initial_capacity: usize,
-    error: Option<(Span, Box<str>)>,
+    error: Option<crate::Error>,
     flatten: Flatten,
     writer: Option<Vec<TokenTree>>,
 }
@@ -342,6 +324,16 @@ enum Attr {
     },
 }
 impl Codegen {
+    fn eof(&mut self, span: Span) {
+        if let None = self.error {
+            self.error = Some(Error::span_msg("Unexpected EOF", span));
+        }
+    }
+    fn set_err(&mut self, span: Span, msg: &str) {
+        if let None = self.error {
+            self.error = Some(Error::span_msg(msg, span));
+        }
+    }
     fn entry_completed(&mut self, attr: &mut Attr) {
         if match attr {
             Attr::None => true,
@@ -456,11 +448,11 @@ impl Codegen {
         self.flush_text();
         let token = values.pop().unwrap();
         let TokenTree::Group(group) = token else {
-            self.error = Some((token.span(), "Expected Blocked for Match Patterns".into()));
+            self.set_err(token.span(), "Expected Blocked for Match Patterns");
             return;
         };
         if group.delimiter() != Delimiter::Brace {
-            self.error = Some((group.span(), "Expected Blocked for Match Patterns".into()));
+            self.set_err(group.span(), "Expected Blocked for Match Patterns");
             return;
         };
         let start = self.out.len();
@@ -582,25 +574,25 @@ impl Codegen {
         match self.flatten {
             Flatten::None => false,
             Flatten::Object => {
-                self.error = Some((span, "Expected object to flatten".into()));
+                self.set_err(span, "Expected object to flatten");
                 true
             }
             Flatten::Array => {
-                self.error = Some((span, "Expected array to flatten".into()));
+                self.set_err(span, "Expected array to flatten");
                 true
             }
         }
     }
     /// This was for function calls
     fn insert_value(&mut self, span: Span, values: &mut Vec<TokenTree>) {
-        if values.is_empty() {
-            self.error = Some((span, "Expected value after colon".into()));
+        let [first, ..] = &**values else {
+            self.set_err(span, "Expected value after colon");
             return;
-        }
-        match &values[0] {
+        };
+        match first {
             TokenTree::Group(group) => match group.delimiter() {
                 Delimiter::Parenthesis => {
-                    self.error = Some((span, "Unhandled".into()));
+                    self.set_err(span, "Unhandled");
                     return;
                 }
                 Delimiter::Brace => {
@@ -622,10 +614,10 @@ impl Codegen {
                             parser.codegen.flatten = prev;
                         }
                         Flatten::Array => {
-                            self.error = Some((
+                            self.set_err(
                                 group.span(),
-                                "Expected array to flatten but found object".into(),
-                            ));
+                                "Expected array to flatten but found object",
+                            );
                             return;
                         }
                     }
@@ -716,7 +708,7 @@ impl Codegen {
             }
             TokenTree::Punct(start) => {
                 if start.as_char() == '|' {
-                    if let [_, TokenTree::Ident(binding), TokenTree::Punct(end), ..] = &values[..] {
+                    if let [_, TokenTree::Ident(binding), TokenTree::Punct(end), ..] = &**values {
                         if end.as_char() == '|' {
                             self.flush_text();
                             let out = &mut self.out;
@@ -818,10 +810,10 @@ impl Codegen {
             }
         }
         if values.len() == 1 {
-            self.value_from_expression(values[0].span(), values.pop().unwrap())
+            self.value_from_expression(first.span(), values.pop().unwrap())
         } else {
             self.value_from_expression(
-                values[0].span(),
+                first.span(),
                 TokenTree::Group(Group::new(
                     Delimiter::Parenthesis,
                     TokenStream::from_iter(values.drain(..)),
@@ -1238,20 +1230,8 @@ impl Codegen {
         }
     }
     fn flush_error(&mut self) {
-        if let Some((span, error)) = self.error.take() {
-            let mut group = TokenTree::Group(Group::new(
-                Delimiter::Parenthesis,
-                TokenStream::from_iter([TokenTree::Literal(Literal::string(&error))]),
-            ));
-            let mut punc = TokenTree::Punct(Punct::new('!', Spacing::Alone));
-            punc.set_span(span);
-            group.set_span(span);
-            self.out.extend([
-                TokenTree::Ident(Ident::new("compile_error", span)),
-                punc,
-                group,
-                TokenTree::Punct(Punct::new(';', Spacing::Alone)),
-            ]);
+        if let Some(err) = self.error.take() {
+            self.out.extend(err.to_compiler_error());
         }
     }
 }
@@ -1272,20 +1252,8 @@ pub fn object(input: TokenStream) -> TokenStream {
     if parser.codegen.writer.is_none() {
         parser.codegen.end_inline_object();
     }
-    if let Some((span, error)) = parser.error {
-        let mut group = TokenTree::Group(Group::new(
-            Delimiter::Parenthesis,
-            TokenStream::from_iter([TokenTree::Literal(Literal::string(&error))]),
-        ));
-        let mut punc = TokenTree::Punct(Punct::new('!', Spacing::Alone));
-        punc.set_span(span);
-        group.set_span(span);
-        return TokenStream::from_iter([
-            TokenTree::Ident(Ident::new("compile_error", span)),
-            punc,
-            group,
-            TokenTree::Punct(Punct::new(';', Spacing::Alone)),
-        ]);
+    if let Some(error) = parser.error {
+        return error.to_compiler_error();
     }
     codegen.finish_creating()
 }
