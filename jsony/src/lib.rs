@@ -34,7 +34,7 @@ pub unsafe trait FromBinary<'a>: Sized {
 
 pub unsafe trait ToBinary {
     const POD: bool = false;
-    fn binary_encode(&self, encoder: &mut Vec<u8>);
+    fn binary_encode(&self, encoder: &mut BytesWriter);
 
     #[doc(hidden)]
     #[cfg(not(target_endian = "little"))]
@@ -144,7 +144,7 @@ pub fn from_binary<'a, T: FromBinary<'a>>(slice: &'a [u8]) -> Result<T, FromBina
 }
 
 pub fn to_binary<T: ToBinary + ?Sized>(value: &T) -> Vec<u8> {
-    let mut encoder = Vec::new();
+    let mut encoder = BytesWriter::new();
     value.binary_encode(&mut encoder);
-    encoder
+    encoder.into_vec()
 }

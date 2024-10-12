@@ -1,4 +1,5 @@
 use super::{FromBinary, ToBinary};
+use crate::BytesWriter;
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -122,11 +123,10 @@ impl<'a> Decoder<'a> {
         }
     }
 }
-type Encoder<'a> = Vec<u8>;
-pub fn write_length(encoder: &mut Encoder, len: usize) {
+pub fn write_length(encoder: &mut BytesWriter, len: usize) {
     if len >= 255 {
         encoder.push(255);
-        encoder.extend_from_slice(&(len as u64).to_le_bytes());
+        encoder.push_bytes(&(len as u64).to_le_bytes());
     } else {
         encoder.push(len as u8);
     }
@@ -137,8 +137,8 @@ macro_rules! impl_bincode_for_numeric_primative {
         $(
             unsafe impl ToBinary for $ty {
                 const POD: bool = true;
-                fn binary_encode(&self, encoder: &mut Vec<u8>) {
-                    encoder.extend_from_slice(&self.to_le_bytes());
+                fn binary_encode(&self, encoder: &mut BytesWriter) {
+                    encoder.push_bytes(&self.to_le_bytes());
                 }
 
                 #[cfg(not(target_endian = "little"))]
@@ -172,7 +172,7 @@ macro_rules! impl_bincode_for_numeric_primative {
 
 unsafe impl ToBinary for u8 {
     const POD: bool = true;
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         encoder.push(*self)
     }
 }
@@ -195,7 +195,7 @@ macro_rules! impl_bincode_via_transmute {
         $(
             unsafe impl ToBinary for $src {
                 const POD: bool = true;
-                fn binary_encode(&self, encoder: &mut Vec<u8>) {
+                fn binary_encode(&self, encoder: &mut BytesWriter) {
                     <$reuse>::binary_encode(
                         unsafe { &*(self as *const _ as *const $reuse) },
                         encoder
@@ -239,7 +239,7 @@ impl_bincode_via_transmute! {
 }
 
 unsafe impl ToBinary for bool {
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         encoder.push(*self as u8)
     }
 }
@@ -251,11 +251,14 @@ unsafe impl<'a> FromBinary<'a> for bool {
 }
 
 // Without length prefix
-fn encode_array_body<T: ToBinary>(slice: &[T], encoder: &mut Vec<u8>) {
+fn encode_array_body<T: ToBinary>(slice: &[T], encoder: &mut BytesWriter) {
     let can_memcopy = const { T::POD && (cfg!(target_endian = "little") || size_of::<T>() == 1) };
     if can_memcopy {
         let byte_size = std::mem::size_of_val(slice);
-        encoder.reserve(byte_size);
+        unsafe {
+            // TODO ensure size is small
+            encoder.reserve_small(byte_size);
+        }
         let initial_length = encoder.len();
         unsafe {
             std::ptr::copy_nonoverlapping(
@@ -273,7 +276,7 @@ fn encode_array_body<T: ToBinary>(slice: &[T], encoder: &mut Vec<u8>) {
 }
 
 unsafe impl<T: ToBinary> ToBinary for [T] {
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         write_length(encoder, self.len());
         encode_array_body(self, encoder);
     }
@@ -286,13 +289,13 @@ unsafe impl<'a> FromBinary<'a> for &'a [u8] {
     }
 }
 unsafe impl ToBinary for String {
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         self.as_bytes().binary_encode(encoder);
     }
 }
 
 unsafe impl ToBinary for Cow<'_, str> {
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         self.as_bytes().binary_encode(encoder);
     }
 }
@@ -303,7 +306,7 @@ unsafe impl<'a> FromBinary<'a> for Cow<'a, str> {
     }
 }
 unsafe impl ToBinary for str {
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         self.as_bytes().binary_encode(encoder);
     }
 }
@@ -351,7 +354,7 @@ unsafe impl<'a, T: FromBinary<'a>, const N: usize> FromBinary<'a> for [T; N] {
 unsafe impl<T: ToBinary, const N: usize> ToBinary for [T; N] {
     const POD: bool = T::POD;
 
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         encode_array_body(self, encoder)
     }
 
@@ -399,25 +402,25 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Vec<T> {
     }
 }
 unsafe impl<T: ToBinary> ToBinary for Vec<T> {
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         <[T]>::binary_encode(self, encoder);
     }
 }
 
 unsafe impl<'a, T: ToBinary + ?Sized> ToBinary for &'a mut T {
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         (**self).binary_encode(encoder)
     }
 }
 
 unsafe impl<'a, T: ToBinary + ?Sized> ToBinary for &'a T {
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         (**self).binary_encode(encoder)
     }
 }
 
 unsafe impl<K: ToBinary, V: ToBinary, S> ToBinary for HashMap<K, V, S> {
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         write_length(encoder, self.len());
         for (k, v) in self {
             k.binary_encode(encoder);
@@ -442,7 +445,7 @@ unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, V: FromBinary<'a>, S: BuildHasher
 }
 
 unsafe impl<K: ToBinary, S> ToBinary for HashSet<K, S> {
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         write_length(encoder, self.len());
         for k in self {
             k.binary_encode(encoder);
@@ -464,7 +467,7 @@ unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, S: BuildHasher + Default> FromBin
 }
 
 unsafe impl<T: ToBinary> ToBinary for Box<T> {
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         T::binary_encode(self, encoder)
     }
 }
@@ -488,7 +491,7 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Box<[T]> {
 }
 
 unsafe impl<T: ToBinary> ToBinary for Option<T> {
-    fn binary_encode(&self, encoder: &mut Vec<u8>) {
+    fn binary_encode(&self, encoder: &mut BytesWriter) {
         if let Some(value) = self {
             encoder.push(1);
             value.binary_encode(encoder);
@@ -513,21 +516,24 @@ mod test {
     use std::fmt::Debug;
 
     use crate::from_binary;
+    use crate::BytesWriter;
 
     use super::*;
     #[derive(Default)]
-    struct Tester {
-        buffer: Vec<u8>,
+    struct Tester<'a> {
+        buffer: BytesWriter<'a>,
     }
-    impl Tester {
+    impl<'k> Tester<'k> {
         #[track_caller]
         fn assert_roundtrip<'a, T: FromBinary<'a> + ToBinary + PartialEq + Debug>(
             &'a mut self,
             value: &T,
         ) {
-            self.buffer.clear();
+            unsafe {
+                self.buffer.set_len(0);
+            }
             value.binary_encode(&mut self.buffer);
-            let result = crate::from_binary::<T>(&self.buffer).unwrap();
+            let result = crate::from_binary::<T>(self.buffer.buffer_slice()).unwrap();
             assert_eq!(value, &result);
         }
         #[track_caller]
@@ -564,34 +570,43 @@ mod test {
         let c = String::from_utf8(vec![b'a'; 256]).unwrap();
         let inputs = ["", "hello", &a, &b, &c];
         let encoded = inputs.map(|string| {
-            let mut buf = Vec::new();
+            let mut buf = BytesWriter::new();
             string.binary_encode(&mut buf);
-            buf
+            buf.into_vec()
         });
         for (input, encoded) in inputs.iter().zip(&encoded) {
             assert_eq!(from_binary::<&str>(encoded).unwrap(), *input);
         }
-        let mut output: Vec<u8> = Vec::new();
+        let mut output: BytesWriter = BytesWriter::new();
         for (input, encoded) in inputs.iter().zip(&encoded) {
             output.clear();
             let boxed: Box<str> = (*input).into();
             boxed.binary_encode(&mut output);
-            assert_eq!(output, *encoded);
-            assert_eq!(from_binary::<Box<str>>(&output).unwrap(), boxed);
+            assert_eq!(output.buffer_slice(), *encoded);
+            assert_eq!(
+                from_binary::<Box<str>>(&output.buffer_slice()).unwrap(),
+                boxed
+            );
         }
         for (input, encoded) in inputs.iter().zip(&encoded) {
             output.clear();
             let boxed: String = (*input).into();
             boxed.binary_encode(&mut output);
-            assert_eq!(output, *encoded);
-            assert_eq!(from_binary::<String>(&output).unwrap(), boxed);
+            assert_eq!(output.buffer_slice(), *encoded);
+            assert_eq!(
+                from_binary::<String>(&output.buffer_slice()).unwrap(),
+                boxed
+            );
         }
         for (input, encoded) in inputs.iter().zip(&encoded) {
             output.clear();
             let boxed: Cow<'_, str> = (*input).into();
             boxed.binary_encode(&mut output);
-            assert_eq!(output, *encoded);
-            assert_eq!(from_binary::<Cow<'_, str>>(&output).unwrap(), boxed);
+            assert_eq!(output.buffer_slice(), *encoded);
+            assert_eq!(
+                from_binary::<Cow<'_, str>>(&output.buffer_slice()).unwrap(),
+                boxed
+            );
         }
     }
 
@@ -602,27 +617,33 @@ mod test {
         let c = vec![b'a'; 256];
         let inputs = [&b""[..], b"hello", &a, &b, &c];
         let encoded = inputs.map(|string| {
-            let mut buf = Vec::new();
+            let mut buf = BytesWriter::new();
             string.binary_encode(&mut buf);
-            buf
+            buf.into_vec()
         });
         for (input, encoded) in inputs.iter().zip(&encoded) {
             assert_eq!(from_binary::<&[u8]>(encoded).unwrap(), *input);
         }
-        let mut output: Vec<u8> = Vec::new();
+        let mut output = BytesWriter::new();
         for (input, encoded) in inputs.iter().zip(&encoded) {
             output.clear();
             let boxed: Box<[u8]> = (*input).into();
             boxed.binary_encode(&mut output);
-            assert_eq!(output, *encoded);
-            assert_eq!(from_binary::<Box<[u8]>>(&output).unwrap(), boxed);
+            assert_eq!(output.buffer_slice(), *encoded);
+            assert_eq!(
+                from_binary::<Box<[u8]>>(output.buffer_slice()).unwrap(),
+                boxed
+            );
         }
         for (input, encoded) in inputs.iter().zip(&encoded) {
             output.clear();
             let boxed: Vec<u8> = (*input).into();
             boxed.binary_encode(&mut output);
-            assert_eq!(output, *encoded);
-            assert_eq!(from_binary::<Vec<u8>>(&output).unwrap(), boxed);
+            assert_eq!(output.buffer_slice(), *encoded);
+            assert_eq!(
+                from_binary::<Vec<u8>>(output.buffer_slice()).unwrap(),
+                boxed
+            );
         }
     }
     #[test]
@@ -634,29 +655,32 @@ mod test {
         let c = vec![b'a' as u32; 256];
         let inputs = [&[][..], &[1u32, 2, 3, 4, 5], &a, &b, &c];
         let encoded = inputs.map(|string| {
-            let mut buf = Vec::new();
+            let mut buf = BytesWriter::new();
             string.binary_encode(&mut buf);
-            buf
+            buf.into_vec()
         });
         for (input, encoded) in inputs.iter().zip(&encoded) {
             assert_eq!(from_binary::<Vec<u32>>(encoded).unwrap(), *input);
         }
-        let mut output: Vec<u8> = Vec::new();
+        let mut output = BytesWriter::new();
         for (input, encoded) in inputs.iter().zip(&encoded) {
             output.clear();
             let boxed: Box<[u32]> = (*input).into();
             boxed.binary_encode(&mut output);
-            assert_eq!(output, *encoded);
-            assert_eq!(from_binary::<Box<[u32]>>(&output).unwrap(), boxed);
+            assert_eq!(output.buffer_slice(), *encoded);
+            assert_eq!(
+                from_binary::<Box<[u32]>>(output.buffer_slice()).unwrap(),
+                boxed
+            );
         }
     }
     #[test]
     fn nested_pod_arrays() {
         let inputs: [&[[u32; 2]]; 2] = [&[][..], &[[1u32, 2], [3, 4], [5, 3]]];
         let encoded = inputs.map(|array| {
-            let mut buf = Vec::new();
+            let mut buf = BytesWriter::new();
             array.binary_encode(&mut buf);
-            buf
+            buf.into_vec()
         });
         for (input, encoded) in inputs.iter().zip(&encoded) {
             assert_eq!(from_binary::<Vec<[u32; 2]>>(encoded).unwrap(), *input);

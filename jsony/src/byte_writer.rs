@@ -18,6 +18,11 @@ pub struct BytesWriter<'a> {
     capacity: usize,
     backing: Backing<'a>,
 }
+impl<'a> Default for BytesWriter<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl<'a> From<&'a mut [MaybeUninit<u8>]> for BytesWriter<'a> {
     fn from(value: &'a mut [MaybeUninit<u8>]) -> Self {
@@ -103,6 +108,12 @@ impl<'a> BytesWriter<'a> {
             return None;
         }
         Some(unsafe { &mut *self.data.add(self.len - 1) })
+    }
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+    pub unsafe fn set_len(&mut self, len: usize) {
+        self.len = len;
     }
     pub fn saturting_pop(&mut self) {
         self.len = self.len.saturating_sub(1);
@@ -288,13 +299,15 @@ impl<'a> BytesWriter<'a> {
     /// to flush the buffer to the underlying IO.
     #[inline]
     pub fn push(&mut self, byte: u8) {
-        // Inform codegen that the length does not change across grow_one().
+        // Inform codegen that the length does not change across reserve_internal with grou false.
         let len = self.len;
+
         // This will panic or abort if we would allocate > isize::MAX bytes
         // or if the length increment would overflow for zero-sized types.
         if len == self.capacity {
             self.reserve_internal(1, false);
         }
+
         unsafe {
             *self.data.add(len) = byte;
             self.len = len + 1;
@@ -303,7 +316,6 @@ impl<'a> BytesWriter<'a> {
     /// Appends the given `char` to the end of this buffer
     #[inline]
     pub fn push_char(&mut self, data: char) {
-        // Question: Is it safe to pass uninitialized memory to `encode_utf8` function?
         unsafe {
             self.reserve_small(4);
             let mut buffer = [0u8; 4];
