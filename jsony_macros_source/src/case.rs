@@ -63,6 +63,7 @@ impl RenameRule {
     }
 
     /// Apply a renaming rule to an enum variant, returning the version expected in the source.
+    #[allow(dead_code)]
     pub fn apply_to_variant(self, variant: &str) -> String {
         match self {
             None | PascalCase => variant.to_owned(),
@@ -114,14 +115,6 @@ impl RenameRule {
             ScreamingSnakeCase => field.to_ascii_uppercase(),
             KebabCase => field.replace('_', "-"),
             ScreamingKebabCase => ScreamingSnakeCase.apply_to_field(field).replace('_', "-"),
-        }
-    }
-
-    /// Returns the `RenameRule` if it is not `None`, `rule_b` otherwise.
-    pub fn or(self, rule_b: Self) -> Self {
-        match self {
-            None => rule_b,
-            _ => self,
         }
     }
 }

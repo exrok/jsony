@@ -120,7 +120,7 @@ impl<'a> BytesWriter<'a> {
     }
     pub fn new() -> BytesWriter<'a> {
         BytesWriter {
-            data: unsafe { NonNull::<u8>::dangling().as_mut() },
+            data: NonNull::<u8>::dangling().as_ptr(),
             len: 0,
             capacity: 0,
             backing: Backing::Owned,

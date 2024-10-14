@@ -251,12 +251,12 @@ const fn decode_hex_val_slow(val: u8) -> Option<u8> {
     }
 }
 
-const fn build_hex_table(shift: usize) -> [i16; 256] {
+const fn build_hex_table() -> [i8; 256] {
     let mut table = [0; 256];
     let mut ch = 0;
     while ch < 256 {
         table[ch] = match decode_hex_val_slow(ch as u8) {
-            Some(val) => (val as i16) << shift,
+            Some(val) => val as i8,
             None => -1,
         };
         ch += 1;
@@ -264,20 +264,33 @@ const fn build_hex_table(shift: usize) -> [i16; 256] {
     table
 }
 
-static HEX0: [i16; 256] = build_hex_table(0);
-static HEX1: [i16; 256] = build_hex_table(4);
+static HEX: [i8; 256] = build_hex_table();
 
 fn decode_four_hex_digits(a: u8, b: u8, c: u8, d: u8) -> Option<u16> {
-    let a = HEX1[a as usize] as i32;
-    let b = HEX0[b as usize] as i32;
-    let c = HEX1[c as usize] as i32;
-    let d = HEX0[d as usize] as i32;
+    let a = HEX[a as usize] as i32;
+    let b = HEX[b as usize] as i32;
+    let c = HEX[c as usize] as i32;
+    let d = HEX[d as usize] as i32;
 
-    let codepoint = ((a | b) << 8) | c | d;
+    let codepoint = (a << 12) | (b << 8) | (c << 4) | d;
 
     // A single sign bit check.
     if codepoint >= 0 {
         Some(codepoint as u16)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn decode_two_hex_digits(a: u8, b: u8) -> Option<u8> {
+    let a = HEX[a as usize] as i16;
+    let b = HEX[b as usize] as i16;
+
+    let codepoint = (a << 4) | b;
+
+    // A single sign bit check.
+    if codepoint >= 0 {
+        Some(codepoint as u8)
     } else {
         None
     }

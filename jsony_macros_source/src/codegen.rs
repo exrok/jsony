@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use crate::ast::{
     self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttr, Generic,
     GenericKind,

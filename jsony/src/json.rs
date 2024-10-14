@@ -1,6 +1,6 @@
 // #[cfg(test)]
 // mod tests;
-use crate::{text_writer::TextWriter, FromJson, ToJson};
+use crate::{text::FromText, text_writer::TextWriter, FromJson, ToJson};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -44,44 +44,9 @@ impl<'a> FieldVistor<'a> for FuncFieldVisitor<'a> {
     }
 }
 
-pub trait FromJsonStr<'a>: Sized {
-    fn from_json_str(inner: &str, parser: &Parser<'a>) -> Result<Self, &'static DecodeError>;
-}
-impl<'a> FromJsonStr<'a> for &'a str {
-    fn from_json_str(inner: &str, parser: &Parser<'a>) -> Result<Self, &'static DecodeError> {
-        if let Some(text) = parser.try_zerocopy(inner) {
-            Ok(text)
-        } else {
-            Err(&DecodeError {
-                message: "String contains escapes",
-            })
-        }
-    }
-}
-impl<'a> FromJsonStr<'a> for Cow<'a, str> {
-    fn from_json_str(inner: &str, parser: &Parser<'a>) -> Result<Self, &'static DecodeError> {
-        if let Some(text) = parser.try_zerocopy(inner) {
-            Ok(Cow::Borrowed(text))
-        } else {
-            Ok(Cow::Owned(inner.to_owned()))
-        }
-    }
-}
-
-impl<'a> FromJsonStr<'a> for String {
-    fn from_json_str(inner: &str, _parser: &Parser<'a>) -> Result<Self, &'static DecodeError> {
-        Ok(inner.into())
-    }
-}
-impl<'a> FromJsonStr<'a> for Box<str> {
-    fn from_json_str(inner: &str, _parser: &Parser<'a>) -> Result<Self, &'static DecodeError> {
-        Ok(inner.into())
-    }
-}
-
 unsafe impl<'a, K, T> FromJsonFieldVisitor<'a> for HashMap<K, T>
 where
-    K: FromJsonStr<'a> + Hash + Eq,
+    K: FromText<'a> + Hash + Eq,
     T: FromJson<'a>,
 {
     type Vistor = FuncFieldVisitor<'a>;
@@ -92,7 +57,7 @@ where
         FuncFieldVisitor {
             visit: |ptr, field, parser| {
                 let map = &mut *ptr.cast::<Self>().as_ptr();
-                let key = K::from_json_str(field, parser)?;
+                let key = K::from_text(&mut parser.ctx, field)?;
                 let value = T::decode_json(parser)?;
                 map.insert(key, value);
                 Ok(())
@@ -108,7 +73,7 @@ where
 
 unsafe impl<'a, K, T> FromJsonFieldVisitor<'a> for Vec<(K, T)>
 where
-    K: FromJsonStr<'a>,
+    K: FromText<'a>,
     T: FromJson<'a>,
 {
     type Vistor = FuncFieldVisitor<'a>;
@@ -119,7 +84,7 @@ where
         FuncFieldVisitor {
             visit: |ptr, field, parser| {
                 let map = &mut *ptr.cast::<Self>().as_ptr();
-                let key = K::from_json_str(field, parser)?;
+                let key = K::from_text(&mut parser.ctx, field)?;
                 let value = T::decode_json(parser)?;
                 map.push((key, value));
                 Ok(())

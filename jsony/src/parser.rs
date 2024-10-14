@@ -4,6 +4,7 @@ use std::ops::Range;
 
 use crate::json::DecodeError;
 use crate::lazy_parser::index_of_string_end2;
+use crate::text::Ctx;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Peek(u8);
@@ -58,14 +59,17 @@ static NULL_REST: [u8; 3] = [b'u', b'l', b'l'];
 
 #[derive(Clone)]
 pub struct Parser<'j> {
-    pub data: &'j [u8],
+    pub ctx: Ctx<'j>,
     pub index: usize,
-    pub error_context: Option<Cow<'j, str>>,
 }
 
 impl<'j> fmt::Debug for Parser<'j> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Remaining: {}", &self.data[self.index..].escape_ascii())
+        writeln!(
+            f,
+            "Remaining: {}",
+            &self.ctx.data[self.index..].escape_ascii()
+        )
     }
 }
 type JsonResult<T> = Result<T, &'static DecodeError>;
@@ -185,22 +189,21 @@ fn extract_raw_string(
 impl<'j> Parser<'j> {
     pub fn new(data: &'j [u8]) -> Self {
         Self {
-            data,
+            ctx: Ctx::new(data),
             index: 0,
-            error_context: None,
         }
     }
     pub fn report_static_error(&mut self, error: &'j str) {
-        self.error_context = Some(Cow::Borrowed(error));
+        self.ctx.error = Some(Cow::Borrowed(error));
     }
     pub fn report_error(&mut self, error: String) {
-        self.error_context = Some(Cow::Owned(error));
+        self.ctx.error = Some(Cow::Owned(error));
     }
 
     pub fn try_zerocopy(&self, text: &str) -> Option<&'j str> {
         // todo
         unsafe {
-            if self.data.as_ptr_range().contains(&text.as_ptr()) {
+            if self.ctx.data.as_ptr_range().contains(&text.as_ptr()) {
                 Some(&*(text as *const str))
             } else {
                 None
@@ -209,11 +212,11 @@ impl<'j> Parser<'j> {
     }
     #[allow(dead_code)]
     pub fn slice(&self, range: Range<usize>) -> Option<&[u8]> {
-        self.data.get(range)
+        self.ctx.data.get(range)
     }
 
     // pub fn current_position(&self) -> LinePosition {
-    //     LinePosition::find(self.data, self.index)
+    //     LinePosition::find(self.ctx.data, self.index)
     // }
 
     pub fn peek(&mut self) -> JsonResult<Peek> {
@@ -232,7 +235,7 @@ impl<'j> Parser<'j> {
     }
 
     pub fn enter_seen_array(&mut self) -> JsonResult<Option<Peek>> {
-        debug_assert_eq!(self.data[self.index], b'[');
+        debug_assert_eq!(self.ctx.data[self.index], b'[');
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
             if next == b']' {
@@ -345,7 +348,7 @@ impl<'j> Parser<'j> {
             }
             _ => Err(&TODO_ERROR),
         }
-        // if let Some(value) = lazy_parser::expr_end(&self.data[self.index..]) {
+        // if let Some(value) = lazy_parser::expr_end(&self.ctx.data[self.index..]) {
         //     self.index += value;
         //     Ok(())
         // } else {
@@ -354,18 +357,17 @@ impl<'j> Parser<'j> {
     }
     // todo should make this fuzzy and optimzied
     pub fn index_into_next_object(&self, key: &str) -> JsonResult<Option<Parser<'j>>> {
-        match crate::lazy_parser::object_index(&self.data[self.index..], key.as_bytes()) {
+        match crate::lazy_parser::object_index(&self.ctx.data[self.index..], key.as_bytes()) {
             Ok(value) => Ok(Some(Parser {
-                data: self.data,
-                index: self.index + (self.data.len() - value.len()),
-                error_context: None,
+                ctx: Ctx::new(self.ctx.data),
+                index: self.index + (self.ctx.data.len() - value.len()),
             })),
             Err(_) => Err(&TODO_ERROR),
         }
     }
 
     pub fn enter_seen_object_at_first_key(&mut self) -> JsonResult<Option<()>> {
-        debug_assert_eq!(self.data[self.index], b'{');
+        debug_assert_eq!(self.ctx.data[self.index], b'{');
 
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
@@ -401,7 +403,7 @@ impl<'j> Parser<'j> {
     }
 
     pub fn enter_seen_object(&mut self) -> JsonResult<Option<&'j str>> {
-        debug_assert_eq!(self.data[self.index], b'{');
+        debug_assert_eq!(self.ctx.data[self.index], b'{');
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
             match next {
@@ -473,29 +475,29 @@ impl<'j> Parser<'j> {
 
     /// May only call if Peak::True
     pub fn discard_seen_true(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.data[self.index], b't');
+        debug_assert_eq!(self.ctx.data[self.index], b't');
         self.consume_ident(TRUE_REST)
     }
 
     /// May only call if Peak::False
     pub fn discard_seen_false(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.data[self.index], b'f');
+        debug_assert_eq!(self.ctx.data[self.index], b'f');
         self.consume_ident(FALSE_REST)
     }
 
     pub fn discard_seen_null(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.data[self.index], b'n');
+        debug_assert_eq!(self.ctx.data[self.index], b'n');
         self.consume_ident(NULL_REST)
     }
 
     fn skip_to_escape(&mut self) {
         // Immediately bail-out on empty strings and consecutive escapes (e.g. \u041b\u0435)
-        if self.index == self.data.len() || is_escape(self.data[self.index]) {
+        if self.index == self.ctx.data.len() || is_escape(self.ctx.data[self.index]) {
             return;
         }
         self.index += 1;
 
-        let rest = &self.data[self.index..];
+        let rest = &self.ctx.data[self.index..];
 
         // if !forbid_control_characters {
         //     self.index += memchr::memchr2(b'"', b'\\', rest).unwrap_or(rest.len());
@@ -519,8 +521,8 @@ impl<'j> Parser<'j> {
 
         // unsafe {
         //     //saftey nned to check empty
-        //     let mut head = self.data.as_ptr().add(self.index) as *const u64;
-        //     let end = self.data.as_ptr().add(self.data.len()).sub(8) as *const u64;
+        //     let mut head = self.ctx.data.as_ptr().add(self.index) as *const u64;
+        //     let end = self.ctx.data.as_ptr().add(self.ctx.data.len()).sub(8) as *const u64;
         //     while head < end {
         //         let chars = head.read_unaligned();
         //         let contains_ctrl = chars.wrapping_sub(ONE_BYTES * 0x20) & !chars;
@@ -532,7 +534,7 @@ impl<'j> Parser<'j> {
         //             (contains_ctrl | contains_quote | contains_backslash) & (ONE_BYTES << 7);
         //         if masked != 0 {
         //             // SAFETY: chunk is in-bounds for slice
-        //             self.index = unsafe { (head as *const u8).offset_from(self.data.as_ptr()) }
+        //             self.index = unsafe { (head as *const u8).offset_from(self.ctx.data.as_ptr()) }
         //                 as usize
         //                 + masked.trailing_zeros() as usize / 8;
         //             return;
@@ -550,15 +552,15 @@ impl<'j> Parser<'j> {
             let masked = (contains_ctrl | contains_quote | contains_backslash) & (ONE_BYTES << 7);
             if masked != 0 {
                 // SAFETY: chunk is in-bounds for slice
-                self.index = unsafe { chunk.as_ptr().offset_from(self.data.as_ptr()) } as usize
+                self.index = unsafe { chunk.as_ptr().offset_from(self.ctx.data.as_ptr()) } as usize
                     + masked.trailing_zeros() as usize / 8;
                 return;
             }
         }
         // unsafe {
         //     //saftey nned to check empty
-        //     let mut head = self.data.as_ptr().add(self.index) as *const u64;
-        //     let end = self.data.as_ptr().add(self.data.len()).sub(8) as *const u64;
+        //     let mut head = self.ctx.data.as_ptr().add(self.index) as *const u64;
+        //     let end = self.ctx.data.as_ptr().add(self.ctx.data.len()).sub(8) as *const u64;
         //     while head < end {
         // read unalign only works on LE
         //         let chars = head.read_unaligned();
@@ -571,7 +573,7 @@ impl<'j> Parser<'j> {
         //             (contains_ctrl | contains_quote | contains_backslash) & (ONE_BYTES << 7);
         //         if masked != 0 {
         //             // SAFETY: chunk is in-bounds for slice
-        //             self.index = unsafe { (head as *const u8).offset_from(self.data.as_ptr()) }
+        //             self.index = unsafe { (head as *const u8).offset_from(self.ctx.data.as_ptr()) }
         //                 as usize
         //                 + masked.trailing_zeros() as usize / 8;
         //             return;
@@ -587,7 +589,7 @@ impl<'j> Parser<'j> {
     #[inline(never)]
     fn skip_to_escape_slow(&mut self) {
         println!("slow",);
-        while self.index < self.data.len() && !is_escape(self.data[self.index]) {
+        while self.index < self.ctx.data.len() && !is_escape(self.ctx.data[self.index]) {
             self.index += 1;
         }
     }
@@ -595,19 +597,19 @@ impl<'j> Parser<'j> {
     pub fn take_string(&mut self) -> JsonResult<&'j str> {
         //todo opt
         self.eat_whitespace();
-        let (output, index) = extract_raw_string(self.data, self.index)?;
+        let (output, index) = extract_raw_string(self.ctx.data, self.index)?;
         self.index = index;
         Ok(output)
     }
 
     pub fn read_seen_string_unescaped(&mut self) -> JsonResult<&'j str> {
-        debug_assert_eq!(self.data[self.index], b'"');
+        debug_assert_eq!(self.ctx.data[self.index], b'"');
         self.index += 1;
         let start = self.index;
         loop {
             self.skip_to_escape();
-            // match unsafe { self.data.get_unchecked(self.indexl } {
-            match self.data[self.index] {
+            // match unsafe { self.ctx.data.get_unchecked(self.indexl } {
+            match self.ctx.data[self.index] {
                 b'"' => {
                     break;
                 }
@@ -622,7 +624,7 @@ impl<'j> Parser<'j> {
                 }
             }
         }
-        let output = unsafe { std::str::from_utf8_unchecked(&self.data[start..self.index]) };
+        let output = unsafe { std::str::from_utf8_unchecked(&self.ctx.data[start..self.index]) };
         self.index += 1;
         Ok(output)
     }
@@ -635,14 +637,14 @@ impl<'j> Parser<'j> {
     }
 
     pub fn consume_numeric_literal(&mut self) -> JsonResult<&'j str> {
-        let (output, index) = extract_numeric_literal(self.data, self.index)?;
+        let (output, index) = extract_numeric_literal(self.ctx.data, self.index)?;
         self.index = index;
         Ok(output)
     }
 
     /// private method to get an object key, then consume the colon which should follow
     fn read_seen_unescaped_object_key(&mut self) -> JsonResult<&'j str> {
-        debug_assert_eq!(self.data[self.index], b'"');
+        debug_assert_eq!(self.ctx.data[self.index], b'"');
         let key = self.read_seen_string_unescaped()?;
 
         if let Some(next) = self.eat_whitespace() {
@@ -658,7 +660,7 @@ impl<'j> Parser<'j> {
     }
 
     fn consume_ident<const SIZE: usize>(&mut self, expected: [u8; SIZE]) -> JsonResult<()> {
-        self.index = consume_ident(self.data, self.index, expected)?;
+        self.index = consume_ident(self.ctx.data, self.index, expected)?;
         Ok(())
     }
 
@@ -673,7 +675,7 @@ impl<'j> Parser<'j> {
         }
     }
     fn eat_whitespace(&mut self) -> Option<u8> {
-        while let Some(&next) = self.data.get(self.index) {
+        while let Some(&next) = self.ctx.data.get(self.index) {
             // optimize for common case.
             if next > b' ' {
                 return Some(next);

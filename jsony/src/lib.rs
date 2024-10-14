@@ -1,3 +1,4 @@
+use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 #[doc(hidden)]
 pub mod __internal;
@@ -7,8 +8,11 @@ pub mod json;
 mod lazy_parser;
 pub mod parser;
 pub mod strings;
+pub mod text;
 mod text_writer;
 pub use byte_writer::BytesWriter;
+use text::FromTextSequence;
+use text::TextSequenceFieldNames;
 pub use text_writer::TextWriter;
 pub mod value;
 use binary::{Decoder, FromBinaryError};
@@ -147,4 +151,18 @@ pub fn to_binary<T: ToBinary + ?Sized>(value: &T) -> Vec<u8> {
     let mut encoder = BytesWriter::new();
     value.binary_encode(&mut encoder);
     encoder.into_vec()
+}
+
+pub fn from_form_urlencoded<'a, T: TextSequenceFieldNames + FromTextSequence<'a>>(
+    form: &'a [u8],
+) -> Result<T, &'static DecodeError> {
+    let mut decoder = text::form_urlencoded::FormDecoder::new(form);
+    let mut fields = MaybeUninit::<[Option<&str>; 32]>::uninit();
+    let Ok(lines) = decoder.extract_named_fields(&mut fields, T::text_sequence_field_names())
+    else {
+        return Err(&DecodeError {
+            message: "Expected larger",
+        });
+    };
+    T::from_text_sequence(&mut decoder.ctx, lines)
 }
