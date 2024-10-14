@@ -51,11 +51,6 @@ fn tt_group(out: &mut Vec<TokenTree>, delimiter: Delimiter, from: usize) {
     out.push(group);
 }
 
-struct ObjectParser<'a> {
-    topmost: bool,
-    codegen: &'a mut Codegen,
-    error: Option<crate::Error>,
-}
 fn is_char(tt: &TokenTree, ch: char) -> bool {
     if let TokenTree::Punct(p) = tt {
         if p.as_char() == ch {
@@ -65,18 +60,6 @@ fn is_char(tt: &TokenTree, ch: char) -> bool {
     false
 }
 use crate::Error;
-impl<'a> ObjectParser<'a> {
-    fn eof(&mut self, span: Span) {
-        if let None = self.error {
-            self.error = Some(Error::span_msg("Unexpected EOF", span));
-        }
-    }
-    fn set_err(&mut self, span: Span, msg: &str) {
-        if let None = self.error {
-            self.error = Some(Error::span_msg(msg, span));
-        }
-    }
-}
 struct Codegen {
     out: Vec<TokenTree>,
     need_mut_builder: bool,

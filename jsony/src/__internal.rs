@@ -20,13 +20,22 @@ pub const unsafe fn erase<'a>(
     unsafe { std::mem::transmute(input) }
 }
 
-impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
+unsafe impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
     fn complete(&mut self) -> Result<(), &'static DecodeError> {
-        todo!()
+        if self.bitset & self.required != self.required {
+            return Err(&DecodeError {
+                message: "Missing required fields",
+            });
+        }
+        //todo fill defaults
+        Ok(())
     }
-    // called on Err
     unsafe fn destroy(&mut self) {
-        todo!()
+        for (i, field) in self.schema.fields().iter().enumerate() {
+            if self.bitset & (1 << i) != 0 {
+                (self.schema.inner.drops[i])(self.destination.byte_add(field.offset));
+            }
+        }
     }
     fn visit(
         &mut self,
@@ -113,6 +122,7 @@ impl<'a> ObjectSchema<'a> {
 
         let error = 'with_next_key: loop {
             'next: {
+                println!(">> {:?}", key);
                 for (index, field) in self.fields().iter().enumerate() {
                     let mask = 1 << index;
                     if field.name != key {
@@ -128,7 +138,8 @@ impl<'a> ObjectSchema<'a> {
                         break 'with_next_key err;
                     }
                     bitset |= mask;
-                    if bitset & all == all {
+                    //todo should maybe should remove this
+                    if unsued.is_none() && bitset & all == all {
                         // todo handle error opimtize
                         while let Ok(Some(_)) = parser.object_step() {
                             if let Err(err) = parser.skip_value() {

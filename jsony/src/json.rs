@@ -13,7 +13,7 @@ use std::{
 
 use crate::parser::{Parser, Peek};
 
-pub trait FieldVistor<'a> {
+pub unsafe trait FieldVistor<'a> {
     fn visit(&mut self, field: &str, parser: &mut Parser<'a>) -> Result<(), &'static DecodeError>;
     fn complete(&mut self) -> Result<(), &'static DecodeError>;
     /// # Safety
@@ -32,7 +32,7 @@ pub struct FuncFieldVisitor<'a> {
     ptr: NonNull<()>,
 }
 
-impl<'a> FieldVistor<'a> for FuncFieldVisitor<'a> {
+unsafe impl<'a> FieldVistor<'a> for FuncFieldVisitor<'a> {
     fn visit(&mut self, field: &str, parser: &mut Parser<'a>) -> Result<(), &'static DecodeError> {
         unsafe { (self.visit)(self.ptr, field, parser) }
     }

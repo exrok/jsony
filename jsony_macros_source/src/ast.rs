@@ -25,6 +25,8 @@ pub enum DeriveTargetKind {
 #[cfg_attr(feature = "debug", derive(Debug))]
 pub struct FieldAttr {
     pub rename: Option<Literal>,
+    /// eventually probably have kind here but lets keep it simple for now
+    pub flatten: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -32,6 +34,7 @@ impl Default for FieldAttr {
     fn default() -> Self {
         Self {
             rename: Default::default(),
+            flatten: false,
         }
     }
 }
@@ -48,6 +51,7 @@ pub struct DeriveTargetInner<'a> {
     pub to_binary: bool,
     pub from_binary: bool,
     pub rename_all: RenameRule,
+    pub flattenable: bool,
     // pub untagged: bool,
 }
 
@@ -56,7 +60,7 @@ pub struct Field<'a> {
     pub name: &'a Ident,
     pub ty: &'a [TokenTree],
     #[allow(dead_code)]
-    pub attr: Option<AttrIndex>,
+    pub attr_index: Option<AttrIndex>,
     pub flags: u32,
 }
 impl<'a> Field<'a> {
@@ -151,6 +155,9 @@ fn parse_container_attr(
     match key.as_str() {
         "ToJson" => {
             target.to_json = true;
+        }
+        "Flattenable" => {
+            target.flattenable = true;
         }
         "FromJson" => {
             target.from_json = true;
@@ -410,6 +417,17 @@ fn parse_single_field_attr(
             attrs.rename = Some(rename);
             Ok(())
         }
+        "flatten" => {
+            if attrs.flatten {
+                throw!("Duplicate rename attribute" @ ident.span())
+            }
+            if !value.is_empty() {
+                throw!("flatten doesn't take any arguments" @ ident.span())
+            }
+            attrs.flatten = true;
+            Ok(())
+        }
+
         _ => throw!("Unknown attr field" @ ident.span()),
     }
 }
@@ -730,7 +748,7 @@ pub fn parse_tuple_fields<'a>(
         output.push(Field {
             name: fake_name,
             ty: &fields[i..end],
-            attr: next_attr.take(),
+            attr_index: next_attr.take(),
             flags: Field::IN_TUPLE,
         })
     }
@@ -783,7 +801,7 @@ pub fn parse_struct_fields<'a>(
         output.push(Field {
             name,
             ty: &fields[i + 1..end],
-            attr: next_attr.take(),
+            attr_index: next_attr.take(),
             flags: 0,
         })
     }

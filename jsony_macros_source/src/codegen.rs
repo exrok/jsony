@@ -150,6 +150,10 @@ fn fmt_generics(buffer: &mut Vec<TokenTree>, generics: &[Generic], fmt: GenericB
     }
 }
 
+const DEAD_USE: GenericBoundFormating = GenericBoundFormating {
+    lifetimes: false,
+    bounds: false,
+};
 const USE: GenericBoundFormating = GenericBoundFormating {
     lifetimes: true,
     bounds: false,
@@ -161,6 +165,7 @@ const DEF: GenericBoundFormating = GenericBoundFormating {
 
 fn bodyless_impl_from(
     output: &mut Vec<TokenTree>,
+    sub: Option<Ident>,
     trait_name: Ident,
     Ctx {
         target,
@@ -174,7 +179,7 @@ fn bodyless_impl_from(
     splat! {
         output;
         impl <#[#lifetime] [?(!generics.is_empty()), [fmt_generics(output, generics, DEF)]] >
-         [~&crate_path]::[#trait_name]<#[#lifetime]> for [#target.name][?(any_generics) <
+         [~&crate_path]::[?(let Some(sub) = sub) [#sub]::][#trait_name]<#[#lifetime]> for [#target.name][?(any_generics) <
             [fmt_generics(output, &target.generics, USE)]
         >]  [?(!target.where_clauses.is_empty() || !target.generic_field_types.is_empty())
              where [for (ty in &target.generic_field_types) {
@@ -190,8 +195,35 @@ fn impl_from_binary(
 ) -> Result<(), Error> {
     splat! {
         output;
-        unsafe [try bodyless_impl_from(output, Ident::new("FromBinary", Span::call_site()), ctx)] {
+        unsafe [try bodyless_impl_from(output, None, Ident::new("FromBinary", Span::call_site()), ctx)] {
             fn binary_decode(decoder: &mut [~&ctx.crate_path]::binary::Decoder<#[#ctx.lifetime]>) -> Self [
+                output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+            ]
+        }
+    };
+    Ok(())
+}
+
+fn impl_from_json_field_visitor(
+    output: &mut Vec<TokenTree>,
+    ctx: &Ctx,
+    ty: &dyn Fn(&mut Vec<TokenTree>),
+    inner: TokenStream,
+) -> Result<(), Error> {
+    splat! {
+        output;
+        unsafe [try bodyless_impl_from(
+            output,
+            Some(Ident::new("json", Span::call_site())),
+            Ident::new("FromJsonFieldVisitor", Span::call_site()),
+            ctx
+        )] {
+            type Vistor = [ty(output)];
+
+            unsafe fn new_field_visitor(
+                dst: ::std::ptr::NonNull<()>,
+                parser: & [~&ctx.crate_path]::parser::Parser<#[#ctx.lifetime]>
+            ) -> Self::Vistor [
                 output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
@@ -202,7 +234,7 @@ fn impl_from_binary(
 fn impl_from_json(output: &mut Vec<TokenTree>, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
     splat! {
         output;
-        unsafe [try bodyless_impl_from(output, Ident::new("FromJson", Span::call_site()), ctx)] {
+        unsafe [try bodyless_impl_from(output, None, Ident::new("FromJson", Span::call_site()), ctx)] {
             unsafe fn emplace_from_json(dst: ::std::ptr::NonNull<()>, parser: &mut [~&ctx.crate_path]::parser::Parser<#[#ctx.lifetime]>)
             -> ::std::result::Result<(), &#static ::jsony::json::DecodeError> [
                 output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
@@ -250,10 +282,22 @@ struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
+    pub fn dead_target_type(&self, out: &mut Vec<TokenTree>) {
+        splat!(out; [#self.target.name] [?(!self.target.generics.is_empty()) < [fmt_generics(
+            out, &self.target.generics, DEAD_USE
+        )]>])
+    }
     pub fn target_type(&self, out: &mut Vec<TokenTree>) {
         splat!(out; [#self.target.name] [?(!self.target.generics.is_empty()) < [fmt_generics(
             out, &self.target.generics, USE
         )]>])
+    }
+    fn attr(&self, field: &Field) -> Option<&'a FieldAttr> {
+        if let Some(index) = field.attr_index {
+            Some(&self.attrs[index as usize])
+        } else {
+            None
+        }
     }
     fn new(target: &'a DeriveTargetInner, attrs: &'a [FieldAttr]) -> Result<Ctx<'a>, Error> {
         let crate_path = if let Some(value) = &target.path_override {
@@ -347,7 +391,7 @@ fn schema_field_decode(out: &mut Vec<TokenTree>, ctx: &Ctx, field: &Field) -> Re
 }
 
 fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
-    if let Some(attr) = &field.attr {
+    if let Some(attr) = &field.attr_index {
         if let Some(name) = &ctx.attrs[*attr as usize].rename {
             return name.clone();
         }
@@ -361,6 +405,14 @@ fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
     } else {
         Literal::string(&field.name.to_string())
     }
+}
+fn unflattened_fields<'a>(
+    field: &'a [Field],
+    ctx: &'a Ctx<'a>,
+) -> impl Iterator<Item = &'a Field<'a>> {
+    field
+        .iter()
+        .filter(move |f| ctx.attr(f).map_or(true, |a| !a.flatten))
 }
 
 fn struct_schema(
@@ -391,7 +443,7 @@ fn struct_schema(
         TokenTree::Group(Group::new(Delimiter::None, TokenStream::new()))
     };
     let ts = token_stream!(out; [
-        for ((i, field) in fields.iter().enumerate()) {
+        for ((i, field) in unflattened_fields(fields, ctx).enumerate()) {
             [~&ctx.crate_path]::__internal::Field {
                 name: [@field_name_literal(ctx, field).into()],
                 offset: ::std::mem::offset_of!([
@@ -407,7 +459,7 @@ fn struct_schema(
     ]);
     let schema_fields = TokenTree::Group(Group::new(Delimiter::Bracket, ts));
     let ts = token_stream!(out; [
-        for field in fields {
+        for field in unflattened_fields(fields, ctx) {
             splat!{
                 out;
                 std::mem::transmute(
@@ -428,7 +480,53 @@ fn struct_schema(
     Ok(())
 }
 
+fn body_of_struct_from_json_with_flatten(
+    out: &mut Vec<TokenTree>,
+    ctx: &Ctx,
+    flatten_field: &Field,
+) -> TokenStream {
+    token_stream!(
+        out;
+        let mut flatten_visitor =
+            <[~flatten_field.ty] as ::jsony::json::FromJsonFieldVisitor>::new_field_visitor(
+                dst.byte_add(offset_of!([ctx.dead_target_type(out)], [#flatten_field.name])),
+                parser,
+            );
+        let error = #error: {
+            if let Err(err) =
+                __schema_inner::<
+                    #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
+                >().decode(dst, parser, Some(&mut flatten_visitor))
+            {
+                break #error err;
+            }
+            if let Err(err) = flatten_visitor.complete() {
+                break #error err;
+            }
+            return Ok(());
+        };
+        flatten_visitor.destroy();
+        return Err(error);
+    )
+}
 fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+    let mut flattening: Option<&Field> = None;
+
+    for field in fields {
+        let Some(attr) = ctx.attr(field) else {
+            continue;
+        };
+        if attr.flatten {
+            if flattening.is_some() {
+                return Err(Error::span_msg(
+                    "Only one flatten field is currently supproted",
+                    field.name.span(),
+                ));
+            }
+            flattening = Some(field);
+        }
+    }
+
     splat!(out;
        const _: () = {
             const unsafe fn __schema_inner<#[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, DEF)]] >()
@@ -446,10 +544,34 @@ fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Re
                     }
                 }
             [
-                let ts = token_stream!(out; __schema_inner::<
-                    #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
-                >().decode(dst, parser, None));
+                let ts = if let Some(flatten_field) = flattening {
+                    body_of_struct_from_json_with_flatten(out, ctx, flatten_field)
+                } else {
+                    token_stream!(out; __schema_inner::<
+                        #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
+                    >().decode(dst, parser, None))
+                };
                 impl_from_json(out, ctx, ts)?;
+                if ctx.target.flattenable {
+                    let body = token_stream!(
+                        out;
+                        jsony::__internal::DynamicFieldDecoder {
+                            destination: dst,
+                            schema: __schema_inner::<
+                                #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
+                            >(),
+                            bitset: [#Literal::u64_unsuffixed(0)],
+                            required: [#Literal::u64_unsuffixed((1 << fields.len()) - 1)],
+                        }
+                    );
+                    impl_from_json_field_visitor(
+                        out,
+                        ctx,
+                        &|out| splat!(out; jsony::__internal::DynamicFieldDecoder<#[#ctx.lifetime]>),
+                        body
+                    )?;
+
+                }
             ]
         };
     );
@@ -743,6 +865,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
         from_json: false,
         to_binary: false,
         to_json: false,
+        flattenable: false,
         rename_all: crate::case::RenameRule::None,
     };
     let (kind, body) = ast::extract_derive_target(&mut target, &outer_tokens)?;
