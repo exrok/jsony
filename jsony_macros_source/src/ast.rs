@@ -54,6 +54,13 @@ pub struct DeriveTargetInner<'a> {
     pub flattenable: bool,
     // pub untagged: bool,
 }
+impl<'a> DeriveTargetInner<'a> {
+    pub fn has_lifetime(&self) -> bool {
+        self.generics
+            .iter()
+            .any(|x| matches!(x.kind, GenericKind::Lifetime))
+    }
+}
 
 #[cfg_attr(feature = "debug", derive(Debug))]
 pub struct Field<'a> {

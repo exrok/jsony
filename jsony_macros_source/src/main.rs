@@ -102,10 +102,8 @@ fn main() {
         codegen::derive(tokens!());
     }
     util::print_pretty(codegen::derive(tokens! {
-        #[jsony(Flattenable)]
-        struct Too<'a> {
-            nice: u32,
-            foo: HashMap<&'a str, &'a str>,
+        pub enum Billy<'a> {
+            Smash { coolaid: TooFoo<'a> },
         }
     }));
 }

@@ -44,6 +44,14 @@ pub struct DeriveTargetInner<'a> {
     pub rename_all: RenameRule,
     pub flattenable: bool,
 }
+impl<'a> DeriveTargetInner<'a> {
+    pub fn has_lifetime(&self) -> bool {
+        self.generics.iter().any(|x| match x.kind {
+            GenericKind::Lifetime => true,
+            _ => false,
+        })
+    }
+}
 pub struct Field<'a> {
     pub name: &'a Ident,
     pub ty: &'a [TokenTree],

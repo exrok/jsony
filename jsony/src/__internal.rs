@@ -171,6 +171,11 @@ impl<'a> ObjectSchema<'a> {
                             message: "Missing required fields",
                         };
                     }
+                    if let Some(visitor) = &mut unsued {
+                        if let Err(err) = visitor.complete() {
+                            break 'with_next_key err;
+                        }
+                    }
                     // todo can optimize
                     for (i, (emplace_default, field)) in
                         self.inner.defaults.iter().zip(self.fields()).enumerate()
@@ -189,6 +194,9 @@ impl<'a> ObjectSchema<'a> {
             if bitset & (1 << i) != 0 {
                 drop(dest.byte_add(field.offset));
             }
+        }
+        if let Some(vistor) = unsued {
+            vistor.destroy()
         }
         Err(error)
     }

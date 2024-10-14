@@ -492,21 +492,9 @@ fn body_of_struct_from_json_with_flatten(
                 dst.byte_add(offset_of!([ctx.dead_target_type(out)], [#flatten_field.name])),
                 parser,
             );
-        let error = #error: {
-            if let Err(err) =
-                __schema_inner::<
-                    #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
-                >().decode(dst, parser, Some(&mut flatten_visitor))
-            {
-                break #error err;
-            }
-            if let Err(err) = flatten_visitor.complete() {
-                break #error err;
-            }
-            return Ok(());
-        };
-        flatten_visitor.destroy();
-        return Err(error);
+        __schema_inner::<
+            #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
+        >().decode(dst, parser, Some(&mut flatten_visitor))
     )
 }
 fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
@@ -609,29 +597,79 @@ fn enum_variant_from_json(
                 }
             }
         }
-        EnumKind::Struct => token_stream! {
-            out;
-            //todo should create byt type na
-            type __TEMP = ([for (field in variant.fields) { [~field.ty], }]);
-            let schema = ObjectSchema{
-                inner: const { &[try struct_schema(out, ctx, variant.fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
-                phantom: ::std::marker::PhantomData,
-            };
-            let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
-            if let Err(err) = schema.decode(
-                ::std::ptr::NonNull::new_unchecked(temp.as_mut_ptr().cast()),
-                parser,
-                None,
-            ) {
-                return Err(err)
+        EnumKind::Struct => {
+            let mut flattening: Option<&Field> = None;
+            for field in variant.fields {
+                let Some(attr) = ctx.attr(field) else {
+                    continue;
+                };
+                if attr.flatten {
+                    if flattening.is_some() {
+                        return Err(Error::span_msg(
+                            "Only one flatten field is currently supproted",
+                            field.name.span(),
+                        ));
+                    }
+                    flattening = Some(field);
+                }
             }
-            let temp2 = temp.assume_init();
-            dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name] {
-                [for ((i, field) in variant.fields.iter().enumerate()) {
-                    [#field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
-                }]
-            });
-        },
+            if let Some(flatten_field) = flattening {
+                token_stream! {
+                    out;
+                    // Note a type alias with an un-used generic is not an error
+                    type __TEMP[?(ctx.target.has_lifetime())<#[#ctx.lifetime]>] = ([for (field in unflattened_fields(variant.fields, ctx)) { [~field.ty], }]);
+                    let schema = ::jsony::__internal::ObjectSchema{
+                        inner: const { &[try struct_schema(out, ctx, variant.fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
+                        phantom: ::std::marker::PhantomData,
+                    };
+                    let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
+                    let mut temp_flatten = ::std::mem::MaybeUninit::<[~flatten_field.ty]>::uninit();
+                    let mut flatten_visitor =
+                        <[~flatten_field.ty] as ::jsony::json::FromJsonFieldVisitor>::new_field_visitor(
+                            ::std::ptr::NonNull::new_unchecked(temp_flatten.as_mut_ptr().cast()),
+                            parser,
+                        );
+                    if let Err(err) = schema.decode(
+                        ::std::ptr::NonNull::new_unchecked(temp.as_mut_ptr().cast()),
+                        parser,
+                        Some(&mut flatten_visitor),
+                    ) {
+                        return Err(err)
+                    }
+                    let temp2 = temp.assume_init();
+                    dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name] {
+                        [for ((i, field) in unflattened_fields(variant.fields, ctx).enumerate()) {
+                            [#field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
+                        }]
+                        [#flatten_field.name]: temp_flatten.assume_init(),
+                    });
+                }
+            } else {
+                token_stream! {
+                    out;
+                    // Note a type alias with an un-used generic is not an error
+                    type __TEMP[?(ctx.target.has_lifetime())<#[#ctx.lifetime]>] = ([for (field in variant.fields) { [~field.ty], }]);
+                    let schema = ::jsony::__internal::ObjectSchema{
+                        inner: const { &[try struct_schema(out, ctx, variant.fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
+                        phantom: ::std::marker::PhantomData,
+                    };
+                    let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
+                    if let Err(err) = schema.decode(
+                        ::std::ptr::NonNull::new_unchecked(temp.as_mut_ptr().cast()),
+                        parser,
+                        None,
+                    ) {
+                        return Err(err)
+                    }
+                    let temp2 = temp.assume_init();
+                    dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name] {
+                        [for ((i, field) in variant.fields.iter().enumerate()) {
+                            [#field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
+                        }]
+                    });
+                }
+            }
+        }
         EnumKind::None => token_stream! {
             out;
             dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name])
