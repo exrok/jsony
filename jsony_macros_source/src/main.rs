@@ -11,6 +11,15 @@ mod util;
 use std::str::FromStr;
 
 use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
+pub(crate) fn default_call_tokens(span: Span) -> Vec<TokenTree> {
+    vec![
+        TokenTree::Ident(Ident::new("Default", span)),
+        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+        TokenTree::Punct(Punct::new(':', Spacing::Alone)),
+        TokenTree::Ident(Ident::new("default", span)),
+        TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::new())),
+    ]
+}
 
 /// Not we store this here to avoid issues with cargo expand
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -102,8 +111,7 @@ fn main() {
         codegen::derive(tokens!());
     }
     util::print_pretty(codegen::derive(tokens! {
-        pub enum Billy<'a> {
-            Smash { coolaid: TooFoo<'a> },
+        struct Squishy<'a> {
         }
     }));
 }

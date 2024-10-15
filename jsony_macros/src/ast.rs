@@ -21,6 +21,7 @@ pub struct FieldAttr {
     pub rename: Option<Literal>,
     /// eventually probably have kind here but lets keep it simple for now
     pub flatten: bool,
+    pub default: Option<Vec<TokenTree>>,
 }
 #[allow(clippy::derivable_impls)]
 impl Default for FieldAttr {
@@ -28,6 +29,7 @@ impl Default for FieldAttr {
         Self {
             rename: Default::default(),
             flatten: false,
+            default: None,
         }
     }
 }
@@ -62,6 +64,8 @@ pub struct Field<'a> {
 impl<'a> Field<'a> {
     pub const GENERIC: u32 = 1u32 << 0;
     pub const IN_TUPLE: u32 = 1u32 << 1;
+    pub const WITH_FLATTEN: u32 = 1u32 << 2;
+    pub const WITH_DEFAULT: u32 = 1u32 << 3;
     #[allow(dead_code)]
     pub fn is(&self, flags: u32) -> bool {
         self.flags & flags != 0
@@ -416,6 +420,17 @@ fn parse_single_field_attr(
             attrs.rename = Some(rename);
             Ok(())
         }
+        "default" => {
+            if attrs.default.is_some() {
+                return Err(Error::span_msg("Duplicate rename attribute", ident.span()));
+            }
+            attrs.default = Some(if value.is_empty() {
+                crate::default_call_tokens(ident.span())
+            } else {
+                std::mem::take(value)
+            });
+            Ok(())
+        }
         "flatten" => {
             if attrs.flatten {
                 return Err(Error::span_msg("Duplicate rename attribute", ident.span()));
@@ -711,6 +726,19 @@ fn parse_inner_enum_variants<'a>(
     }
     Ok(enums)
 }
+fn flags_from_attr(attrs: &[FieldAttr], index: Option<AttrIndex>) -> u32 {
+    let mut f = 0;
+    if let Some(index) = index {
+        let attr = &attrs[index as usize];
+        if attr.flatten {
+            f |= Field::WITH_FLATTEN;
+        }
+        if attr.default.is_some() {
+            f |= Field::WITH_DEFAULT;
+        }
+    }
+    f
+}
 pub fn parse_tuple_fields<'a>(
     fake_name: &'a Ident,
     output: &mut Vec<Field<'a>>,
@@ -749,8 +777,8 @@ pub fn parse_tuple_fields<'a>(
         output.push(Field {
             name: fake_name,
             ty: &fields[i..end],
+            flags: Field::IN_TUPLE | flags_from_attr(&attr_buf, next_attr),
             attr_index: next_attr.take(),
-            flags: Field::IN_TUPLE,
         })
     }
     Ok(())
@@ -804,8 +832,8 @@ pub fn parse_struct_fields<'a>(
         output.push(Field {
             name,
             ty: &fields[i + 1..end],
+            flags: Field::IN_TUPLE | flags_from_attr(&attr_buf, next_attr),
             attr_index: next_attr.take(),
-            flags: 0,
         })
     }
     Ok(())

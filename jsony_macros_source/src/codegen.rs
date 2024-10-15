@@ -104,6 +104,7 @@ macro_rules! append_tok {
     (=> $d:tt) => { tt_punct_joint($d, '='); tt_punct_alone($d, '>'); };
     (> $d:tt) => { tt_punct_alone($d, '>') };
     (! $d:tt) => { tt_punct_alone($d, '!') };
+    (| $d:tt) => { tt_punct_alone($d, '|') };
     (. $d:tt) => { tt_punct_alone($d, '.') };
     (; $d:tt) => { tt_punct_alone($d, ';') };
     (& $d:tt) => { tt_punct_alone($d, '&') };
@@ -406,19 +407,19 @@ fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
         Literal::string(&field.name.to_string())
     }
 }
-fn unflattened_fields<'a>(
-    field: &'a [Field],
-    ctx: &'a Ctx<'a>,
-) -> impl Iterator<Item = &'a Field<'a>> {
-    field
-        .iter()
-        .filter(move |f| ctx.attr(f).map_or(true, |a| !a.flatten))
-}
+// fn unflattened_fields<'a>(
+//     field: &'a [Field],
+//     ctx: &'a Ctx<'a>,
+// ) -> impl Iterator<Item = &'a Field<'a>> {
+//     field
+//         .iter()
+//         .filter(move |f| ctx.attr(f).map_or(true, |a| !a.flatten))
+// }
 
 fn struct_schema(
     out: &mut Vec<TokenTree>,
     ctx: &Ctx,
-    fields: &[Field],
+    fields: &[&Field],
     temp_tuple: Option<&Ident>,
 ) -> Result<(), Error> {
     let ag_gen = if ctx
@@ -443,7 +444,7 @@ fn struct_schema(
         TokenTree::Group(Group::new(Delimiter::None, TokenStream::new()))
     };
     let ts = token_stream!(out; [
-        for ((i, field) in unflattened_fields(fields, ctx).enumerate()) {
+        for ((i, field) in fields.iter().enumerate()) {
             [~&ctx.crate_path]::__internal::Field {
                 name: [@field_name_literal(ctx, field).into()],
                 offset: ::std::mem::offset_of!([
@@ -459,7 +460,7 @@ fn struct_schema(
     ]);
     let schema_fields = TokenTree::Group(Group::new(Delimiter::Bracket, ts));
     let ts = token_stream!(out; [
-        for field in unflattened_fields(fields, ctx) {
+        for field in fields {
             splat!{
                 out;
                 std::mem::transmute(
@@ -469,7 +470,28 @@ fn struct_schema(
         }
     ]);
     let schema_drops = TokenTree::Group(Group::new(Delimiter::Bracket, ts));
-    let schema_defaults = TokenTree::Group(Group::new(Delimiter::Bracket, Default::default()));
+    let ts = token_stream!(out; [
+        for field in fields {
+            let Some(idx) = field.attr_index else {
+                break;
+            };
+            let Some(default) = &ctx.attrs[idx as usize].default else {
+                break;
+            };
+            splat!{
+                out;
+                |ptr: ::std::ptr::NonNull<()>| {
+                    //todo need to guard gaainst returns and such
+                    let value: [~field.ty] = [~default];
+                    unsafe {
+                        ptr.cast().write(value);
+                    }
+                    ::jsony::__internal::UnsafeReturn
+                },
+            }
+        }
+    ]);
+    let schema_defaults = TokenTree::Group(Group::new(Delimiter::Bracket, ts));
     splat! { out;
         ::jsony::__internal::ObjectSchemaInner {
             fields: &[@schema_fields],
@@ -497,6 +519,33 @@ fn body_of_struct_from_json_with_flatten(
         >().decode(dst, parser, Some(&mut flatten_visitor))
     )
 }
+fn schema_ordered_fields<'a>(fields: &'a [Field<'a>]) -> Vec<&'a Field<'a>> {
+    let mut buf = Vec::with_capacity(fields.len());
+    for field in fields {
+        if field.flags & (Field::WITH_DEFAULT | Field::WITH_FLATTEN) == Field::WITH_DEFAULT {
+            buf.push(field);
+        }
+    }
+    for field in fields {
+        if field.flags & (Field::WITH_DEFAULT | Field::WITH_FLATTEN) == 0 {
+            buf.push(field);
+        }
+    }
+    buf
+}
+
+fn required_bitset(ordered: &[&Field]) -> u64 {
+    let mut defaults = 0;
+    for field in ordered {
+        if field.flags & Field::WITH_DEFAULT != 0 {
+            defaults += 1;
+            continue;
+        }
+        break;
+    }
+    ((1 << ordered.len()) - 1) ^ ((1 << defaults) - 1)
+}
+
 fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     let mut flattening: Option<&Field> = None;
 
@@ -514,6 +563,7 @@ fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Re
             flattening = Some(field);
         }
     }
+    let ordered_fields = schema_ordered_fields(fields);
 
     splat!(out;
        const _: () = {
@@ -527,7 +577,7 @@ fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Re
              ]]
                 {
                     ::jsony::__internal::ObjectSchema {
-                        inner: &const { [struct_schema(out, ctx, fields, None)?] },
+                        inner: &const { [struct_schema(out, ctx, &ordered_fields, None)?] },
                         phantom: ::std::marker::PhantomData
                     }
                 }
@@ -549,7 +599,7 @@ fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Re
                                 #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
                             >(),
                             bitset: [#Literal::u64_unsuffixed(0)],
-                            required: [#Literal::u64_unsuffixed((1 << fields.len()) - 1)],
+                            required: [#Literal::u64_unsuffixed(required_bitset(&ordered_fields))],
                         }
                     );
                     impl_from_json_field_visitor(
@@ -598,6 +648,7 @@ fn enum_variant_from_json(
             }
         }
         EnumKind::Struct => {
+            let ordered_fields = schema_ordered_fields(variant.fields);
             let mut flattening: Option<&Field> = None;
             for field in variant.fields {
                 let Some(attr) = ctx.attr(field) else {
@@ -617,9 +668,9 @@ fn enum_variant_from_json(
                 token_stream! {
                     out;
                     // Note a type alias with an un-used generic is not an error
-                    type __TEMP[?(ctx.target.has_lifetime())<#[#ctx.lifetime]>] = ([for (field in unflattened_fields(variant.fields, ctx)) { [~field.ty], }]);
+                    type __TEMP[?(ctx.target.has_lifetime())<#[#ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
                     let schema = ::jsony::__internal::ObjectSchema{
-                        inner: const { &[try struct_schema(out, ctx, variant.fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
+                        inner: const { &[try struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
                         phantom: ::std::marker::PhantomData,
                     };
                     let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
@@ -638,7 +689,7 @@ fn enum_variant_from_json(
                     }
                     let temp2 = temp.assume_init();
                     dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name] {
-                        [for ((i, field) in unflattened_fields(variant.fields, ctx).enumerate()) {
+                        [for ((i, field) in ordered_fields.iter().enumerate()) {
                             [#field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
                         }]
                         [#flatten_field.name]: temp_flatten.assume_init(),
@@ -650,7 +701,7 @@ fn enum_variant_from_json(
                     // Note a type alias with an un-used generic is not an error
                     type __TEMP[?(ctx.target.has_lifetime())<#[#ctx.lifetime]>] = ([for (field in variant.fields) { [~field.ty], }]);
                     let schema = ::jsony::__internal::ObjectSchema{
-                        inner: const { &[try struct_schema(out, ctx, variant.fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
+                        inner: const { &[try struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
                         phantom: ::std::marker::PhantomData,
                     };
                     let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
@@ -684,6 +735,9 @@ fn enum_from_json(
     ctx: &Ctx,
     variants: &[EnumVariant],
 ) -> Result<(), Error> {
+    if ctx.target.flattenable {
+        throw!("Flattening enums not supported yet.")
+    }
     let body = token_stream! { out;
         let Ok(Some(variant)) = parser.enter_object() else {
             //todo better errors

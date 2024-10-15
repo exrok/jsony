@@ -658,18 +658,10 @@ fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
         Literal::string(&field.name.to_string())
     }
 }
-fn unflattened_fields<'a>(
-    field: &'a [Field],
-    ctx: &'a Ctx<'a>,
-) -> impl Iterator<Item = &'a Field<'a>> {
-    field
-        .iter()
-        .filter(move |f| ctx.attr(f).map_or(true, |a| !a.flatten))
-}
 fn struct_schema(
     out: &mut Vec<TokenTree>,
     ctx: &Ctx,
-    fields: &[Field],
+    fields: &[&Field],
     temp_tuple: Option<&Ident>,
 ) -> Result<(), Error> {
     let ag_gen = if ctx.target.generics.iter().any(|g| !match g.kind {
@@ -693,7 +685,7 @@ fn struct_schema(
     };
     let ts = {
         let len = out.len();
-        for (i, field) in unflattened_fields(fields, ctx).enumerate() {
+        for (i, field) in fields.iter().enumerate() {
             out.extend_from_slice(&ctx.crate_path);
             tt_punct_joint(out, ':');
             tt_punct_alone(out, ':');
@@ -755,7 +747,7 @@ fn struct_schema(
     let ts = {
         let len = out.len();
         {
-            for field in unflattened_fields(fields, ctx) {
+            for field in fields {
                 {
                     tt_ident(out, "std");
                     tt_punct_joint(out, ':');
@@ -797,7 +789,83 @@ fn struct_schema(
         TokenStream::from_iter(out.drain(len..))
     };
     let schema_drops = TokenTree::Group(Group::new(Delimiter::Bracket, ts));
-    let schema_defaults = TokenTree::Group(Group::new(Delimiter::Bracket, Default::default()));
+    let ts = {
+        let len = out.len();
+        {
+            for field in fields {
+                let Some(idx) = field.attr_index else {
+                    break;
+                };
+                let Some(default) = &ctx.attrs[idx as usize].default else {
+                    break;
+                };
+                {
+                    tt_punct_alone(out, '|');
+                    tt_ident(out, "ptr");
+                    tt_punct_alone(out, ':');
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_ident(out, "std");
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_ident(out, "ptr");
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_ident(out, "NonNull");
+                    tt_punct_alone(out, '<');
+                    {
+                        let at = out.len();
+                        tt_group(out, Delimiter::Parenthesis, at);
+                    };
+                    tt_punct_alone(out, '>');
+                    tt_punct_alone(out, '|');
+                    {
+                        let at = out.len();
+                        tt_ident(out, "let");
+                        tt_ident(out, "value");
+                        tt_punct_alone(out, ':');
+                        out.extend_from_slice(field.ty);
+                        tt_punct_alone(out, '=');
+                        out.extend_from_slice(default);
+                        tt_punct_alone(out, ';');
+                        tt_ident(out, "unsafe");
+                        {
+                            let at = out.len();
+                            tt_ident(out, "ptr");
+                            tt_punct_alone(out, '.');
+                            tt_ident(out, "cast");
+                            {
+                                let at = out.len();
+                                tt_group(out, Delimiter::Parenthesis, at);
+                            };
+                            tt_punct_alone(out, '.');
+                            tt_ident(out, "write");
+                            {
+                                let at = out.len();
+                                tt_ident(out, "value");
+                                tt_group(out, Delimiter::Parenthesis, at);
+                            };
+                            tt_punct_alone(out, ';');
+                            tt_group(out, Delimiter::Brace, at);
+                        };
+                        tt_punct_joint(out, ':');
+                        tt_punct_alone(out, ':');
+                        tt_ident(out, "jsony");
+                        tt_punct_joint(out, ':');
+                        tt_punct_alone(out, ':');
+                        tt_ident(out, "__internal");
+                        tt_punct_joint(out, ':');
+                        tt_punct_alone(out, ':');
+                        tt_ident(out, "UnsafeReturn");
+                        tt_group(out, Delimiter::Brace, at);
+                    };
+                    tt_punct_alone(out, ',');
+                }
+            }
+        };
+        TokenStream::from_iter(out.drain(len..))
+    };
+    let schema_defaults = TokenTree::Group(Group::new(Delimiter::Bracket, ts));
     {
         tt_punct_joint(out, ':');
         tt_punct_alone(out, ':');
@@ -921,6 +989,31 @@ fn body_of_struct_from_json_with_flatten(
         TokenStream::from_iter(out.drain(len..))
     }
 }
+fn schema_ordered_fields<'a>(fields: &'a [Field<'a>]) -> Vec<&'a Field<'a>> {
+    let mut buf = Vec::with_capacity(fields.len());
+    for field in fields {
+        if field.flags & (Field::WITH_DEFAULT | Field::WITH_FLATTEN) == Field::WITH_DEFAULT {
+            buf.push(field);
+        }
+    }
+    for field in fields {
+        if field.flags & (Field::WITH_DEFAULT | Field::WITH_FLATTEN) == 0 {
+            buf.push(field);
+        }
+    }
+    buf
+}
+fn required_bitset(ordered: &[&Field]) -> u64 {
+    let mut defaults = 0;
+    for field in ordered {
+        if field.flags & Field::WITH_DEFAULT != 0 {
+            defaults += 1;
+            continue;
+        }
+        break;
+    }
+    ((1 << ordered.len()) - 1) ^ ((1 << defaults) - 1)
+}
 fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     let mut flattening: Option<&Field> = None;
     for field in fields {
@@ -937,6 +1030,7 @@ fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Re
             flattening = Some(field);
         }
     }
+    let ordered_fields = schema_ordered_fields(fields);
     {
         tt_ident(out, "const");
         tt_ident(out, "_");
@@ -1013,7 +1107,7 @@ fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Re
                     {
                         let at = out.len();
                         {
-                            struct_schema(out, ctx, fields, None)?
+                            struct_schema(out, ctx, &ordered_fields, None)?
                         };
                         tt_group(out, Delimiter::Brace, at);
                     };
@@ -1114,7 +1208,7 @@ fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Re
                             tt_ident(out, "required");
                             tt_punct_alone(out, ':');
                             out.push(TokenTree::from(
-                                Literal::u64_unsuffixed((1 << fields.len()) - 1).clone(),
+                                Literal::u64_unsuffixed(required_bitset(&ordered_fields)).clone(),
                             ));
                             tt_punct_alone(out, ',');
                             tt_group(out, Delimiter::Brace, at);
@@ -1260,6 +1354,7 @@ fn enum_variant_from_json(
             }
         }
         EnumKind::Struct => {
+            let ordered_fields = schema_ordered_fields(variant.fields);
             let mut flattening: Option<&Field> = None;
             for field in variant.fields {
                 let Some(attr) = ctx.attr(field) else {
@@ -1289,7 +1384,7 @@ fn enum_variant_from_json(
                     tt_punct_alone(out, '=');
                     {
                         let at = out.len();
-                        for field in unflattened_fields(variant.fields, ctx) {
+                        for field in &ordered_fields {
                             out.extend_from_slice(field.ty);
                             tt_punct_alone(out, ',');
                         }
@@ -1319,7 +1414,7 @@ fn enum_variant_from_json(
                             if let Err(err) = struct_schema(
                                 out,
                                 ctx,
-                                variant.fields,
+                                &ordered_fields,
                                 Some(&Ident::new("__TEMP", Span::call_site())),
                             ) {
                                 return Err(err);
@@ -1554,7 +1649,7 @@ fn enum_variant_from_json(
                         out.push(TokenTree::from(variant.name.clone()));
                         {
                             let at = out.len();
-                            for (i, field) in unflattened_fields(variant.fields, ctx).enumerate() {
+                            for (i, field) in ordered_fields.iter().enumerate() {
                                 out.push(TokenTree::from(field.name.clone()));
                                 tt_punct_alone(out, ':');
                                 tt_ident(out, "temp2");
@@ -1623,7 +1718,7 @@ fn enum_variant_from_json(
                             if let Err(err) = struct_schema(
                                 out,
                                 ctx,
-                                variant.fields,
+                                &ordered_fields,
                                 Some(&Ident::new("__TEMP", Span::call_site())),
                             ) {
                                 return Err(err);
@@ -1822,6 +1917,9 @@ fn enum_from_json(
     ctx: &Ctx,
     variants: &[EnumVariant],
 ) -> Result<(), Error> {
+    if ctx.target.flattenable {
+        return Err(Error::msg("Flattening enums not supported yet."));
+    }
     let body = {
         let len = out.len();
         tt_ident(out, "let");

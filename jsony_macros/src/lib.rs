@@ -8,6 +8,16 @@ mod template;
 
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
+pub(crate) fn default_call_tokens(span: Span) -> Vec<TokenTree> {
+    vec![
+        TokenTree::Ident(Ident::new("Default", span)),
+        TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+        TokenTree::Punct(Punct::new(':', Spacing::Alone)),
+        TokenTree::Ident(Ident::new("default", span)),
+        TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::new())),
+    ]
+}
+
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) enum Flatten {
     None,

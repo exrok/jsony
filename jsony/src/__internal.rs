@@ -7,6 +7,9 @@ pub struct NestedDynamicFieldDecoder<'a, T: FieldVistor<'a>> {
     pub required: u64,
 }
 
+#[repr(transparent)]
+pub struct UnsafeReturn;
+
 pub struct DynamicFieldDecoder<'a> {
     pub destination: NonNull<()>,
     pub schema: ObjectSchema<'a>,
@@ -79,7 +82,7 @@ pub struct Field<'a> {
 pub struct ObjectSchemaInner {
     pub fields: &'static [Field<'static>],
     pub drops: &'static [unsafe fn(NonNull<()>)],
-    pub defaults: &'static [unsafe fn(NonNull<()>)],
+    pub defaults: &'static [unsafe fn(NonNull<()>) -> UnsafeReturn],
 }
 
 #[derive(Clone, Copy)]
@@ -106,88 +109,87 @@ impl<'a> ObjectSchema<'a> {
         parser: &mut Parser<'a>,
         mut unsued: Option<&mut dyn FieldVistor<'a>>,
     ) -> Result<(), &'static DecodeError> {
-        // let defaults = (1u64 << self.inner.defaults.len()) - 1;
         let all = (1u64 << self.inner.fields.len()) - 1;
         let mut bitset = 0;
-        let mut key = match parser.enter_object() {
-            Ok(Some(key)) => key,
-            Ok(None) => {
-                //todo should actually check which fiedls where reuured
-                return Err(&DecodeError {
-                    message: "Missing All fields",
-                });
-            }
-            Err(err) => return Err(err),
-        };
 
-        let error = 'with_next_key: loop {
-            'next: {
-                println!(">> {:?}", key);
-                for (index, field) in self.fields().iter().enumerate() {
-                    let mask = 1 << index;
-                    if field.name != key {
-                        continue;
-                    }
-                    if bitset & mask != 0 {
-                        break 'with_next_key &DecodeError {
-                            message: "Duplicate field",
-                        };
-                    }
-                    //todo porpotogate error
-                    if let Err(err) = (field.decode)(dest.byte_add(field.offset), parser) {
-                        break 'with_next_key err;
-                    }
-                    bitset |= mask;
-                    //todo should maybe should remove this
-                    if unsued.is_none() && bitset & all == all {
-                        // todo handle error opimtize
-                        while let Ok(Some(_)) = parser.object_step() {
-                            if let Err(err) = parser.skip_value() {
-                                break 'with_next_key err;
+        let error = 'with_next_key: {
+            match parser.enter_object() {
+                Ok(Some(mut key)) => {
+                    'key_loop: loop {
+                        'next: {
+                            for (index, field) in self.fields().iter().enumerate() {
+                                let mask = 1 << index;
+                                if field.name != key {
+                                    continue;
+                                }
+                                if bitset & mask != 0 {
+                                    break 'with_next_key &DecodeError {
+                                        message: "Duplicate field",
+                                    };
+                                }
+                                //todo porpotogate error
+                                if let Err(err) =
+                                    (field.decode)(dest.byte_add(field.offset), parser)
+                                {
+                                    break 'with_next_key err;
+                                }
+                                bitset |= mask;
+                                //todo should maybe should remove this
+                                if unsued.is_none() && bitset & all == all {
+                                    // todo handle error opimtize
+                                    while let Ok(Some(_)) = parser.object_step() {
+                                        if let Err(err) = parser.skip_value() {
+                                            break 'with_next_key err;
+                                        }
+                                    }
+                                    return Ok(());
+                                }
+                                break 'next;
+                            }
+                            if let Some(ref mut unsued_processor) = unsued {
+                                if let Err(err) = unsued_processor.visit(key, parser) {
+                                    break 'with_next_key err;
+                                }
+                            } else if let Err(error) = parser.skip_value() {
+                                break 'with_next_key error;
                             }
                         }
-                        return Ok(());
-                    }
-                    break 'next;
-                }
-                if let Some(ref mut unsued_processor) = unsued {
-                    if let Err(err) = unsued_processor.visit(key, parser) {
-                        break 'with_next_key err;
-                    }
-                } else if let Err(error) = parser.skip_value() {
-                    break 'with_next_key error;
-                }
-            }
 
-            match parser.object_step() {
-                Ok(Some(next_key2)) => {
-                    key = next_key2;
-                    continue 'with_next_key;
-                }
-                Ok(None) => {
-                    let default = (1u64 << self.inner.defaults.len()) - 1;
-                    if (bitset | default) & all != all {
-                        break 'with_next_key &DecodeError {
-                            message: "Missing required fields",
-                        };
-                    }
-                    if let Some(visitor) = &mut unsued {
-                        if let Err(err) = visitor.complete() {
-                            break 'with_next_key err;
+                        match parser.object_step() {
+                            Ok(Some(next_key2)) => {
+                                key = next_key2;
+                                continue 'key_loop;
+                            }
+                            Ok(None) => {
+                                break 'key_loop;
+                            }
+                            Err(err) => break 'with_next_key err,
                         }
                     }
-                    // todo can optimize
-                    for (i, (emplace_default, field)) in
-                        self.inner.defaults.iter().zip(self.fields()).enumerate()
-                    {
-                        if bitset & (1 << i) == 0 {
-                            emplace_default(dest.byte_add(field.offset));
-                        }
-                    }
-                    return Ok(());
                 }
+                Ok(None) => {}
                 Err(err) => break 'with_next_key err,
+            };
+            let default = (1u64 << self.inner.defaults.len()) - 1;
+            if (bitset | default) & all != all {
+                break 'with_next_key &DecodeError {
+                    message: "Missing required fields",
+                };
             }
+            if let Some(visitor) = &mut unsued {
+                if let Err(err) = visitor.complete() {
+                    break 'with_next_key err;
+                }
+            }
+            // todo can optimize
+            for (i, (emplace_default, field)) in
+                self.inner.defaults.iter().zip(self.fields()).enumerate()
+            {
+                if bitset & (1 << i) == 0 {
+                    emplace_default(dest.byte_add(field.offset));
+                }
+            }
+            return Ok(());
         };
 
         for (i, (drop, field)) in self.inner.drops.iter().zip(self.fields()).enumerate() {
