@@ -96,6 +96,51 @@ enum Attr {
         codegen_height: usize,
     },
 }
+pub(crate) fn raw_escape(raw: &str, output: &mut String) {
+    let bytes = raw.as_bytes();
+    let mut start = 0;
+    unsafe {
+        let buf = output.as_mut_vec();
+        for (i, &byte) in bytes.iter().enumerate() {
+            let escape = ESCAPE[byte as usize];
+            if escape == 0 {
+                continue;
+            }
+            if start < i {
+                buf.extend_from_slice(&bytes[start..i]);
+            }
+            start = i + 1;
+            let s = match escape {
+                self::QU => b"\\\"",
+                self::BS => b"\\\\",
+                self::BB => b"\\b",
+                self::FF => b"\\f",
+                self::NN => b"\\n",
+                self::RR => b"\\r",
+                self::TT => b"\\t",
+                self::UU => {
+                    static HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
+                    let bytes = &[
+                        b'\\',
+                        b'u',
+                        b'0',
+                        b'0',
+                        HEX_DIGITS[(byte >> 4) as usize],
+                        HEX_DIGITS[(byte & 0xF) as usize],
+                    ];
+                    buf.extend_from_slice(bytes);
+                    continue;
+                }
+                _ => std::hint::unreachable_unchecked(),
+            };
+            buf.extend_from_slice(s);
+        }
+        if start == bytes.len() {
+            return;
+        }
+        buf.extend_from_slice(&bytes[start..]);
+    }
+}
 impl Codegen {
     fn parse_object(&mut self, mut input: IntoIter, top_most: bool) {
         let mut value_tokens: Vec<TokenTree> = Vec::new();
@@ -900,49 +945,7 @@ impl Codegen {
         self.text.push_str(raw);
     }
     fn raw_escape_inline_value(&mut self, raw: &str) {
-        let bytes = raw.as_bytes();
-        let mut start = 0;
-        unsafe {
-            let buf = self.text.as_mut_vec();
-            for (i, &byte) in bytes.iter().enumerate() {
-                let escape = ESCAPE[byte as usize];
-                if escape == 0 {
-                    continue;
-                }
-                if start < i {
-                    buf.extend_from_slice(&bytes[start..i]);
-                }
-                start = i + 1;
-                let s = match escape {
-                    self::QU => b"\\\"",
-                    self::BS => b"\\\\",
-                    self::BB => b"\\b",
-                    self::FF => b"\\f",
-                    self::NN => b"\\n",
-                    self::RR => b"\\r",
-                    self::TT => b"\\t",
-                    self::UU => {
-                        static HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
-                        let bytes = &[
-                            b'\\',
-                            b'u',
-                            b'0',
-                            b'0',
-                            HEX_DIGITS[(byte >> 4) as usize],
-                            HEX_DIGITS[(byte & 0xF) as usize],
-                        ];
-                        buf.extend_from_slice(bytes);
-                        continue;
-                    }
-                    _ => std::hint::unreachable_unchecked(),
-                };
-                buf.extend_from_slice(s);
-            }
-            if start == bytes.len() {
-                return;
-            }
-            buf.extend_from_slice(&bytes[start..]);
-        }
+        raw_escape(raw, &mut self.text);
     }
     fn value_from_expression(&mut self, _span: Span, expr: TokenTree) {
         self.initial_capacity += 2;

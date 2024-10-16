@@ -1,4 +1,4 @@
-use crate::{case::RenameRule, Error};
+use crate::{case::RenameRule, util::Allocator, Error};
 
 use proc_macro2::{Delimiter, Ident, Literal, TokenStream, TokenTree};
 
@@ -69,7 +69,7 @@ pub struct Field<'a> {
     pub name: &'a Ident,
     pub ty: &'a [TokenTree],
     #[allow(dead_code)]
-    pub attr_index: Option<AttrIndex>,
+    pub attr: &'a FieldAttr,
     pub flags: u32,
 }
 
@@ -94,7 +94,7 @@ pub struct EnumVariant<'a> {
     pub fields: &'a [Field<'a>],
     pub kind: EnumKind,
     #[allow(dead_code)]
-    pub attr: Option<AttrIndex>,
+    pub attr: &'a FieldAttr,
 }
 
 #[cfg_attr(feature = "debug", derive(Debug))]
@@ -513,22 +513,15 @@ fn parse_attrs(
     Ok(())
 }
 
-fn parse_field_attr(
-    current: &mut Option<AttrIndex>,
-    attr_buf: &mut Vec<FieldAttr>,
+fn parse_field_attr<'a>(
+    current: &mut Option<&'a mut FieldAttr>,
+    attr_buf: &mut Allocator<'a, FieldAttr>,
     toks: TokenStream,
 ) -> Result<(), Error> {
     let Some(attrs) = extract_jsony_attr(toks) else {
         return Ok(());
     };
-    let attr = if let Some(i) = current {
-        &mut attr_buf[*i as usize]
-    } else {
-        let len = attr_buf.len();
-        *current = Some(attr_buf.len() as AttrIndex);
-        attr_buf.push(FieldAttr::default());
-        &mut attr_buf[len]
-    };
+    let attr = current.get_or_insert_with(|| attr_buf.alloc_default());
     parse_attrs(attrs, &mut |ident, buf| {
         parse_single_field_attr(attr, ident, buf)
     })
@@ -538,7 +531,7 @@ struct VariantTemp<'a> {
     name: &'a Ident,
     start: usize,
     end: usize,
-    attr: Option<AttrIndex>,
+    attr: &'a FieldAttr,
     kind: EnumKind,
 }
 
@@ -580,7 +573,7 @@ pub fn parse_enum<'a>(
     fields: &'a [TokenTree],
     tt_buf: &'a mut Vec<TokenTree>,
     field_buf: &'a mut Vec<Field<'a>>,
-    attr_buf: &mut Vec<FieldAttr>,
+    attr_buf: &mut Allocator<'a, FieldAttr>,
 ) -> Result<Vec<EnumVariant<'a>>, Error> {
     let mut temp = parse_inner_enum_variants(fields, tt_buf, attr_buf)?;
     {
@@ -626,11 +619,11 @@ pub fn parse_enum<'a>(
 fn parse_inner_enum_variants<'a>(
     fields: &'a [TokenTree],
     tt_buffer: &mut Vec<TokenTree>,
-    attr_buffer: &mut Vec<FieldAttr>,
+    attr_buffer: &mut Allocator<'a, FieldAttr>,
 ) -> Result<Vec<VariantTemp<'a>>, Error> {
     let mut f = fields.iter().enumerate();
     let mut enums: Vec<VariantTemp<'a>> = Vec::new();
-    let mut next_attr: Option<AttrIndex> = None;
+    let mut next_attr: Option<&'a mut FieldAttr> = None;
     loop {
         let i = if let Some((i, tok)) = f.next() {
             let TokenTree::Punct(punct) = tok else {
@@ -723,7 +716,11 @@ fn parse_inner_enum_variants<'a>(
             name,
             start,
             end: tt_buffer.len(),
-            attr: next_attr.take(),
+            attr: if let Some(attr) = next_attr.take() {
+                attr
+            } else {
+                &DEFAULT_ATTR.0
+            },
             kind,
         });
         if f.len() == 0 {
@@ -733,10 +730,9 @@ fn parse_inner_enum_variants<'a>(
     Ok(enums)
 }
 
-fn flags_from_attr(attrs: &[FieldAttr], index: Option<AttrIndex>) -> u32 {
+fn flags_from_attr(attr: &Option<&mut FieldAttr>) -> u32 {
     let mut f = 0;
-    if let Some(index) = index {
-        let attr = &attrs[index as usize];
+    if let Some(attr) = attr {
         if attr.flatten {
             f |= Field::WITH_FLATTEN;
         }
@@ -751,10 +747,10 @@ pub fn parse_tuple_fields<'a>(
     fake_name: &'a Ident,
     output: &mut Vec<Field<'a>>,
     fields: &'a [TokenTree],
-    attr_buf: &mut Vec<FieldAttr>,
+    attr_buf: &mut Allocator<'a, FieldAttr>,
 ) -> Result<(), Error> {
     let mut f = fields.iter().enumerate();
-    let mut next_attr: Option<AttrIndex> = None;
+    let mut next_attr: Option<&mut FieldAttr> = None;
     while let Some((i, tok)) = f.next() {
         if let TokenTree::Punct(punct) = tok {
             if punct.as_char() == '#' {
@@ -785,21 +781,34 @@ pub fn parse_tuple_fields<'a>(
         output.push(Field {
             name: fake_name,
             ty: &fields[i..end],
-            flags: Field::IN_TUPLE | flags_from_attr(&attr_buf, next_attr),
-            attr_index: next_attr.take(),
+            flags: Field::IN_TUPLE | flags_from_attr(&next_attr),
+            attr: if let Some(attr) = next_attr.take() {
+                attr
+            } else {
+                &DEFAULT_ATTR.0
+            },
         })
     }
     Ok(())
 }
 
-type AttrIndex = u16;
+struct DefaultFieldAttr(FieldAttr);
+unsafe impl Sync for DefaultFieldAttr {}
+static DEFAULT_ATTR: DefaultFieldAttr = const {
+    DefaultFieldAttr(FieldAttr {
+        rename: None,
+        flatten: false,
+        default: None,
+    })
+};
+
 pub fn parse_struct_fields<'a>(
     output: &mut Vec<Field<'a>>,
     fields: &'a [TokenTree],
-    attr_buf: &mut Vec<FieldAttr>,
+    attr_buf: &mut Allocator<'a, FieldAttr>,
 ) -> Result<(), Error> {
     let mut f = fields.iter().enumerate();
-    let mut next_attr: Option<AttrIndex> = None;
+    let mut next_attr: Option<&'a mut FieldAttr> = None;
     while let Some((i, tok)) = f.next() {
         let TokenTree::Punct(punct) = tok else {
             continue;
@@ -838,8 +847,12 @@ pub fn parse_struct_fields<'a>(
         output.push(Field {
             name,
             ty: &fields[i + 1..end],
-            flags: Field::IN_TUPLE | flags_from_attr(&attr_buf, next_attr),
-            attr_index: next_attr.take(),
+            flags: Field::IN_TUPLE | flags_from_attr(&next_attr),
+            attr: if let Some(attr) = next_attr.take() {
+                attr
+            } else {
+                &DEFAULT_ATTR.0
+            },
         })
     }
     Ok(())

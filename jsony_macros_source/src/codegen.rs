@@ -3,6 +3,7 @@ use crate::ast::{
     GenericKind,
 };
 use crate::case::RenameRule;
+use crate::util::MemoryPool;
 use crate::Error;
 use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
@@ -272,13 +273,40 @@ fn impl_to_binary(
     Ok(())
 }
 
+fn impl_to_json(
+    output: &mut Vec<TokenTree>,
+    kind: &str,
+    Ctx {
+        target, crate_path, ..
+    }: &Ctx,
+    inner: TokenStream,
+) -> Result<(), Error> {
+    let any_generics = !target.generics.is_empty();
+    splat! {
+        output;
+        impl [?(any_generics) < [fmt_generics(output, &target.generics, DEF)] >]
+         [~&crate_path]::ToJson for [#target.name][?(any_generics) <
+            [fmt_generics( output, &target.generics, USE)]
+        >]  [?(!target.where_clauses.is_empty() || !target.generic_field_types.is_empty())
+             where [
+                for ty in &target.generic_field_types {
+                    splat!(output; [~ty]: [~&crate_path]::ToBinary,)
+                }
+             ]] {
+            type Kind = [~&crate_path]::json::[@Ident::new(kind, Span::call_site()).into()];
+            fn jsonify_into(&self, out: &mut jsony::TextWriter) -> Self::Kind [
+                output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+            ]
+        }
+    };
+    Ok(())
+}
+
 struct Ctx<'a> {
     lifetime: Ident,
     generics: &'a [Generic<'a>],
     crate_path: Vec<TokenTree>,
     target: &'a DeriveTargetInner<'a>,
-    #[allow(dead_code)]
-    attrs: &'a [FieldAttr],
     temp: Vec<Ident>,
 }
 
@@ -293,14 +321,7 @@ impl<'a> Ctx<'a> {
             out, &self.target.generics, USE
         )]>])
     }
-    fn attr(&self, field: &Field) -> Option<&'a FieldAttr> {
-        if let Some(index) = field.attr_index {
-            Some(&self.attrs[index as usize])
-        } else {
-            None
-        }
-    }
-    fn new(target: &'a DeriveTargetInner, attrs: &'a [FieldAttr]) -> Result<Ctx<'a>, Error> {
+    fn new(target: &'a DeriveTargetInner) -> Result<Ctx<'a>, Error> {
         let crate_path = if let Some(value) = &target.path_override {
             let content = value.to_string();
             // assumes normal string and no escapes probalby shouldn't
@@ -336,7 +357,6 @@ impl<'a> Ctx<'a> {
             generics,
             crate_path,
             target,
-            attrs,
             temp: Vec::new(),
         })
     }
@@ -392,10 +412,8 @@ fn schema_field_decode(out: &mut Vec<TokenTree>, ctx: &Ctx, field: &Field) -> Re
 }
 
 fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
-    if let Some(attr) = &field.attr_index {
-        if let Some(name) = &ctx.attrs[*attr as usize].rename {
-            return name.clone();
-        }
+    if let Some(name) = &field.attr.rename {
+        return name.clone();
     }
     if ctx.target.rename_all != RenameRule::None {
         Literal::string(
@@ -406,6 +424,30 @@ fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
     } else {
         Literal::string(&field.name.to_string())
     }
+}
+
+fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) -> Result<(), Error> {
+    output.push('"');
+    if let Some(name) = &field.attr.rename {
+        match crate::lit::literal_inline(name.to_string()) {
+            crate::lit::InlineKind::String(value) => {
+                output.push_str(&value);
+            }
+            _ => {
+                throw!("Invalid rename value expected a string" @ name.span())
+            }
+        }
+    } else if ctx.target.rename_all != RenameRule::None {
+        output.push_str(
+            &ctx.target
+                .rename_all
+                .apply_to_field(&field.name.to_string()),
+        );
+    } else {
+        output.push_str(&field.name.to_string());
+    }
+    output.push('"');
+    Ok(())
 }
 // fn unflattened_fields<'a>(
 //     field: &'a [Field],
@@ -472,10 +514,7 @@ fn struct_schema(
     let schema_drops = TokenTree::Group(Group::new(Delimiter::Bracket, ts));
     let ts = token_stream!(out; [
         for field in fields {
-            let Some(idx) = field.attr_index else {
-                break;
-            };
-            let Some(default) = &ctx.attrs[idx as usize].default else {
+            let Some(default) = &field.attr.default else {
                 break;
             };
             splat!{
@@ -546,14 +585,39 @@ fn required_bitset(ordered: &[&Field]) -> u64 {
     ((1 << ordered.len()) - 1) ^ ((1 << defaults) - 1)
 }
 
+fn struct_to_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+    let mut text = String::new();
+    let mut first = true;
+    let body = token_stream!(
+        out;
+        out.start_json_object();
+        [for (field in fields) {
+            out.push_str([
+                text.clear();
+                if first {
+                    first = false;
+                }  else {
+                    text.push(',');
+                }
+                if let Err(err) = field_name_json(ctx, field, &mut text) {
+                    return Err(err)
+                }
+                text.push(':');
+                out.push(TokenTree::Literal(Literal::string(&text)));
+            ]);
+            <[~field.ty] as ::jsony::ToJson>::jsonify_into(&self.[#field.name], out);
+        }]
+        out.end_json_object()
+    );
+
+    impl_to_json(out, "ObjectValue", ctx, body)
+}
+
 fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     let mut flattening: Option<&Field> = None;
 
     for field in fields {
-        let Some(attr) = ctx.attr(field) else {
-            continue;
-        };
-        if attr.flatten {
+        if field.attr.flatten {
             if flattening.is_some() {
                 return Err(Error::span_msg(
                     "Only one flatten field is currently supproted",
@@ -651,10 +715,7 @@ fn enum_variant_from_json(
             let ordered_fields = schema_ordered_fields(variant.fields);
             let mut flattening: Option<&Field> = None;
             for field in variant.fields {
-                let Some(attr) = ctx.attr(field) else {
-                    continue;
-                };
-                if attr.flatten {
+                if field.attr.flatten {
                     if flattening.is_some() {
                         return Err(Error::span_msg(
                             "Only one flatten field is currently supproted",
@@ -769,15 +830,14 @@ fn enum_from_json(
 }
 
 // bincode test
-fn handle_struct(
-    target: &DeriveTargetInner,
-    fields: &[Field],
-    attrs: &[FieldAttr],
-) -> Result<TokenStream, Error> {
+fn handle_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenStream, Error> {
     let mut output = Vec::<TokenTree>::new();
-    let ctx = Ctx::new(target, attrs)?;
+    let ctx = Ctx::new(target)?;
     if target.from_json {
         struct_from_json(&mut output, &ctx, fields)?;
+    }
+    if target.to_json {
+        struct_to_json(&mut output, &ctx, fields)?;
     }
 
     if target.to_binary {
@@ -805,13 +865,9 @@ fn handle_struct(
     Ok(output.drain(..).collect())
 }
 
-fn handle_tuple_struct(
-    target: &DeriveTargetInner,
-    fields: &[Field],
-    attrs: &[FieldAttr],
-) -> Result<TokenStream, Error> {
+fn handle_tuple_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenStream, Error> {
     let mut output = Vec::<TokenTree>::new();
-    let ctx = Ctx::new(target, attrs)?;
+    let ctx = Ctx::new(target)?;
 
     if target.to_binary {
         let body = token_stream! { (&mut output); [
@@ -919,13 +975,9 @@ fn enum_from_binary(
     impl_from_binary(out, ctx, body)
 }
 
-fn handle_enum(
-    target: &DeriveTargetInner,
-    variants: &[EnumVariant],
-    attrs: &[FieldAttr],
-) -> Result<TokenStream, Error> {
+fn handle_enum(target: &DeriveTargetInner, variants: &[EnumVariant]) -> Result<TokenStream, Error> {
     let mut output = Vec::<TokenTree>::new();
-    let mut ctx = Ctx::new(target, attrs)?;
+    let mut ctx = Ctx::new(target)?;
     let mut max_tuples = 0;
     for var in variants {
         if matches!(var.kind, EnumKind::Tuple) {
@@ -969,13 +1021,14 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     let field_toks: Vec<TokenTree> = body.into_iter().collect();
     let mut tt_buf = Vec::<TokenTree>::new();
     let mut field_buf = Vec::<Field>::new();
-    let mut attr_buf = Vec::<FieldAttr>::new();
+    let mut pool = MemoryPool::<FieldAttr>::new();
+    let mut attr_buf = pool.allocator();
     match kind {
         DeriveTargetKind::Struct => {
             match ast::parse_struct_fields(&mut field_buf, &field_toks, &mut attr_buf) {
                 Ok(_) => {
                     ast::scan_fields(&mut target, &mut field_buf);
-                    handle_struct(&target, &field_buf, &attr_buf)
+                    handle_struct(&target, &field_buf)
                 }
                 Err(err) => Err(err),
             }
@@ -989,7 +1042,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
             ) {
                 Ok(_) => {
                     ast::scan_fields(&mut target, &mut field_buf);
-                    handle_tuple_struct(&target, &field_buf, &attr_buf)
+                    handle_tuple_struct(&target, &field_buf)
                 }
                 Err(err) => Err(err),
             }
@@ -1002,7 +1055,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
                 &mut field_buf,
                 &mut attr_buf,
             ) {
-                Ok(enums) => handle_enum(&target, &enums, &attr_buf),
+                Ok(enums) => handle_enum(&target, &enums),
                 Err(err) => Err(err),
             }
         }

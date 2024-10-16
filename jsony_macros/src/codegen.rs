@@ -3,6 +3,7 @@ use crate::ast::{
     GenericKind,
 };
 use crate::case::RenameRule;
+use crate::util::MemoryPool;
 use crate::Error;
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
@@ -444,13 +445,102 @@ fn impl_to_binary(
     };
     Ok(())
 }
+fn impl_to_json(
+    output: &mut Vec<TokenTree>,
+    kind: &str,
+    Ctx {
+        target, crate_path, ..
+    }: &Ctx,
+    inner: TokenStream,
+) -> Result<(), Error> {
+    let any_generics = !target.generics.is_empty();
+    {
+        tt_ident(output, "impl");
+        if any_generics {
+            tt_punct_alone(output, '<');
+            {
+                fmt_generics(output, &target.generics, DEF)
+            };
+            tt_punct_alone(output, '>');
+        };
+        output.extend_from_slice(&crate_path);
+        tt_punct_joint(output, ':');
+        tt_punct_alone(output, ':');
+        tt_ident(output, "ToJson");
+        tt_ident(output, "for");
+        output.push(TokenTree::from(target.name.clone()));
+        if any_generics {
+            tt_punct_alone(output, '<');
+            {
+                fmt_generics(output, &target.generics, USE)
+            };
+            tt_punct_alone(output, '>');
+        };
+        if !target.where_clauses.is_empty() || !target.generic_field_types.is_empty() {
+            tt_ident(output, "where");
+            {
+                for ty in &target.generic_field_types {
+                    {
+                        output.extend_from_slice(ty);
+                        tt_punct_alone(output, ':');
+                        output.extend_from_slice(&crate_path);
+                        tt_punct_joint(output, ':');
+                        tt_punct_alone(output, ':');
+                        tt_ident(output, "ToBinary");
+                        tt_punct_alone(output, ',');
+                    }
+                }
+            };
+        };
+        {
+            let at = output.len();
+            tt_ident(output, "type");
+            tt_ident(output, "Kind");
+            tt_punct_alone(output, '=');
+            output.extend_from_slice(&crate_path);
+            tt_punct_joint(output, ':');
+            tt_punct_alone(output, ':');
+            tt_ident(output, "json");
+            tt_punct_joint(output, ':');
+            tt_punct_alone(output, ':');
+            output.push(Ident::new(kind, Span::call_site()).into());
+            tt_punct_alone(output, ';');
+            tt_ident(output, "fn");
+            tt_ident(output, "jsonify_into");
+            {
+                let at = output.len();
+                tt_punct_alone(output, '&');
+                tt_ident(output, "self");
+                tt_punct_alone(output, ',');
+                tt_ident(output, "out");
+                tt_punct_alone(output, ':');
+                tt_punct_alone(output, '&');
+                tt_ident(output, "mut");
+                tt_ident(output, "jsony");
+                tt_punct_joint(output, ':');
+                tt_punct_alone(output, ':');
+                tt_ident(output, "TextWriter");
+                tt_group(output, Delimiter::Parenthesis, at);
+            };
+            tt_punct_joint(output, '-');
+            tt_punct_alone(output, '>');
+            tt_ident(output, "Self");
+            tt_punct_joint(output, ':');
+            tt_punct_alone(output, ':');
+            tt_ident(output, "Kind");
+            {
+                output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+            };
+            tt_group(output, Delimiter::Brace, at);
+        };
+    };
+    Ok(())
+}
 struct Ctx<'a> {
     lifetime: Ident,
     generics: &'a [Generic<'a>],
     crate_path: Vec<TokenTree>,
     target: &'a DeriveTargetInner<'a>,
-    #[allow(dead_code)]
-    attrs: &'a [FieldAttr],
     temp: Vec<Ident>,
 }
 impl<'a> Ctx<'a> {
@@ -478,14 +568,7 @@ impl<'a> Ctx<'a> {
             };
         }
     }
-    fn attr(&self, field: &Field) -> Option<&'a FieldAttr> {
-        if let Some(index) = field.attr_index {
-            Some(&self.attrs[index as usize])
-        } else {
-            None
-        }
-    }
-    fn new(target: &'a DeriveTargetInner, attrs: &'a [FieldAttr]) -> Result<Ctx<'a>, Error> {
+    fn new(target: &'a DeriveTargetInner) -> Result<Ctx<'a>, Error> {
         let crate_path = if let Some(value) = &target.path_override {
             let content = value.to_string();
             #[allow(unused)]
@@ -524,7 +607,6 @@ impl<'a> Ctx<'a> {
             generics,
             crate_path,
             target,
-            attrs,
             temp: Vec::new(),
         })
     }
@@ -643,10 +725,8 @@ fn schema_field_decode(out: &mut Vec<TokenTree>, ctx: &Ctx, field: &Field) -> Re
     Ok(())
 }
 fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
-    if let Some(attr) = &field.attr_index {
-        if let Some(name) = &ctx.attrs[*attr as usize].rename {
-            return name.clone();
-        }
+    if let Some(name) = &field.attr.rename {
+        return name.clone();
     }
     if ctx.target.rename_all != RenameRule::None {
         Literal::string(
@@ -657,6 +737,32 @@ fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
     } else {
         Literal::string(&field.name.to_string())
     }
+}
+fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) -> Result<(), Error> {
+    output.push('"');
+    if let Some(name) = &field.attr.rename {
+        match crate::lit::literal_inline(name.to_string()) {
+            crate::lit::InlineKind::String(value) => {
+                output.push_str(&value);
+            }
+            _ => {
+                return Err(Error::span_msg(
+                    "Invalid rename value expected a string",
+                    name.span(),
+                ))
+            }
+        }
+    } else if ctx.target.rename_all != RenameRule::None {
+        output.push_str(
+            &ctx.target
+                .rename_all
+                .apply_to_field(&field.name.to_string()),
+        );
+    } else {
+        output.push_str(&field.name.to_string());
+    }
+    output.push('"');
+    Ok(())
 }
 fn struct_schema(
     out: &mut Vec<TokenTree>,
@@ -793,10 +899,7 @@ fn struct_schema(
         let len = out.len();
         {
             for field in fields {
-                let Some(idx) = field.attr_index else {
-                    break;
-                };
-                let Some(default) = &ctx.attrs[idx as usize].default else {
+                let Some(default) = &field.attr.default else {
                     break;
                 };
                 {
@@ -1014,13 +1117,81 @@ fn required_bitset(ordered: &[&Field]) -> u64 {
     }
     ((1 << ordered.len()) - 1) ^ ((1 << defaults) - 1)
 }
+fn struct_to_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+    let mut text = String::new();
+    let mut first = true;
+    let body = {
+        let len = out.len();
+        tt_ident(out, "out");
+        tt_punct_alone(out, '.');
+        tt_ident(out, "start_json_object");
+        {
+            let at = out.len();
+            tt_group(out, Delimiter::Parenthesis, at);
+        };
+        tt_punct_alone(out, ';');
+        for field in fields {
+            tt_ident(out, "out");
+            tt_punct_alone(out, '.');
+            tt_ident(out, "push_str");
+            {
+                let at = out.len();
+                {
+                    text.clear();
+                    if first {
+                        first = false;
+                    } else {
+                        text.push(',');
+                    }
+                    if let Err(err) = field_name_json(ctx, field, &mut text) {
+                        return Err(err);
+                    }
+                    text.push(':');
+                    out.push(TokenTree::Literal(Literal::string(&text)));
+                };
+                tt_group(out, Delimiter::Parenthesis, at);
+            };
+            tt_punct_alone(out, ';');
+            tt_punct_alone(out, '<');
+            out.extend_from_slice(field.ty);
+            tt_ident(out, "as");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "jsony");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "ToJson");
+            tt_punct_alone(out, '>');
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "jsonify_into");
+            {
+                let at = out.len();
+                tt_punct_alone(out, '&');
+                tt_ident(out, "self");
+                tt_punct_alone(out, '.');
+                out.push(TokenTree::from(field.name.clone()));
+                tt_punct_alone(out, ',');
+                tt_ident(out, "out");
+                tt_group(out, Delimiter::Parenthesis, at);
+            };
+            tt_punct_alone(out, ';');
+        }
+        tt_ident(out, "out");
+        tt_punct_alone(out, '.');
+        tt_ident(out, "end_json_object");
+        {
+            let at = out.len();
+            tt_group(out, Delimiter::Parenthesis, at);
+        };
+        TokenStream::from_iter(out.drain(len..))
+    };
+    impl_to_json(out, "ObjectValue", ctx, body)
+}
 fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     let mut flattening: Option<&Field> = None;
     for field in fields {
-        let Some(attr) = ctx.attr(field) else {
-            continue;
-        };
-        if attr.flatten {
+        if field.attr.flatten {
             if flattening.is_some() {
                 return Err(Error::span_msg(
                     "Only one flatten field is currently supproted",
@@ -1357,10 +1528,7 @@ fn enum_variant_from_json(
             let ordered_fields = schema_ordered_fields(variant.fields);
             let mut flattening: Option<&Field> = None;
             for field in variant.fields {
-                let Some(attr) = ctx.attr(field) else {
-                    continue;
-                };
-                if attr.flatten {
+                if field.attr.flatten {
                     if flattening.is_some() {
                         return Err(Error::span_msg(
                             "Only one flatten field is currently supproted",
@@ -2148,15 +2316,14 @@ fn enum_from_json(
     impl_from_json(out, ctx, body)?;
     Ok(())
 }
-fn handle_struct(
-    target: &DeriveTargetInner,
-    fields: &[Field],
-    attrs: &[FieldAttr],
-) -> Result<TokenStream, Error> {
+fn handle_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenStream, Error> {
     let mut output = Vec::<TokenTree>::new();
-    let ctx = Ctx::new(target, attrs)?;
+    let ctx = Ctx::new(target)?;
     if target.from_json {
         struct_from_json(&mut output, &ctx, fields)?;
+    }
+    if target.to_json {
+        struct_to_json(&mut output, &ctx, fields)?;
     }
     if target.to_binary {
         let body = {
@@ -2206,13 +2373,9 @@ fn handle_struct(
     }
     Ok(output.drain(..).collect())
 }
-fn handle_tuple_struct(
-    target: &DeriveTargetInner,
-    fields: &[Field],
-    attrs: &[FieldAttr],
-) -> Result<TokenStream, Error> {
+fn handle_tuple_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenStream, Error> {
     let mut output = Vec::<TokenTree>::new();
-    let ctx = Ctx::new(target, attrs)?;
+    let ctx = Ctx::new(target)?;
     if target.to_binary {
         let body = {
             let len = output.len();
@@ -2490,13 +2653,9 @@ fn enum_from_binary(
     };
     impl_from_binary(out, ctx, body)
 }
-fn handle_enum(
-    target: &DeriveTargetInner,
-    variants: &[EnumVariant],
-    attrs: &[FieldAttr],
-) -> Result<TokenStream, Error> {
+fn handle_enum(target: &DeriveTargetInner, variants: &[EnumVariant]) -> Result<TokenStream, Error> {
     let mut output = Vec::<TokenTree>::new();
-    let mut ctx = Ctx::new(target, attrs)?;
+    let mut ctx = Ctx::new(target)?;
     let mut max_tuples = 0;
     for var in variants {
         if match var.kind {
@@ -2540,13 +2699,14 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     let field_toks: Vec<TokenTree> = body.into_iter().collect();
     let mut tt_buf = Vec::<TokenTree>::new();
     let mut field_buf = Vec::<Field>::new();
-    let mut attr_buf = Vec::<FieldAttr>::new();
+    let mut pool = MemoryPool::<FieldAttr>::new();
+    let mut attr_buf = pool.allocator();
     match kind {
         DeriveTargetKind::Struct => {
             match ast::parse_struct_fields(&mut field_buf, &field_toks, &mut attr_buf) {
                 Ok(_) => {
                     ast::scan_fields(&mut target, &mut field_buf);
-                    handle_struct(&target, &field_buf, &attr_buf)
+                    handle_struct(&target, &field_buf)
                 }
                 Err(err) => Err(err),
             }
@@ -2560,7 +2720,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
             ) {
                 Ok(_) => {
                     ast::scan_fields(&mut target, &mut field_buf);
-                    handle_tuple_struct(&target, &field_buf, &attr_buf)
+                    handle_tuple_struct(&target, &field_buf)
                 }
                 Err(err) => Err(err),
             }
@@ -2573,7 +2733,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
                 &mut field_buf,
                 &mut attr_buf,
             ) {
-                Ok(enums) => handle_enum(&target, &enums, &attr_buf),
+                Ok(enums) => handle_enum(&target, &enums),
                 Err(err) => Err(err),
             }
         }

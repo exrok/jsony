@@ -5,6 +5,7 @@ mod case;
 mod codegen;
 mod lit;
 mod template;
+mod util;
 
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
