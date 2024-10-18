@@ -6,6 +6,12 @@ macro_rules! obj {
     };
 }
 
+macro_rules! arr {
+    ($($tt:tt)*) => {
+        stringify! { [ $($tt)* ] }
+    };
+}
+
 #[test]
 fn simple_struct() {
     #[derive(Jsony)]
@@ -51,7 +57,7 @@ fn simple_struct() {
 #[test]
 fn defaults() {
     #[derive(Jsony, Default)]
-    pub struct Simple {
+    struct Simple {
         #[jsony(default = 203)]
         a1: i32,
         #[jsony(default = false)]
@@ -65,7 +71,7 @@ fn defaults() {
     assert_eq!(x.a2, false);
 
     #[derive(Jsony)]
-    pub struct Nested {
+    struct Nested {
         x: Simple,
         #[jsony(default)]
         y: Simple,
@@ -89,4 +95,34 @@ fn defaults() {
     assert_eq!(nested.x.a2, true);
     assert_eq!(nested.y.a1, 0);
     assert_eq!(nested.y.a2, false);
+}
+
+#[test]
+fn enum_default_tagging() {
+    #[derive(Jsony, PartialEq, Eq, Debug)]
+    enum Simple {
+        Alpha(u32),
+        Beta { a: String, b: Vec<u8> },
+        Delta,
+        Zeta,
+    }
+    let x = from_json::<Vec<Simple>>(arr! [
+        { "Alpha": 23 },
+        "Zeta",
+        { "Beta": { "a": "test", "b": [1, 2, 3] } },
+        "Delta"
+    ])
+    .unwrap();
+    assert_eq!(
+        &x,
+        &[
+            Simple::Alpha(23),
+            Simple::Zeta,
+            Simple::Beta {
+                a: "test".to_string(),
+                b: vec![1, 2, 3],
+            },
+            Simple::Delta,
+        ]
+    )
 }

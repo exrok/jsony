@@ -42,6 +42,13 @@ impl Default for FieldAttr {
 }
 
 #[cfg_attr(feature = "debug", derive(Debug))]
+pub enum Tag {
+    Inline(String),
+    Untagged,
+    Default,
+}
+
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct DeriveTargetInner<'a> {
     pub name: Ident,
     pub generics: Vec<Generic<'a>>,
@@ -54,8 +61,10 @@ pub struct DeriveTargetInner<'a> {
     pub from_binary: bool,
     pub rename_all: RenameRule,
     pub flattenable: bool,
-    // pub untagged: bool,
+    pub content: Option<String>,
+    pub tag: Tag, // pub untagged: bool,
 }
+
 impl<'a> DeriveTargetInner<'a> {
     pub fn has_lifetime(&self) -> bool {
         self.generics
@@ -179,6 +188,46 @@ fn parse_container_attr(
         }
         "FromBinary" => {
             target.from_binary = true;
+        }
+        "untagged" => match &target.tag {
+            Tag::Default => target.tag = Tag::Untagged,
+            _ => throw!("Duplicate tag attribute" @ attr.span()),
+        },
+        "tag" => {
+            match target.tag {
+                Tag::Inline(_) => throw!("Duplicate tag attribute" @ attr.span()),
+                Tag::Untagged => throw!("Cannot of a tag & be untagged" @ attr.span()),
+                Tag::Default => (),
+            }
+            let [TokenTree::Literal(tag_name), rest @ ..] = value else {
+                throw!("Expected a tag" @ attr.span())
+            };
+            value = rest;
+            match crate::lit::literal_inline(tag_name.to_string()) {
+                crate::lit::InlineKind::String(s) | crate::lit::InlineKind::Raw(s) => {
+                    target.tag = Tag::Inline(s)
+                }
+                crate::lit::InlineKind::None => {
+                    throw!("Expected a string literal" @ tag_name.span())
+                }
+            }
+        }
+        "content" => {
+            if target.content.is_some() {
+                throw!("Duplicate content attribute" @ attr.span())
+            }
+            let [TokenTree::Literal(content_name), rest @ ..] = value else {
+                throw!("Expected the field of content" @ attr.span())
+            };
+            value = rest;
+            match crate::lit::literal_inline(content_name.to_string()) {
+                crate::lit::InlineKind::String(s) | crate::lit::InlineKind::Raw(s) => {
+                    target.content = Some(s)
+                }
+                crate::lit::InlineKind::None => {
+                    throw!("Expected a string literal" @ content_name.span())
+                }
+            }
         }
         "rename_all" => {
             if target.rename_all != RenameRule::None {

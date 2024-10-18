@@ -199,6 +199,9 @@ impl<'j> Parser<'j> {
     pub fn report_error(&mut self, error: String) {
         self.ctx.error = Some(Cow::Owned(error));
     }
+    pub fn clear_error(&mut self) {
+        self.ctx.error = None;
+    }
 
     pub fn try_zerocopy(&self, text: &str) -> Option<&'j str> {
         // todo
@@ -393,6 +396,144 @@ impl<'j> Parser<'j> {
             }
         } else {
             Err(&EOF_WHILE_PARSING_OBJECT)
+        }
+    }
+
+    pub fn discard_remaining_object_fields(&mut self) -> JsonResult<()> {
+        loop {
+            match self.object_step() {
+                Ok(Some(_)) => {
+                    if let Err(err) = self.skip_value() {
+                        return Err(err);
+                    }
+                }
+                Ok(None) => {
+                    return Ok(());
+                }
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    pub fn tag_query_at_content_next_object(
+        &mut self,
+        tag: &str,
+        content: &str,
+    ) -> JsonResult<&'j str> {
+        if self.peek()? != Peek::Object {
+            return Err(&EOF_WHILE_PARSING_OBJECT);
+        }
+        let mut content_index = None;
+        let mut current_field_name = match self.enter_seen_object() {
+            Ok(Some(name)) => name,
+            Ok(None) => {
+                return Err(&DecodeError {
+                    message: "Missing tag field",
+                })
+            }
+            Err(err) => return Err(err),
+        };
+        loop {
+            if current_field_name == tag {
+                match self.read_string_unescaped() {
+                    Ok(value) => {
+                        if let Some(content_index) = content_index {
+                            self.index = content_index;
+                            return Ok(value);
+                        }
+                        loop {
+                            match self.object_step() {
+                                Ok(Some(name)) => {
+                                    if name == content {
+                                        return Ok(value);
+                                    }
+                                    if let Err(err) = self.skip_value() {
+                                        return Err(err);
+                                    }
+                                }
+                                Ok(None) => {
+                                    return Err(&DecodeError {
+                                        message: "Missing content field",
+                                    });
+                                }
+                                Err(err) => {
+                                    return Err(err);
+                                }
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        return Err(err);
+                    }
+                }
+            } else if current_field_name == content {
+                content_index = Some(self.index);
+            }
+            if let Err(err) = self.skip_value() {
+                return Err(err);
+            }
+            match self.object_step() {
+                Ok(Some(name)) => {
+                    current_field_name = name;
+                }
+                Ok(None) => {
+                    return Err(&DecodeError {
+                        message: "Missing tag field",
+                    });
+                }
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        }
+    }
+    pub fn tag_query_next_object(&mut self, tag: &str) -> JsonResult<&'j str> {
+        if self.peek()? != Peek::Object {
+            return Err(&EOF_WHILE_PARSING_OBJECT);
+        }
+        let initial_index = self.index;
+        let mut current_field_name = match self.enter_seen_object() {
+            Ok(Some(name)) => name,
+            Ok(None) => {
+                return Err(&DecodeError {
+                    message: "Missing tag field",
+                })
+            }
+            Err(err) => return Err(err),
+        };
+        loop {
+            if current_field_name == tag {
+                match self.read_string_unescaped() {
+                    Ok(value) => {
+                        self.index = initial_index;
+                        return Ok(value);
+                    }
+                    Err(err) => {
+                        return Err(err);
+                    }
+                }
+            }
+            match self.skip_value() {
+                Ok(()) => {}
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+            match self.object_step() {
+                Ok(Some(name)) => {
+                    current_field_name = name;
+                }
+                Ok(None) => {
+                    return Err(&DecodeError {
+                        message: "Missing tag field",
+                    });
+                }
+                Err(err) => {
+                    return Err(err);
+                }
+            }
         }
     }
     pub fn enter_object(&mut self) -> JsonResult<Option<&'j str>> {

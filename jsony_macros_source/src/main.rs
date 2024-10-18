@@ -8,7 +8,7 @@ mod template;
 #[allow(unused)]
 mod util;
 
-use std::str::FromStr;
+use std::{mem::MaybeUninit, str::FromStr};
 
 use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 pub(crate) fn default_call_tokens(span: Span) -> Vec<TokenTree> {
@@ -110,8 +110,12 @@ fn main() {
         template::object(tokens!());
         codegen::derive(tokens!());
     }
-    util::print_pretty(codegen::derive(tokens! {
-        struct Squishy<'a> {
+    util::print_pretty_and_copy(codegen::derive(tokens! {
+        #[derive(Debug)]
+        #[jsony(FromJson)]
+        enum Simple {
+            Alpha(u32),
+            Delta,
         }
     }));
 }

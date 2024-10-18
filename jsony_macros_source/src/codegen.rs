@@ -1,6 +1,6 @@
 use crate::ast::{
     self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttr, Generic,
-    GenericKind,
+    GenericKind, Tag,
 };
 use crate::case::RenameRule;
 use crate::util::MemoryPool;
@@ -50,6 +50,9 @@ fn tt_punct_joint(out: &mut Vec<TokenTree>, chr: char) {
 fn tt_ident(out: &mut Vec<TokenTree>, ident: &str) {
     out.push(TokenTree::Ident(Ident::new(ident, Span::call_site())));
 }
+fn tt_group_empty(out: &mut Vec<TokenTree>, delimiter: Delimiter) {
+    out.push(TokenTree::Group(Group::new(delimiter, TokenStream::new())));
+}
 fn tt_group(out: &mut Vec<TokenTree>, delimiter: Delimiter, from: usize) {
     let group = TokenTree::Group(Group::new(
         delimiter,
@@ -60,7 +63,18 @@ fn tt_group(out: &mut Vec<TokenTree>, delimiter: Delimiter, from: usize) {
 
 #[rustfmt::skip]
 macro_rules! append_tok {
-    ($ident:ident $d:tt) => { tt_ident($d, stringify!($ident)) };
+    ($ident:ident $d:tt) => {
+       tt_ident($d, stringify!($ident))
+    };
+    ({} $d: tt) => {
+        tt_group_empty($d, Delimiter::Brace);
+    };
+    (() $d: tt) => {
+        tt_group_empty($d, Delimiter::Parenthesis);
+    };
+    ([] $d:tt) => {
+        tt_group_empty($d, Delimiter::Bracket);
+    };
     ({$($tt:tt)*} $d: tt) => {{
         let at = $d.len(); $(append_tok!($tt $d);)* tt_group($d, Delimiter::Brace, at);
     }};
@@ -426,12 +440,37 @@ fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
     }
 }
 
+// Probably can merge with field name json
+fn variant_name_json(ctx: &Ctx, field: &EnumVariant, output: &mut String) -> Result<(), Error> {
+    output.push('"');
+    if let Some(name) = &field.attr.rename {
+        match crate::lit::literal_inline(name.to_string()) {
+            crate::lit::InlineKind::String(value) => {
+                crate::template::raw_escape(&value, output);
+            }
+            _ => {
+                throw!("Invalid rename value expected a string" @ name.span())
+            }
+        }
+    } else if ctx.target.rename_all != RenameRule::None {
+        output.push_str(
+            &ctx.target
+                .rename_all
+                .apply_to_variant(&field.name.to_string()),
+        );
+    } else {
+        output.push_str(&field.name.to_string());
+    }
+    output.push('"');
+    Ok(())
+}
+
 fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) -> Result<(), Error> {
     output.push('"');
     if let Some(name) = &field.attr.rename {
         match crate::lit::literal_inline(name.to_string()) {
             crate::lit::InlineKind::String(value) => {
-                output.push_str(&value);
+                crate::template::raw_escape(&value, output);
             }
             _ => {
                 throw!("Invalid rename value expected a string" @ name.span())
@@ -687,107 +726,350 @@ fn variant_key_literal(_ctx: &Ctx, variant: &EnumVariant) -> Literal {
     Literal::string(&buf)
 }
 
+fn enum_to_json(
+    out: &mut Vec<TokenTree>,
+    ctx: &Ctx,
+    variants: &[EnumVariant],
+) -> Result<(), Error> {
+    let mut text = String::with_capacity(64);
+    let start = out.len();
+    let mut all_objects = true;
+    if let Tag::Inline(tag_name) = &ctx.target.tag {
+        splat!(out; out.start_json_object(););
+        text.push('"');
+        crate::template::raw_escape(&tag_name, &mut text);
+        text.push_str("\":");
+        splat! { out; out.push_str([@Literal::string(&text).into()]); };
+    } else if all_objects {
+        splat!(out; out.start_json_object(););
+    }
+    for variant in variants {
+        if let EnumKind::Struct = variant.kind {
+            continue;
+        }
+        all_objects = false;
+        break;
+    }
+    splat!(
+        out;
+        match self {[
+            for (_, variant) in variants.iter().enumerate() {
+                splat!{out; [#ctx.target.name]::[#variant.name]}
+                match variant.kind {
+                    EnumKind::Tuple => {
+                        splat!{out; (
+                            [for (i, _) in variant.fields.iter().enumerate() { splat!(out; [#ctx.temp[i]],) }]
+                        ) => [
+                            text.clear();
+                            enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
+                        ]}
+                    },
+                    EnumKind::Struct => {
+                        splat!{out; {
+                            [for field in variant.fields { splat!(out; [#field.name],) }]
+                        } => [
+                            text.clear();
+                            enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
+                        ]}
+                    },
+                    EnumKind::None => {
+                        splat!{out; => [
+                                text.clear();
+                                enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
+                        ]}
+                    },
+                }
+            }
+        ]}
+    );
+    if let Tag::Inline(..) = &ctx.target.tag {
+        splat! { out; out.end_json_object(); };
+    } else if all_objects {
+        splat! { out; out.end_json_object(); };
+    }
+    splat! { out; Self::Kind {} };
+    let stream = out.drain(start..).collect();
+    //todo should sometimes be StringValue
+    let kind = if all_objects {
+        "ObjectValue"
+    } else {
+        "StringValue"
+    };
+    impl_to_json(out, kind, ctx, stream)
+}
+fn enum_variant_to_json_struct(
+    out: &mut Vec<TokenTree>,
+    ctx: &Ctx,
+    variant: &EnumVariant,
+    text: &mut String,
+) -> Result<(), Error> {
+    // let ordered_fields = schema_ordered_fields(variant.fields);
+    let mut flattening: Option<&Field> = None;
+    for field in variant.fields {
+        if field.attr.flatten {
+            if flattening.is_some() {
+                return Err(Error::span_msg(
+                    "Only one flatten field is currently supproted",
+                    field.name.span(),
+                ));
+            }
+            flattening = Some(field);
+        }
+    }
+    if flattening.is_some() {
+        throw!("Flattening in ToJson not implemented yet");
+    }
+    let mut first = true;
+    splat!(
+        out;
+        [
+            match ctx.target.tag {
+                Tag::Untagged=> splat!(out;out.start_json_object();),
+                Tag::Inline(..) if ctx.target.content.is_some() => text.push('{'),
+                Tag::Default  => text.push('{'),
+                _ => ()
+            }
+        ]
+        [for (field in variant.fields) {
+            out.push_str([
+                if first {
+                    first = false;
+                }  else {
+                    text.push(',');
+                }
+                if let Err(err) = field_name_json(ctx, field, text) {
+                    return Err(err)
+                }
+                text.push(':');
+                out.push(TokenTree::Literal(Literal::string(&text)));
+                text.clear();
+            ]);
+            <[~field.ty] as ::jsony::ToJson>::jsonify_into([#field.name], out);
+        }]
+        [
+        match ctx.target.tag {
+            Tag::Untagged=> splat!(out;out.end_json_object();),
+            Tag::Default  => {
+                text.push('}');
+                splat! {
+                    out;
+                    out.push_str([@Literal::string(&text).into()]);
+                };
+            },
+            Tag::Inline(..) if ctx.target.content.is_some() => {
+                text.push('}');
+                splat! {
+                    out;
+                    out.push_str([@Literal::string(&text).into()]);
+                };
+            },
+            _ => ()
+        }
+        ]
+    );
+    Ok(())
+}
+
+fn enum_variant_to_json(
+    out: &mut Vec<TokenTree>,
+    ctx: &Ctx,
+    variant: &EnumVariant,
+    text: &mut String,
+    all_objects: bool,
+) -> Result<(), Error> {
+    let start = out.len();
+    match &ctx.target.tag {
+        Tag::Inline(..) => {
+            variant_name_json(ctx, variant, text)?;
+            if let Some(content) = &ctx.target.content {
+                text.push_str(",\"");
+                crate::template::raw_escape(&content, text);
+                text.push_str("\":");
+            } else {
+                text.push_str(",");
+            }
+        }
+        Tag::Untagged => (),
+        Tag::Default => {
+            if let EnumKind::None = variant.kind {
+            } else {
+                //optimizations can be done here depending
+                // whether all the enum variants None or a object etect
+                // to move this out of each variant.
+                if !all_objects {
+                    splat!(out; out.start_json_object(););
+                }
+                variant_name_json(ctx, variant, text)?;
+                text.push_str(":");
+            }
+        }
+    }
+    match variant.kind {
+        EnumKind::Tuple => {
+            let [field] = variant.fields else {
+                throw!("Only single field enum tuples are currently supported." @ variant.name.span())
+            };
+            splat! {
+                out;
+                <[~field.ty] as ::jsony::ToJson>::jsonify_into([#ctx.temp[0]], out);
+            }
+        }
+        EnumKind::Struct => {
+            if let Err(err) = enum_variant_to_json_struct(out, ctx, variant, text) {
+                return Err(err);
+            }
+        }
+        EnumKind::None => {
+            text.push('"');
+            variant_name_json(ctx, variant, text)?;
+            text.push('"');
+            splat! {
+                out;
+                out.push_str([@Literal::string(&text).into()]);
+            };
+            text.clear();
+        }
+    };
+
+    if !all_objects {
+        match &ctx.target.tag {
+            Tag::Default => {
+                if let EnumKind::None = variant.kind {
+                } else {
+                    //optimizations can be done here depending
+                    // whether all the enum variants None or a object etect
+                    // to move this out of each variant.
+                    splat!(out; out.end_json_object(););
+                }
+            }
+            _ => (),
+        }
+    }
+    let ts = out.drain(start..).collect();
+    out.push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
+    Ok(())
+}
+fn enum_variant_from_json_struct(
+    out: &mut Vec<TokenTree>,
+    ctx: &Ctx,
+    variant: &EnumVariant,
+    untagged: bool,
+) -> Result<(), Error> {
+    let ordered_fields = schema_ordered_fields(variant.fields);
+    let mut flattening: Option<&Field> = None;
+    for field in variant.fields {
+        if field.attr.flatten {
+            if flattening.is_some() {
+                return Err(Error::span_msg(
+                    "Only one flatten field is currently supproted",
+                    field.name.span(),
+                ));
+            }
+            flattening = Some(field);
+        }
+    }
+    if let Some(flatten_field) = flattening {
+        splat! {
+            out;
+            // Note a type alias with an un-used generic is not an error
+            type __TEMP[?(ctx.target.has_lifetime())<#[#ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
+            let schema = ::jsony::__internal::ObjectSchema{
+                inner: const { &[try struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
+                phantom: ::std::marker::PhantomData,
+            };
+            let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
+            let mut temp_flatten = ::std::mem::MaybeUninit::<[~flatten_field.ty]>::uninit();
+            let mut flatten_visitor =
+                <[~flatten_field.ty] as ::jsony::json::FromJsonFieldVisitor>::new_field_visitor(
+                    ::std::ptr::NonNull::new_unchecked(temp_flatten.as_mut_ptr().cast()),
+                    parser,
+                );
+            if let Err(_err) = schema.decode(
+                ::std::ptr::NonNull::new_unchecked(temp.as_mut_ptr().cast()),
+                parser,
+                Some(&mut flatten_visitor),
+            ) {
+                [?(!untagged) return Err(_err);]
+            } else {
+                let temp2 = temp.assume_init();
+                dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name] {
+                    [for ((i, field) in ordered_fields.iter().enumerate()) {
+                        [#field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
+                    }]
+                    [#flatten_field.name]: temp_flatten.assume_init(),
+                });
+                [?(untagged) break #success]
+            }
+        }
+    } else {
+        splat! {
+            out;
+            // Note a type alias with an un-used generic is not an error
+            type __TEMP[?(ctx.target.has_lifetime())<#[#ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
+            let schema = ::jsony::__internal::ObjectSchema{
+                inner: const { &[try struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
+                phantom: ::std::marker::PhantomData,
+            };
+            let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
+            if let Err(_err) = schema.decode(
+                ::std::ptr::NonNull::new_unchecked(temp.as_mut_ptr().cast()),
+                parser,
+                None,
+            ) {
+                [?(!untagged) return Err(_err);]
+            } else {
+                let temp2 = temp.assume_init();
+                dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name] {
+                    [for ((i, field) in ordered_fields.iter().enumerate()) {
+                        [#field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
+                    }]
+                });
+                [?(untagged) break #success]
+            }
+        }
+    };
+    Ok(())
+}
 fn enum_variant_from_json(
     out: &mut Vec<TokenTree>,
     ctx: &Ctx,
     variant: &EnumVariant,
+    untagged: bool,
 ) -> Result<(), Error> {
-    let body = match variant.kind {
+    let start = out.len();
+    match variant.kind {
         EnumKind::Tuple => {
             let [field] = variant.fields else {
                 throw!("Only single field enum tuples are currently supported." @ variant.name.span())
             };
             // Can optimize when #![feature(offset_of_enum)] stabilizes:
             //  https://github.com/rust-lang/rust/issues/120141
-            token_stream! {
+            splat! {
                 out;
                 match < [~field.ty] as ::jsony::FromJson<#[#ctx.lifetime]> >::decode_json(parser) {
                     Ok(value) => {
                         dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name](value));
+                        [?(untagged) break #success]
                     },
-                    Err(err) => {
-                        return Err(err);
+                    Err(_err) => {
+                        [?(!untagged) return Err(_err);]
                     }
                 }
             }
         }
         EnumKind::Struct => {
-            let ordered_fields = schema_ordered_fields(variant.fields);
-            let mut flattening: Option<&Field> = None;
-            for field in variant.fields {
-                if field.attr.flatten {
-                    if flattening.is_some() {
-                        return Err(Error::span_msg(
-                            "Only one flatten field is currently supproted",
-                            field.name.span(),
-                        ));
-                    }
-                    flattening = Some(field);
-                }
-            }
-            if let Some(flatten_field) = flattening {
-                token_stream! {
-                    out;
-                    // Note a type alias with an un-used generic is not an error
-                    type __TEMP[?(ctx.target.has_lifetime())<#[#ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
-                    let schema = ::jsony::__internal::ObjectSchema{
-                        inner: const { &[try struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
-                        phantom: ::std::marker::PhantomData,
-                    };
-                    let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
-                    let mut temp_flatten = ::std::mem::MaybeUninit::<[~flatten_field.ty]>::uninit();
-                    let mut flatten_visitor =
-                        <[~flatten_field.ty] as ::jsony::json::FromJsonFieldVisitor>::new_field_visitor(
-                            ::std::ptr::NonNull::new_unchecked(temp_flatten.as_mut_ptr().cast()),
-                            parser,
-                        );
-                    if let Err(err) = schema.decode(
-                        ::std::ptr::NonNull::new_unchecked(temp.as_mut_ptr().cast()),
-                        parser,
-                        Some(&mut flatten_visitor),
-                    ) {
-                        return Err(err)
-                    }
-                    let temp2 = temp.assume_init();
-                    dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name] {
-                        [for ((i, field) in ordered_fields.iter().enumerate()) {
-                            [#field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
-                        }]
-                        [#flatten_field.name]: temp_flatten.assume_init(),
-                    });
-                }
-            } else {
-                token_stream! {
-                    out;
-                    // Note a type alias with an un-used generic is not an error
-                    type __TEMP[?(ctx.target.has_lifetime())<#[#ctx.lifetime]>] = ([for (field in variant.fields) { [~field.ty], }]);
-                    let schema = ::jsony::__internal::ObjectSchema{
-                        inner: const { &[try struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
-                        phantom: ::std::marker::PhantomData,
-                    };
-                    let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
-                    if let Err(err) = schema.decode(
-                        ::std::ptr::NonNull::new_unchecked(temp.as_mut_ptr().cast()),
-                        parser,
-                        None,
-                    ) {
-                        return Err(err)
-                    }
-                    let temp2 = temp.assume_init();
-                    dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name] {
-                        [for ((i, field) in variant.fields.iter().enumerate()) {
-                            [#field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
-                        }]
-                    });
-                }
+            if let Err(err) = enum_variant_from_json_struct(out, ctx, variant, untagged) {
+                return Err(err);
             }
         }
-        EnumKind::None => token_stream! {
+        EnumKind::None => splat! {
             out;
-            dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name])
+            dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name]);
+            [?(untagged) break #success]
         },
     };
-    out.push(TokenTree::Group(Group::new(Delimiter::Brace, body)));
+    let ts = TokenStream::from_iter(out.drain(start..));
+    out.push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
     Ok(())
 }
 
@@ -799,30 +1081,154 @@ fn enum_from_json(
     if ctx.target.flattenable {
         throw!("Flattening enums not supported yet.")
     }
-    let body = token_stream! { out;
-        let Ok(Some(variant)) = parser.enter_object() else {
-            //todo better errors
-            return Err(&DecodeError {  message: [@Literal::string("Expected single field object for enum").into()] });
-        };
+
+    let mut mixed_strings_and_objects = false;
+    let inline_tag = match &ctx.target.tag {
+        Tag::Inline(literal) => Some(literal),
+        Tag::Untagged => {
+            let body = token_stream! {
+                out;
+                let initial_index = parser.index;
+                #success: {
+                    [for ((i, variant) in variants.iter().enumerate()) {
+                        {
+                            [?(i != 0) parser.index = initial_index;]
+                            [try enum_variant_from_json(out, ctx, variant, true)]
+                        }
+                    }]
+                    return Err(&::jsony::json::DecodeError{
+                        message: [@Literal::string("Untagged enum didn't match any variant").into()]
+                    })
+                }
+                parser.clear_error();
+                Ok(())
+            };
+            impl_from_json(out, ctx, body)?;
+            return Ok(());
+        }
+        Tag::Default => {
+            for variants in variants {
+                if let EnumKind::None = variants.kind {
+                    mixed_strings_and_objects = true;
+                    break;
+                }
+            }
+            None
+        }
+    };
+    let mut body = token_stream! { out;
+        [
+            if let Some(tag) = inline_tag {
+                splat!(
+                    out;
+                    let variant = match parser.
+                    [
+                        if let Some(content) = &ctx.target.content {
+                            splat!(out; tag_query_at_content_next_object([@Literal::string(tag).into()], [@Literal::string(content).into()]))
+                        } else {
+                            splat!(out; tag_query_next_object([@Literal::string(tag).into()]))
+                        }
+                    ]
+
+                     {
+                        Ok(value) => value,
+                        Err(err) => return Err(err),
+                    };
+                )
+            } else {
+                splat!(
+                    out;
+                    let Ok(Some(variant)) = parser.[
+                        //todo could opt this
+                        if mixed_strings_and_objects {
+                            splat!(out; enter_seen_object)
+                        } else {
+                            splat!(out; enter_object)
+                        }
+                    ]() else {
+                        //todo better errors
+                        return Err(&jsony::json::DecodeError {
+                            message: [@Literal::string("Expected single field object for enum").into()]
+                        });
+                    };
+                )
+            }
+        ]
         match variant {
-            [for ((_, variant) in variants.iter().enumerate()) {
-                [@variant_key_literal(ctx, variant).into()] => [try enum_variant_from_json(out, ctx, variant)],
+            [for variant in variants {
+                if mixed_strings_and_objects {
+                    if let EnumKind::None = variant.kind {
+                        continue;
+                    }
+                }
+
+                splat!(out;
+                    [@variant_key_literal(ctx, variant).into()]
+                        => [try enum_variant_from_json(out, ctx, variant, false)],
+                );
             }]
+
             _ => {
                 parser.report_error(variant.to_string());
                 return Err(&::jsony::parser::UNKNOWN_VARIANT);
             }
         }
-        let err = match parser.object_step() {
-            Ok(None) => {return Ok(())},
-            Err(err) => {Err(err)},
-            Ok(Some(_)) => {
-                Err(&DecodeError {  message: [@Literal::string("More the one field in enum tab object").into()] })
-            },
-        };
-        std::ptr::drop_in_place::<[ctx.target_type(out)]>(dst.cast().as_mut());
-        return err;
+        [
+            if let Some(_) = inline_tag {
+                if ctx.target.content.is_some() {
+                    splat!(out; parser.discard_remaining_object_fields())
+                } else {
+                    splat!(out; Ok(()))
+                }
+            } else {
+                splat!(
+                    out;
+                    let err = match parser.object_step() {
+                        Ok(None) => {return Ok(())},
+                        Err(err) => {Err(err)},
+                        Ok(Some(_)) => {
+                            Err(&jsony::json::DecodeError {  message: [@Literal::string("More the one field in enum tab object").into()] })
+                        },
+                    };
+                    std::ptr::drop_in_place::<[ctx.target_type(out)]>(dst.cast().as_mut());
+                    return err;
+                )
+            }
+        ]
     };
+
+    if mixed_strings_and_objects {
+        body = token_stream!(
+            out;
+            match parser.peek() {
+                Ok(::jsony::parser::Peek::Object) => [@TokenTree::Group(Group::new(Delimiter::Brace, body))],
+                Ok(::jsony::parser::Peek::String) => match parser.read_seen_string_unescaped() {
+                    Ok(variant) => {
+                        let value = match variant {
+                            [for variant in variants {
+                                if let EnumKind::None = variant.kind {
+                                    splat!(out; [@variant_key_literal(ctx, variant).into()] => [#ctx.target.name]::[#variant.name],);
+                                }
+                            }]
+                            _ => {
+                                parser.report_error(variant.to_string());
+                                return Err(&::jsony::parser::UNKNOWN_VARIANT);
+                            }
+                        };
+                        dst.cast::<[ctx.target_type(out)]>().write(value);
+                        return Ok(());
+                    }
+                    Err(err) => return Err(err),
+                },
+                Ok(_) => {
+                    return Err(&jsony::json::DecodeError {
+                        message: [@Literal::string("Expected either an object or a string").into()] ,
+                    });
+                }
+                Err(err) => return Err(err),
+            }
+        )
+    }
 
     impl_from_json(out, ctx, body)?;
 
@@ -985,6 +1391,9 @@ fn handle_enum(target: &DeriveTargetInner, variants: &[EnumVariant]) -> Result<T
         }
     }
     ctx.temp = (0..max_tuples).map(var).collect::<Vec<_>>();
+    if target.to_json {
+        enum_to_json(&mut output, &ctx, variants)?;
+    }
     if target.from_json {
         enum_from_json(&mut output, &ctx, variants)?;
     }
@@ -1009,7 +1418,9 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
         from_json: false,
         to_binary: false,
         to_json: false,
+        content: None,
         flattenable: false,
+        tag: Tag::Default,
         rename_all: crate::case::RenameRule::None,
     };
     let (kind, body) = ast::extract_derive_target(&mut target, &outer_tokens)?;

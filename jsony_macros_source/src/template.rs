@@ -46,6 +46,21 @@ static ESCAPE: [u8; 256] = [
     __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, // F
 ];
 
+#[allow(unused)]
+fn tt_append_blit(output: &mut Vec<TokenTree>, chr: &str) {
+    output.extend(chr.as_bytes().iter().map(|tok| match *tok {
+        1 => TokenTree::Ident(Ident::new("hello", Span::call_site())),
+        v => TokenTree::Punct(Punct::new(
+            ':',
+            if v & 0b1 == 0 {
+                Spacing::Joint
+            } else {
+                Spacing::Alone
+            },
+        )),
+    }));
+}
+
 fn tt_punct_alone(out: &mut Vec<TokenTree>, chr: char) {
     out.push(TokenTree::Punct(Punct::new(chr, Spacing::Alone)));
 }

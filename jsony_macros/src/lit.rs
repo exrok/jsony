@@ -71,7 +71,7 @@ fn next_chr(s: &str) -> char {
 }
 // Clippy false positive
 // https://github.com/rust-lang-nursery/rust-clippy/issues/2329
-fn parse_lit_str_raw(mut s: &str) -> Box<str> {
+fn parse_lit_str_raw(mut s: &str) -> String {
     assert_eq!(byte(s, 0), b'r');
     s = &s[1..];
 
@@ -85,12 +85,12 @@ fn parse_lit_str_raw(mut s: &str) -> Box<str> {
         assert_eq!(end, b'#');
     }
 
-    let content = s[pounds + 1..close].to_owned().into_boxed_str();
+    let content = s[pounds + 1..close].to_owned();
     content
 }
 
 #[allow(clippy::needless_continue)]
-fn parse_lit_str_cooked(mut s: &str) -> Box<str> {
+fn parse_lit_str_cooked(mut s: &str) -> String {
     assert_eq!(byte(s, 0), b'"');
     s = &s[1..];
 
@@ -145,12 +145,12 @@ fn parse_lit_str_cooked(mut s: &str) -> Box<str> {
     }
 
     assert!(s.starts_with('"'));
-    content.into_boxed_str()
+    content
 }
 
 pub enum InlineKind {
-    String(Box<str>),
-    Raw(Box<str>),
+    String(String),
+    Raw(String),
     None,
 }
 

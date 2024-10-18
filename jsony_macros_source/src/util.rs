@@ -399,6 +399,37 @@ impl Formatter {
     }
 }
 
+pub fn print_pretty_and_copy(tokens: TokenStream) {
+    let mut buffer = Formatter {
+        output: Vec::with_capacity(1024),
+        line_index: 0,
+        last_indent: 0,
+        line_pre_index: 0,
+        colors: true,
+    };
+    buffer.rec(0, tokens.clone().into_iter(), false);
+    let _ = std::io::stdout().write_all(&buffer.output);
+    let mut buffer = Formatter {
+        output: Vec::with_capacity(1024),
+        line_index: 0,
+        last_indent: 0,
+        line_pre_index: 0,
+        colors: false,
+    };
+    buffer.rec(0, tokens.into_iter(), false);
+    xsel_clipboard(&buffer.output);
+}
+
+fn xsel_clipboard(text: &[u8]) {
+    let mut child = std::process::Command::new("xsel")
+        .arg("-ib")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdin = child.stdin.as_mut().unwrap();
+    stdin.write_all(text).unwrap();
+}
+
 pub fn print_pretty(tokens: TokenStream) {
     let mut buffer = Formatter {
         output: Vec::with_capacity(1024),

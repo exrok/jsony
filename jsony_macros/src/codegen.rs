@@ -1,6 +1,6 @@
 use crate::ast::{
     self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttr, Generic,
-    GenericKind,
+    GenericKind, Tag,
 };
 use crate::case::RenameRule;
 use crate::util::MemoryPool;
@@ -16,6 +16,20 @@ enum StaticToken {
 use StaticToken::Ident as StaticIdent;
 #[allow(unused)]
 use StaticToken::Punct as StaticPunct;
+#[allow(unused)]
+fn tt_append_blit(output: &mut Vec<TokenTree>, chr: &str) {
+    output.extend(chr.as_bytes().iter().map(|tok| match *tok {
+        1 => TokenTree::Ident(Ident::new("hello", Span::call_site())),
+        v => TokenTree::Punct(Punct::new(
+            ':',
+            if v & 0b1 == 0 {
+                Spacing::Joint
+            } else {
+                Spacing::Alone
+            },
+        )),
+    }));
+}
 #[allow(unused)]
 fn tt_append(output: &mut Vec<TokenTree>, chr: &'static [StaticToken]) {
     output.extend(chr.iter().map(|tok| match tok {
@@ -38,6 +52,9 @@ fn tt_punct_joint(out: &mut Vec<TokenTree>, chr: char) {
 }
 fn tt_ident(out: &mut Vec<TokenTree>, ident: &str) {
     out.push(TokenTree::Ident(Ident::new(ident, Span::call_site())));
+}
+fn tt_group_empty(out: &mut Vec<TokenTree>, delimiter: Delimiter) {
+    out.push(TokenTree::Group(Group::new(delimiter, TokenStream::new())));
 }
 fn tt_group(out: &mut Vec<TokenTree>, delimiter: Delimiter, from: usize) {
     let group = TokenTree::Group(Group::new(
@@ -250,10 +267,7 @@ fn impl_from_json_field_visitor(
                 tt_punct_alone(output, ':');
                 tt_ident(output, "NonNull");
                 tt_punct_alone(output, '<');
-                {
-                    let at = output.len();
-                    tt_group(output, Delimiter::Parenthesis, at);
-                };
+                tt_group_empty(output, Delimiter::Parenthesis);
                 tt_punct_alone(output, '>');
                 tt_punct_alone(output, ',');
                 tt_ident(output, "parser");
@@ -313,10 +327,7 @@ fn impl_from_json(output: &mut Vec<TokenTree>, ctx: &Ctx, inner: TokenStream) ->
                 tt_punct_alone(output, ':');
                 tt_ident(output, "NonNull");
                 tt_punct_alone(output, '<');
-                {
-                    let at = output.len();
-                    tt_group(output, Delimiter::Parenthesis, at);
-                };
+                tt_group_empty(output, Delimiter::Parenthesis);
                 tt_punct_alone(output, '>');
                 tt_punct_alone(output, ',');
                 tt_ident(output, "parser");
@@ -348,10 +359,7 @@ fn impl_from_json(output: &mut Vec<TokenTree>, ctx: &Ctx, inner: TokenStream) ->
             tt_punct_alone(output, ':');
             tt_ident(output, "Result");
             tt_punct_alone(output, '<');
-            {
-                let at = output.len();
-                tt_group(output, Delimiter::Parenthesis, at);
-            };
+            tt_group_empty(output, Delimiter::Parenthesis);
             tt_punct_alone(output, ',');
             tt_punct_alone(output, '&');
             tt_punct_joint(output, '\'');
@@ -738,12 +746,38 @@ fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
         Literal::string(&field.name.to_string())
     }
 }
+fn variant_name_json(ctx: &Ctx, field: &EnumVariant, output: &mut String) -> Result<(), Error> {
+    output.push('"');
+    if let Some(name) = &field.attr.rename {
+        match crate::lit::literal_inline(name.to_string()) {
+            crate::lit::InlineKind::String(value) => {
+                crate::template::raw_escape(&value, output);
+            }
+            _ => {
+                return Err(Error::span_msg(
+                    "Invalid rename value expected a string",
+                    name.span(),
+                ))
+            }
+        }
+    } else if ctx.target.rename_all != RenameRule::None {
+        output.push_str(
+            &ctx.target
+                .rename_all
+                .apply_to_variant(&field.name.to_string()),
+        );
+    } else {
+        output.push_str(&field.name.to_string());
+    }
+    output.push('"');
+    Ok(())
+}
 fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) -> Result<(), Error> {
     output.push('"');
     if let Some(name) = &field.attr.rename {
         match crate::lit::literal_inline(name.to_string()) {
             crate::lit::InlineKind::String(value) => {
-                output.push_str(&value);
+                crate::template::raw_escape(&value, output);
             }
             _ => {
                 return Err(Error::span_msg(
@@ -916,10 +950,7 @@ fn struct_schema(
                     tt_punct_alone(out, ':');
                     tt_ident(out, "NonNull");
                     tt_punct_alone(out, '<');
-                    {
-                        let at = out.len();
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
+                    tt_group_empty(out, Delimiter::Parenthesis);
                     tt_punct_alone(out, '>');
                     tt_punct_alone(out, '|');
                     {
@@ -937,10 +968,7 @@ fn struct_schema(
                             tt_ident(out, "ptr");
                             tt_punct_alone(out, '.');
                             tt_ident(out, "cast");
-                            {
-                                let at = out.len();
-                                tt_group(out, Delimiter::Parenthesis, at);
-                            };
+                            tt_group_empty(out, Delimiter::Parenthesis);
                             tt_punct_alone(out, '.');
                             tt_ident(out, "write");
                             {
@@ -1067,10 +1095,7 @@ fn body_of_struct_from_json_with_flatten(
             };
         };
         tt_punct_alone(out, '>');
-        {
-            let at = out.len();
-            tt_group(out, Delimiter::Parenthesis, at);
-        };
+        tt_group_empty(out, Delimiter::Parenthesis);
         tt_punct_alone(out, '.');
         tt_ident(out, "decode");
         {
@@ -1125,10 +1150,7 @@ fn struct_to_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Resu
         tt_ident(out, "out");
         tt_punct_alone(out, '.');
         tt_ident(out, "start_json_object");
-        {
-            let at = out.len();
-            tt_group(out, Delimiter::Parenthesis, at);
-        };
+        tt_group_empty(out, Delimiter::Parenthesis);
         tt_punct_alone(out, ';');
         for field in fields {
             tt_ident(out, "out");
@@ -1180,10 +1202,7 @@ fn struct_to_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Resu
         tt_ident(out, "out");
         tt_punct_alone(out, '.');
         tt_ident(out, "end_json_object");
-        {
-            let at = out.len();
-            tt_group(out, Delimiter::Parenthesis, at);
-        };
+        tt_group_empty(out, Delimiter::Parenthesis);
         TokenStream::from_iter(out.drain(len..))
     };
     impl_to_json(out, "ObjectValue", ctx, body)
@@ -1206,10 +1225,7 @@ fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Re
         tt_ident(out, "const");
         tt_ident(out, "_");
         tt_punct_alone(out, ':');
-        {
-            let at = out.len();
-            tt_group(out, Delimiter::Parenthesis, at);
-        };
+        tt_group_empty(out, Delimiter::Parenthesis);
         tt_punct_alone(out, '=');
         {
             let at = out.len();
@@ -1227,10 +1243,7 @@ fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Re
                 };
             };
             tt_punct_alone(out, '>');
-            {
-                let at = out.len();
-                tt_group(out, Delimiter::Parenthesis, at);
-            };
+            tt_group_empty(out, Delimiter::Parenthesis);
             tt_punct_joint(out, '-');
             tt_punct_alone(out, '>');
             tt_punct_joint(out, ':');
@@ -1317,10 +1330,7 @@ fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Re
                             };
                         };
                         tt_punct_alone(out, '>');
-                        {
-                            let at = out.len();
-                            tt_group(out, Delimiter::Parenthesis, at);
-                        };
+                        tt_group_empty(out, Delimiter::Parenthesis);
                         tt_punct_alone(out, '.');
                         tt_ident(out, "decode");
                         {
@@ -1367,10 +1377,7 @@ fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Re
                                 };
                             };
                             tt_punct_alone(out, '>');
-                            {
-                                let at = out.len();
-                                tt_group(out, Delimiter::Parenthesis, at);
-                            };
+                            tt_group_empty(out, Delimiter::Parenthesis);
                             tt_punct_alone(out, ',');
                             tt_ident(out, "bitset");
                             tt_punct_alone(out, ':');
@@ -1416,12 +1423,314 @@ fn variant_key_literal(_ctx: &Ctx, variant: &EnumVariant) -> Literal {
     let buf = variant.name.to_string();
     Literal::string(&buf)
 }
-fn enum_variant_from_json(
+fn enum_to_json(
+    out: &mut Vec<TokenTree>,
+    ctx: &Ctx,
+    variants: &[EnumVariant],
+) -> Result<(), Error> {
+    let mut text = String::with_capacity(64);
+    let start = out.len();
+    let mut all_objects = true;
+    if let Tag::Inline(tag_name) = &ctx.target.tag {
+        {
+            tt_ident(out, "out");
+            tt_punct_alone(out, '.');
+            tt_ident(out, "start_json_object");
+            tt_group_empty(out, Delimiter::Parenthesis);
+            tt_punct_alone(out, ';');
+        };
+        text.push('"');
+        crate::template::raw_escape(&tag_name, &mut text);
+        text.push_str("\":");
+        {
+            tt_ident(out, "out");
+            tt_punct_alone(out, '.');
+            tt_ident(out, "push_str");
+            {
+                let at = out.len();
+                out.push(Literal::string(&text).into());
+                tt_group(out, Delimiter::Parenthesis, at);
+            };
+            tt_punct_alone(out, ';');
+        };
+    } else if all_objects {
+        {
+            tt_ident(out, "out");
+            tt_punct_alone(out, '.');
+            tt_ident(out, "start_json_object");
+            tt_group_empty(out, Delimiter::Parenthesis);
+            tt_punct_alone(out, ';');
+        };
+    }
+    for variant in variants {
+        if let EnumKind::Struct = variant.kind {
+            continue;
+        }
+        all_objects = false;
+        break;
+    }
+    {
+        tt_ident(out, "match");
+        tt_ident(out, "self");
+        {
+            let at = out.len();
+            {
+                for (_, variant) in variants.iter().enumerate() {
+                    {
+                        out.push(TokenTree::from(ctx.target.name.clone()));
+                        tt_punct_joint(out, ':');
+                        tt_punct_alone(out, ':');
+                        out.push(TokenTree::from(variant.name.clone()));
+                    }
+                    match variant.kind {
+                        EnumKind::Tuple => {
+                            {
+                                let at = out.len();
+                                {
+                                    for (i, _) in variant.fields.iter().enumerate() {
+                                        {
+                                            out.push(TokenTree::from(ctx.temp[i].clone()));
+                                            tt_punct_alone(out, ',');
+                                        }
+                                    }
+                                };
+                                tt_group(out, Delimiter::Parenthesis, at);
+                            };
+                            tt_punct_joint(out, '=');
+                            tt_punct_alone(out, '>');
+                            {
+                                text.clear();
+                                enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
+                            };
+                        }
+                        EnumKind::Struct => {
+                            {
+                                let at = out.len();
+                                {
+                                    for field in variant.fields {
+                                        {
+                                            out.push(TokenTree::from(field.name.clone()));
+                                            tt_punct_alone(out, ',');
+                                        }
+                                    }
+                                };
+                                tt_group(out, Delimiter::Brace, at);
+                            };
+                            tt_punct_joint(out, '=');
+                            tt_punct_alone(out, '>');
+                            {
+                                text.clear();
+                                enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
+                            };
+                        }
+                        EnumKind::None => {
+                            tt_punct_joint(out, '=');
+                            tt_punct_alone(out, '>');
+                            {
+                                text.clear();
+                                enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
+                            };
+                        }
+                    }
+                }
+            };
+            tt_group(out, Delimiter::Brace, at);
+        };
+    };
+    if let Tag::Inline(..) = &ctx.target.tag {
+        {
+            tt_ident(out, "out");
+            tt_punct_alone(out, '.');
+            tt_ident(out, "end_json_object");
+            tt_group_empty(out, Delimiter::Parenthesis);
+            tt_punct_alone(out, ';');
+        };
+    } else if all_objects {
+        {
+            tt_ident(out, "out");
+            tt_punct_alone(out, '.');
+            tt_ident(out, "end_json_object");
+            tt_group_empty(out, Delimiter::Parenthesis);
+            tt_punct_alone(out, ';');
+        };
+    }
+    {
+        tt_ident(out, "Self");
+        tt_punct_joint(out, ':');
+        tt_punct_alone(out, ':');
+        tt_ident(out, "Kind");
+        tt_group_empty(out, Delimiter::Brace);
+    };
+    let stream = out.drain(start..).collect();
+    let kind = if all_objects {
+        "ObjectValue"
+    } else {
+        "StringValue"
+    };
+    impl_to_json(out, kind, ctx, stream)
+}
+fn enum_variant_to_json_struct(
     out: &mut Vec<TokenTree>,
     ctx: &Ctx,
     variant: &EnumVariant,
+    text: &mut String,
 ) -> Result<(), Error> {
-    let body = match variant.kind {
+    let mut flattening: Option<&Field> = None;
+    for field in variant.fields {
+        if field.attr.flatten {
+            if flattening.is_some() {
+                return Err(Error::span_msg(
+                    "Only one flatten field is currently supproted",
+                    field.name.span(),
+                ));
+            }
+            flattening = Some(field);
+        }
+    }
+    if flattening.is_some() {
+        return Err(Error::msg("Flattening in ToJson not implemented yet"));
+    }
+    let mut first = true;
+    {
+        {
+            match ctx.target.tag {
+                Tag::Untagged => {
+                    tt_ident(out, "out");
+                    tt_punct_alone(out, '.');
+                    tt_ident(out, "start_json_object");
+                    tt_group_empty(out, Delimiter::Parenthesis);
+                    tt_punct_alone(out, ';');
+                }
+                Tag::Inline(..) if ctx.target.content.is_some() => text.push('{'),
+                Tag::Default => text.push('{'),
+                _ => (),
+            }
+        };
+        for field in variant.fields {
+            tt_ident(out, "out");
+            tt_punct_alone(out, '.');
+            tt_ident(out, "push_str");
+            {
+                let at = out.len();
+                {
+                    if first {
+                        first = false;
+                    } else {
+                        text.push(',');
+                    }
+                    if let Err(err) = field_name_json(ctx, field, text) {
+                        return Err(err);
+                    }
+                    text.push(':');
+                    out.push(TokenTree::Literal(Literal::string(&text)));
+                    text.clear();
+                };
+                tt_group(out, Delimiter::Parenthesis, at);
+            };
+            tt_punct_alone(out, ';');
+            tt_punct_alone(out, '<');
+            out.extend_from_slice(field.ty);
+            tt_ident(out, "as");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "jsony");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "ToJson");
+            tt_punct_alone(out, '>');
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "jsonify_into");
+            {
+                let at = out.len();
+                out.push(TokenTree::from(field.name.clone()));
+                tt_punct_alone(out, ',');
+                tt_ident(out, "out");
+                tt_group(out, Delimiter::Parenthesis, at);
+            };
+            tt_punct_alone(out, ';');
+        }
+        {
+            match ctx.target.tag {
+                Tag::Untagged => {
+                    tt_ident(out, "out");
+                    tt_punct_alone(out, '.');
+                    tt_ident(out, "end_json_object");
+                    tt_group_empty(out, Delimiter::Parenthesis);
+                    tt_punct_alone(out, ';');
+                }
+                Tag::Default => {
+                    text.push('}');
+                    {
+                        tt_ident(out, "out");
+                        tt_punct_alone(out, '.');
+                        tt_ident(out, "push_str");
+                        {
+                            let at = out.len();
+                            out.push(Literal::string(&text).into());
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_punct_alone(out, ';');
+                    };
+                }
+                Tag::Inline(..) if ctx.target.content.is_some() => {
+                    text.push('}');
+                    {
+                        tt_ident(out, "out");
+                        tt_punct_alone(out, '.');
+                        tt_ident(out, "push_str");
+                        {
+                            let at = out.len();
+                            out.push(Literal::string(&text).into());
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_punct_alone(out, ';');
+                    };
+                }
+                _ => (),
+            }
+        };
+    };
+    Ok(())
+}
+fn enum_variant_to_json(
+    out: &mut Vec<TokenTree>,
+    ctx: &Ctx,
+    variant: &EnumVariant,
+    text: &mut String,
+    all_objects: bool,
+) -> Result<(), Error> {
+    let start = out.len();
+    match &ctx.target.tag {
+        Tag::Inline(..) => {
+            variant_name_json(ctx, variant, text)?;
+            if let Some(content) = &ctx.target.content {
+                text.push_str(",\"");
+                crate::template::raw_escape(&content, text);
+                text.push_str("\":");
+            } else {
+                text.push_str(",");
+            }
+        }
+        Tag::Untagged => (),
+        Tag::Default => {
+            if let EnumKind::None = variant.kind {
+            } else {
+                if !all_objects {
+                    {
+                        tt_ident(out, "out");
+                        tt_punct_alone(out, '.');
+                        tt_ident(out, "start_json_object");
+                        tt_group_empty(out, Delimiter::Parenthesis);
+                        tt_punct_alone(out, ';');
+                    };
+                }
+                variant_name_json(ctx, variant, text)?;
+                text.push_str(":");
+            }
+        }
+    }
+    match variant.kind {
         EnumKind::Tuple => {
             let [field] = variant.fields else {
                 return Err(Error::span_msg(
@@ -1430,7 +1739,599 @@ fn enum_variant_from_json(
                 ));
             };
             {
-                let len = out.len();
+                tt_punct_alone(out, '<');
+                out.extend_from_slice(field.ty);
+                tt_ident(out, "as");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "jsony");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "ToJson");
+                tt_punct_alone(out, '>');
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "jsonify_into");
+                {
+                    let at = out.len();
+                    out.push(TokenTree::from(ctx.temp[0].clone()));
+                    tt_punct_alone(out, ',');
+                    tt_ident(out, "out");
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(out, ';');
+            }
+        }
+        EnumKind::Struct => {
+            if let Err(err) = enum_variant_to_json_struct(out, ctx, variant, text) {
+                return Err(err);
+            }
+        }
+        EnumKind::None => {
+            text.push('"');
+            variant_name_json(ctx, variant, text)?;
+            text.push('"');
+            {
+                tt_ident(out, "out");
+                tt_punct_alone(out, '.');
+                tt_ident(out, "push_str");
+                {
+                    let at = out.len();
+                    out.push(Literal::string(&text).into());
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(out, ';');
+            };
+            text.clear();
+        }
+    };
+    if !all_objects {
+        match &ctx.target.tag {
+            Tag::Default => {
+                if let EnumKind::None = variant.kind {
+                } else {
+                    {
+                        tt_ident(out, "out");
+                        tt_punct_alone(out, '.');
+                        tt_ident(out, "end_json_object");
+                        tt_group_empty(out, Delimiter::Parenthesis);
+                        tt_punct_alone(out, ';');
+                    };
+                }
+            }
+            _ => (),
+        }
+    }
+    let ts = out.drain(start..).collect();
+    out.push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
+    Ok(())
+}
+fn enum_variant_from_json_struct(
+    out: &mut Vec<TokenTree>,
+    ctx: &Ctx,
+    variant: &EnumVariant,
+    untagged: bool,
+) -> Result<(), Error> {
+    let ordered_fields = schema_ordered_fields(variant.fields);
+    let mut flattening: Option<&Field> = None;
+    for field in variant.fields {
+        if field.attr.flatten {
+            if flattening.is_some() {
+                return Err(Error::span_msg(
+                    "Only one flatten field is currently supproted",
+                    field.name.span(),
+                ));
+            }
+            flattening = Some(field);
+        }
+    }
+    if let Some(flatten_field) = flattening {
+        {
+            tt_ident(out, "type");
+            tt_ident(out, "__TEMP");
+            if ctx.target.has_lifetime() {
+                tt_punct_alone(out, '<');
+                tt_punct_joint(out, '\'');
+                out.push(TokenTree::from(ctx.lifetime.clone()));
+                tt_punct_alone(out, '>');
+            };
+            tt_punct_alone(out, '=');
+            {
+                let at = out.len();
+                for field in &ordered_fields {
+                    out.extend_from_slice(field.ty);
+                    tt_punct_alone(out, ',');
+                }
+                tt_group(out, Delimiter::Parenthesis, at);
+            };
+            tt_punct_alone(out, ';');
+            tt_ident(out, "let");
+            tt_ident(out, "schema");
+            tt_punct_alone(out, '=');
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "jsony");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "__internal");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "ObjectSchema");
+            {
+                let at = out.len();
+                tt_ident(out, "inner");
+                tt_punct_alone(out, ':');
+                tt_ident(out, "const");
+                {
+                    let at = out.len();
+                    tt_punct_alone(out, '&');
+                    if let Err(err) = struct_schema(
+                        out,
+                        ctx,
+                        &ordered_fields,
+                        Some(&Ident::new("__TEMP", Span::call_site())),
+                    ) {
+                        return Err(err);
+                    };
+                    tt_group(out, Delimiter::Brace, at);
+                };
+                tt_punct_alone(out, ',');
+                tt_ident(out, "phantom");
+                tt_punct_alone(out, ':');
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "std");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "marker");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "PhantomData");
+                tt_punct_alone(out, ',');
+                tt_group(out, Delimiter::Brace, at);
+            };
+            tt_punct_alone(out, ';');
+            tt_ident(out, "let");
+            tt_ident(out, "mut");
+            tt_ident(out, "temp");
+            tt_punct_alone(out, '=');
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "std");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "mem");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "MaybeUninit");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_punct_alone(out, '<');
+            tt_ident(out, "__TEMP");
+            tt_punct_alone(out, '>');
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "uninit");
+            tt_group_empty(out, Delimiter::Parenthesis);
+            tt_punct_alone(out, ';');
+            tt_ident(out, "let");
+            tt_ident(out, "mut");
+            tt_ident(out, "temp_flatten");
+            tt_punct_alone(out, '=');
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "std");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "mem");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "MaybeUninit");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_punct_alone(out, '<');
+            out.extend_from_slice(flatten_field.ty);
+            tt_punct_alone(out, '>');
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "uninit");
+            tt_group_empty(out, Delimiter::Parenthesis);
+            tt_punct_alone(out, ';');
+            tt_ident(out, "let");
+            tt_ident(out, "mut");
+            tt_ident(out, "flatten_visitor");
+            tt_punct_alone(out, '=');
+            tt_punct_alone(out, '<');
+            out.extend_from_slice(flatten_field.ty);
+            tt_ident(out, "as");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "jsony");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "json");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "FromJsonFieldVisitor");
+            tt_punct_alone(out, '>');
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "new_field_visitor");
+            {
+                let at = out.len();
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "std");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "ptr");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "NonNull");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "new_unchecked");
+                {
+                    let at = out.len();
+                    tt_ident(out, "temp_flatten");
+                    tt_punct_alone(out, '.');
+                    tt_ident(out, "as_mut_ptr");
+                    tt_group_empty(out, Delimiter::Parenthesis);
+                    tt_punct_alone(out, '.');
+                    tt_ident(out, "cast");
+                    tt_group_empty(out, Delimiter::Parenthesis);
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(out, ',');
+                tt_ident(out, "parser");
+                tt_punct_alone(out, ',');
+                tt_group(out, Delimiter::Parenthesis, at);
+            };
+            tt_punct_alone(out, ';');
+            tt_ident(out, "if");
+            tt_ident(out, "let");
+            tt_ident(out, "Err");
+            {
+                let at = out.len();
+                tt_ident(out, "_err");
+                tt_group(out, Delimiter::Parenthesis, at);
+            };
+            tt_punct_alone(out, '=');
+            tt_ident(out, "schema");
+            tt_punct_alone(out, '.');
+            tt_ident(out, "decode");
+            {
+                let at = out.len();
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "std");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "ptr");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "NonNull");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "new_unchecked");
+                {
+                    let at = out.len();
+                    tt_ident(out, "temp");
+                    tt_punct_alone(out, '.');
+                    tt_ident(out, "as_mut_ptr");
+                    tt_group_empty(out, Delimiter::Parenthesis);
+                    tt_punct_alone(out, '.');
+                    tt_ident(out, "cast");
+                    tt_group_empty(out, Delimiter::Parenthesis);
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(out, ',');
+                tt_ident(out, "parser");
+                tt_punct_alone(out, ',');
+                tt_ident(out, "Some");
+                {
+                    let at = out.len();
+                    tt_punct_alone(out, '&');
+                    tt_ident(out, "mut");
+                    tt_ident(out, "flatten_visitor");
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(out, ',');
+                tt_group(out, Delimiter::Parenthesis, at);
+            };
+            {
+                let at = out.len();
+                if !untagged {
+                    tt_ident(out, "return");
+                    tt_ident(out, "Err");
+                    {
+                        let at = out.len();
+                        tt_ident(out, "_err");
+                        tt_group(out, Delimiter::Parenthesis, at);
+                    };
+                    tt_punct_alone(out, ';');
+                };
+                tt_group(out, Delimiter::Brace, at);
+            };
+            tt_ident(out, "else");
+            {
+                let at = out.len();
+                tt_ident(out, "let");
+                tt_ident(out, "temp2");
+                tt_punct_alone(out, '=');
+                tt_ident(out, "temp");
+                tt_punct_alone(out, '.');
+                tt_ident(out, "assume_init");
+                tt_group_empty(out, Delimiter::Parenthesis);
+                tt_punct_alone(out, ';');
+                tt_ident(out, "dst");
+                tt_punct_alone(out, '.');
+                tt_ident(out, "cast");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_punct_alone(out, '<');
+                {
+                    ctx.target_type(out)
+                };
+                tt_punct_alone(out, '>');
+                tt_group_empty(out, Delimiter::Parenthesis);
+                tt_punct_alone(out, '.');
+                tt_ident(out, "write");
+                {
+                    let at = out.len();
+                    out.push(TokenTree::from(ctx.target.name.clone()));
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    out.push(TokenTree::from(variant.name.clone()));
+                    {
+                        let at = out.len();
+                        for (i, field) in ordered_fields.iter().enumerate() {
+                            out.push(TokenTree::from(field.name.clone()));
+                            tt_punct_alone(out, ':');
+                            tt_ident(out, "temp2");
+                            tt_punct_alone(out, '.');
+                            out.push(Literal::usize_unsuffixed(i).into());
+                            tt_punct_alone(out, ',');
+                        }
+                        out.push(TokenTree::from(flatten_field.name.clone()));
+                        tt_punct_alone(out, ':');
+                        tt_ident(out, "temp_flatten");
+                        tt_punct_alone(out, '.');
+                        tt_ident(out, "assume_init");
+                        tt_group_empty(out, Delimiter::Parenthesis);
+                        tt_punct_alone(out, ',');
+                        tt_group(out, Delimiter::Brace, at);
+                    };
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(out, ';');
+                if untagged {
+                    tt_ident(out, "break");
+                    tt_punct_joint(out, '\'');
+                    tt_ident(out, "success");
+                };
+                tt_group(out, Delimiter::Brace, at);
+            };
+        }
+    } else {
+        {
+            tt_ident(out, "type");
+            tt_ident(out, "__TEMP");
+            if ctx.target.has_lifetime() {
+                tt_punct_alone(out, '<');
+                tt_punct_joint(out, '\'');
+                out.push(TokenTree::from(ctx.lifetime.clone()));
+                tt_punct_alone(out, '>');
+            };
+            tt_punct_alone(out, '=');
+            {
+                let at = out.len();
+                for field in &ordered_fields {
+                    out.extend_from_slice(field.ty);
+                    tt_punct_alone(out, ',');
+                }
+                tt_group(out, Delimiter::Parenthesis, at);
+            };
+            tt_punct_alone(out, ';');
+            tt_ident(out, "let");
+            tt_ident(out, "schema");
+            tt_punct_alone(out, '=');
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "jsony");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "__internal");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "ObjectSchema");
+            {
+                let at = out.len();
+                tt_ident(out, "inner");
+                tt_punct_alone(out, ':');
+                tt_ident(out, "const");
+                {
+                    let at = out.len();
+                    tt_punct_alone(out, '&');
+                    if let Err(err) = struct_schema(
+                        out,
+                        ctx,
+                        &ordered_fields,
+                        Some(&Ident::new("__TEMP", Span::call_site())),
+                    ) {
+                        return Err(err);
+                    };
+                    tt_group(out, Delimiter::Brace, at);
+                };
+                tt_punct_alone(out, ',');
+                tt_ident(out, "phantom");
+                tt_punct_alone(out, ':');
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "std");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "marker");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "PhantomData");
+                tt_punct_alone(out, ',');
+                tt_group(out, Delimiter::Brace, at);
+            };
+            tt_punct_alone(out, ';');
+            tt_ident(out, "let");
+            tt_ident(out, "mut");
+            tt_ident(out, "temp");
+            tt_punct_alone(out, '=');
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "std");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "mem");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "MaybeUninit");
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_punct_alone(out, '<');
+            tt_ident(out, "__TEMP");
+            tt_punct_alone(out, '>');
+            tt_punct_joint(out, ':');
+            tt_punct_alone(out, ':');
+            tt_ident(out, "uninit");
+            tt_group_empty(out, Delimiter::Parenthesis);
+            tt_punct_alone(out, ';');
+            tt_ident(out, "if");
+            tt_ident(out, "let");
+            tt_ident(out, "Err");
+            {
+                let at = out.len();
+                tt_ident(out, "_err");
+                tt_group(out, Delimiter::Parenthesis, at);
+            };
+            tt_punct_alone(out, '=');
+            tt_ident(out, "schema");
+            tt_punct_alone(out, '.');
+            tt_ident(out, "decode");
+            {
+                let at = out.len();
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "std");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "ptr");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "NonNull");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_ident(out, "new_unchecked");
+                {
+                    let at = out.len();
+                    tt_ident(out, "temp");
+                    tt_punct_alone(out, '.');
+                    tt_ident(out, "as_mut_ptr");
+                    tt_group_empty(out, Delimiter::Parenthesis);
+                    tt_punct_alone(out, '.');
+                    tt_ident(out, "cast");
+                    tt_group_empty(out, Delimiter::Parenthesis);
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(out, ',');
+                tt_ident(out, "parser");
+                tt_punct_alone(out, ',');
+                tt_ident(out, "None");
+                tt_punct_alone(out, ',');
+                tt_group(out, Delimiter::Parenthesis, at);
+            };
+            {
+                let at = out.len();
+                if !untagged {
+                    tt_ident(out, "return");
+                    tt_ident(out, "Err");
+                    {
+                        let at = out.len();
+                        tt_ident(out, "_err");
+                        tt_group(out, Delimiter::Parenthesis, at);
+                    };
+                    tt_punct_alone(out, ';');
+                };
+                tt_group(out, Delimiter::Brace, at);
+            };
+            tt_ident(out, "else");
+            {
+                let at = out.len();
+                tt_ident(out, "let");
+                tt_ident(out, "temp2");
+                tt_punct_alone(out, '=');
+                tt_ident(out, "temp");
+                tt_punct_alone(out, '.');
+                tt_ident(out, "assume_init");
+                tt_group_empty(out, Delimiter::Parenthesis);
+                tt_punct_alone(out, ';');
+                tt_ident(out, "dst");
+                tt_punct_alone(out, '.');
+                tt_ident(out, "cast");
+                tt_punct_joint(out, ':');
+                tt_punct_alone(out, ':');
+                tt_punct_alone(out, '<');
+                {
+                    ctx.target_type(out)
+                };
+                tt_punct_alone(out, '>');
+                tt_group_empty(out, Delimiter::Parenthesis);
+                tt_punct_alone(out, '.');
+                tt_ident(out, "write");
+                {
+                    let at = out.len();
+                    out.push(TokenTree::from(ctx.target.name.clone()));
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    out.push(TokenTree::from(variant.name.clone()));
+                    {
+                        let at = out.len();
+                        for (i, field) in ordered_fields.iter().enumerate() {
+                            out.push(TokenTree::from(field.name.clone()));
+                            tt_punct_alone(out, ':');
+                            tt_ident(out, "temp2");
+                            tt_punct_alone(out, '.');
+                            out.push(Literal::usize_unsuffixed(i).into());
+                            tt_punct_alone(out, ',');
+                        }
+                        tt_group(out, Delimiter::Brace, at);
+                    };
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_alone(out, ';');
+                if untagged {
+                    tt_ident(out, "break");
+                    tt_punct_joint(out, '\'');
+                    tt_ident(out, "success");
+                };
+                tt_group(out, Delimiter::Brace, at);
+            };
+        }
+    };
+    Ok(())
+}
+fn enum_variant_from_json(
+    out: &mut Vec<TokenTree>,
+    ctx: &Ctx,
+    variant: &EnumVariant,
+    untagged: bool,
+) -> Result<(), Error> {
+    let start = out.len();
+    match variant.kind {
+        EnumKind::Tuple => {
+            let [field] = variant.fields else {
+                return Err(Error::span_msg(
+                    "Only single field enum tuples are currently supported.",
+                    variant.name.span(),
+                ));
+            };
+            {
                 tt_ident(out, "match");
                 tt_punct_alone(out, '<');
                 out.extend_from_slice(field.ty);
@@ -1476,10 +2377,7 @@ fn enum_variant_from_json(
                             ctx.target_type(out)
                         };
                         tt_punct_alone(out, '>');
-                        {
-                            let at = out.len();
-                            tt_group(out, Delimiter::Parenthesis, at);
-                        };
+                        tt_group_empty(out, Delimiter::Parenthesis);
                         tt_punct_alone(out, '.');
                         tt_ident(out, "write");
                         {
@@ -1496,560 +2394,46 @@ fn enum_variant_from_json(
                             tt_group(out, Delimiter::Parenthesis, at);
                         };
                         tt_punct_alone(out, ';');
+                        if untagged {
+                            tt_ident(out, "break");
+                            tt_punct_joint(out, '\'');
+                            tt_ident(out, "success");
+                        };
                         tt_group(out, Delimiter::Brace, at);
                     };
                     tt_punct_alone(out, ',');
                     tt_ident(out, "Err");
                     {
                         let at = out.len();
-                        tt_ident(out, "err");
+                        tt_ident(out, "_err");
                         tt_group(out, Delimiter::Parenthesis, at);
                     };
                     tt_punct_joint(out, '=');
                     tt_punct_alone(out, '>');
                     {
                         let at = out.len();
-                        tt_ident(out, "return");
-                        tt_ident(out, "Err");
-                        {
-                            let at = out.len();
-                            tt_ident(out, "err");
-                            tt_group(out, Delimiter::Parenthesis, at);
+                        if !untagged {
+                            tt_ident(out, "return");
+                            tt_ident(out, "Err");
+                            {
+                                let at = out.len();
+                                tt_ident(out, "_err");
+                                tt_group(out, Delimiter::Parenthesis, at);
+                            };
+                            tt_punct_alone(out, ';');
                         };
-                        tt_punct_alone(out, ';');
                         tt_group(out, Delimiter::Brace, at);
                     };
                     tt_group(out, Delimiter::Brace, at);
                 };
-                TokenStream::from_iter(out.drain(len..))
             }
         }
         EnumKind::Struct => {
-            let ordered_fields = schema_ordered_fields(variant.fields);
-            let mut flattening: Option<&Field> = None;
-            for field in variant.fields {
-                if field.attr.flatten {
-                    if flattening.is_some() {
-                        return Err(Error::span_msg(
-                            "Only one flatten field is currently supproted",
-                            field.name.span(),
-                        ));
-                    }
-                    flattening = Some(field);
-                }
-            }
-            if let Some(flatten_field) = flattening {
-                {
-                    let len = out.len();
-                    tt_ident(out, "type");
-                    tt_ident(out, "__TEMP");
-                    if ctx.target.has_lifetime() {
-                        tt_punct_alone(out, '<');
-                        tt_punct_joint(out, '\'');
-                        out.push(TokenTree::from(ctx.lifetime.clone()));
-                        tt_punct_alone(out, '>');
-                    };
-                    tt_punct_alone(out, '=');
-                    {
-                        let at = out.len();
-                        for field in &ordered_fields {
-                            out.extend_from_slice(field.ty);
-                            tt_punct_alone(out, ',');
-                        }
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, ';');
-                    tt_ident(out, "let");
-                    tt_ident(out, "schema");
-                    tt_punct_alone(out, '=');
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "jsony");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "__internal");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "ObjectSchema");
-                    {
-                        let at = out.len();
-                        tt_ident(out, "inner");
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "const");
-                        {
-                            let at = out.len();
-                            tt_punct_alone(out, '&');
-                            if let Err(err) = struct_schema(
-                                out,
-                                ctx,
-                                &ordered_fields,
-                                Some(&Ident::new("__TEMP", Span::call_site())),
-                            ) {
-                                return Err(err);
-                            };
-                            tt_group(out, Delimiter::Brace, at);
-                        };
-                        tt_punct_alone(out, ',');
-                        tt_ident(out, "phantom");
-                        tt_punct_alone(out, ':');
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "std");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "marker");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "PhantomData");
-                        tt_punct_alone(out, ',');
-                        tt_group(out, Delimiter::Brace, at);
-                    };
-                    tt_punct_alone(out, ';');
-                    tt_ident(out, "let");
-                    tt_ident(out, "mut");
-                    tt_ident(out, "temp");
-                    tt_punct_alone(out, '=');
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "std");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "mem");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "MaybeUninit");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_punct_alone(out, '<');
-                    tt_ident(out, "__TEMP");
-                    tt_punct_alone(out, '>');
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "uninit");
-                    {
-                        let at = out.len();
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, ';');
-                    tt_ident(out, "let");
-                    tt_ident(out, "mut");
-                    tt_ident(out, "temp_flatten");
-                    tt_punct_alone(out, '=');
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "std");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "mem");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "MaybeUninit");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_punct_alone(out, '<');
-                    out.extend_from_slice(flatten_field.ty);
-                    tt_punct_alone(out, '>');
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "uninit");
-                    {
-                        let at = out.len();
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, ';');
-                    tt_ident(out, "let");
-                    tt_ident(out, "mut");
-                    tt_ident(out, "flatten_visitor");
-                    tt_punct_alone(out, '=');
-                    tt_punct_alone(out, '<');
-                    out.extend_from_slice(flatten_field.ty);
-                    tt_ident(out, "as");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "jsony");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "json");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "FromJsonFieldVisitor");
-                    tt_punct_alone(out, '>');
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "new_field_visitor");
-                    {
-                        let at = out.len();
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "std");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "ptr");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "NonNull");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "new_unchecked");
-                        {
-                            let at = out.len();
-                            tt_ident(out, "temp_flatten");
-                            tt_punct_alone(out, '.');
-                            tt_ident(out, "as_mut_ptr");
-                            {
-                                let at = out.len();
-                                tt_group(out, Delimiter::Parenthesis, at);
-                            };
-                            tt_punct_alone(out, '.');
-                            tt_ident(out, "cast");
-                            {
-                                let at = out.len();
-                                tt_group(out, Delimiter::Parenthesis, at);
-                            };
-                            tt_group(out, Delimiter::Parenthesis, at);
-                        };
-                        tt_punct_alone(out, ',');
-                        tt_ident(out, "parser");
-                        tt_punct_alone(out, ',');
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, ';');
-                    tt_ident(out, "if");
-                    tt_ident(out, "let");
-                    tt_ident(out, "Err");
-                    {
-                        let at = out.len();
-                        tt_ident(out, "err");
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, '=');
-                    tt_ident(out, "schema");
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "decode");
-                    {
-                        let at = out.len();
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "std");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "ptr");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "NonNull");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "new_unchecked");
-                        {
-                            let at = out.len();
-                            tt_ident(out, "temp");
-                            tt_punct_alone(out, '.');
-                            tt_ident(out, "as_mut_ptr");
-                            {
-                                let at = out.len();
-                                tt_group(out, Delimiter::Parenthesis, at);
-                            };
-                            tt_punct_alone(out, '.');
-                            tt_ident(out, "cast");
-                            {
-                                let at = out.len();
-                                tt_group(out, Delimiter::Parenthesis, at);
-                            };
-                            tt_group(out, Delimiter::Parenthesis, at);
-                        };
-                        tt_punct_alone(out, ',');
-                        tt_ident(out, "parser");
-                        tt_punct_alone(out, ',');
-                        tt_ident(out, "Some");
-                        {
-                            let at = out.len();
-                            tt_punct_alone(out, '&');
-                            tt_ident(out, "mut");
-                            tt_ident(out, "flatten_visitor");
-                            tt_group(out, Delimiter::Parenthesis, at);
-                        };
-                        tt_punct_alone(out, ',');
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    {
-                        let at = out.len();
-                        tt_ident(out, "return");
-                        tt_ident(out, "Err");
-                        {
-                            let at = out.len();
-                            tt_ident(out, "err");
-                            tt_group(out, Delimiter::Parenthesis, at);
-                        };
-                        tt_group(out, Delimiter::Brace, at);
-                    };
-                    tt_ident(out, "let");
-                    tt_ident(out, "temp2");
-                    tt_punct_alone(out, '=');
-                    tt_ident(out, "temp");
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "assume_init");
-                    {
-                        let at = out.len();
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, ';');
-                    tt_ident(out, "dst");
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "cast");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_punct_alone(out, '<');
-                    {
-                        ctx.target_type(out)
-                    };
-                    tt_punct_alone(out, '>');
-                    {
-                        let at = out.len();
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "write");
-                    {
-                        let at = out.len();
-                        out.push(TokenTree::from(ctx.target.name.clone()));
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        out.push(TokenTree::from(variant.name.clone()));
-                        {
-                            let at = out.len();
-                            for (i, field) in ordered_fields.iter().enumerate() {
-                                out.push(TokenTree::from(field.name.clone()));
-                                tt_punct_alone(out, ':');
-                                tt_ident(out, "temp2");
-                                tt_punct_alone(out, '.');
-                                out.push(Literal::usize_unsuffixed(i).into());
-                                tt_punct_alone(out, ',');
-                            }
-                            out.push(TokenTree::from(flatten_field.name.clone()));
-                            tt_punct_alone(out, ':');
-                            tt_ident(out, "temp_flatten");
-                            tt_punct_alone(out, '.');
-                            tt_ident(out, "assume_init");
-                            {
-                                let at = out.len();
-                                tt_group(out, Delimiter::Parenthesis, at);
-                            };
-                            tt_punct_alone(out, ',');
-                            tt_group(out, Delimiter::Brace, at);
-                        };
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, ';');
-                    TokenStream::from_iter(out.drain(len..))
-                }
-            } else {
-                {
-                    let len = out.len();
-                    tt_ident(out, "type");
-                    tt_ident(out, "__TEMP");
-                    if ctx.target.has_lifetime() {
-                        tt_punct_alone(out, '<');
-                        tt_punct_joint(out, '\'');
-                        out.push(TokenTree::from(ctx.lifetime.clone()));
-                        tt_punct_alone(out, '>');
-                    };
-                    tt_punct_alone(out, '=');
-                    {
-                        let at = out.len();
-                        for field in variant.fields {
-                            out.extend_from_slice(field.ty);
-                            tt_punct_alone(out, ',');
-                        }
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, ';');
-                    tt_ident(out, "let");
-                    tt_ident(out, "schema");
-                    tt_punct_alone(out, '=');
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "jsony");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "__internal");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "ObjectSchema");
-                    {
-                        let at = out.len();
-                        tt_ident(out, "inner");
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "const");
-                        {
-                            let at = out.len();
-                            tt_punct_alone(out, '&');
-                            if let Err(err) = struct_schema(
-                                out,
-                                ctx,
-                                &ordered_fields,
-                                Some(&Ident::new("__TEMP", Span::call_site())),
-                            ) {
-                                return Err(err);
-                            };
-                            tt_group(out, Delimiter::Brace, at);
-                        };
-                        tt_punct_alone(out, ',');
-                        tt_ident(out, "phantom");
-                        tt_punct_alone(out, ':');
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "std");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "marker");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "PhantomData");
-                        tt_punct_alone(out, ',');
-                        tt_group(out, Delimiter::Brace, at);
-                    };
-                    tt_punct_alone(out, ';');
-                    tt_ident(out, "let");
-                    tt_ident(out, "mut");
-                    tt_ident(out, "temp");
-                    tt_punct_alone(out, '=');
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "std");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "mem");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "MaybeUninit");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_punct_alone(out, '<');
-                    tt_ident(out, "__TEMP");
-                    tt_punct_alone(out, '>');
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "uninit");
-                    {
-                        let at = out.len();
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, ';');
-                    tt_ident(out, "if");
-                    tt_ident(out, "let");
-                    tt_ident(out, "Err");
-                    {
-                        let at = out.len();
-                        tt_ident(out, "err");
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, '=');
-                    tt_ident(out, "schema");
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "decode");
-                    {
-                        let at = out.len();
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "std");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "ptr");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "NonNull");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "new_unchecked");
-                        {
-                            let at = out.len();
-                            tt_ident(out, "temp");
-                            tt_punct_alone(out, '.');
-                            tt_ident(out, "as_mut_ptr");
-                            {
-                                let at = out.len();
-                                tt_group(out, Delimiter::Parenthesis, at);
-                            };
-                            tt_punct_alone(out, '.');
-                            tt_ident(out, "cast");
-                            {
-                                let at = out.len();
-                                tt_group(out, Delimiter::Parenthesis, at);
-                            };
-                            tt_group(out, Delimiter::Parenthesis, at);
-                        };
-                        tt_punct_alone(out, ',');
-                        tt_ident(out, "parser");
-                        tt_punct_alone(out, ',');
-                        tt_ident(out, "None");
-                        tt_punct_alone(out, ',');
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    {
-                        let at = out.len();
-                        tt_ident(out, "return");
-                        tt_ident(out, "Err");
-                        {
-                            let at = out.len();
-                            tt_ident(out, "err");
-                            tt_group(out, Delimiter::Parenthesis, at);
-                        };
-                        tt_group(out, Delimiter::Brace, at);
-                    };
-                    tt_ident(out, "let");
-                    tt_ident(out, "temp2");
-                    tt_punct_alone(out, '=');
-                    tt_ident(out, "temp");
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "assume_init");
-                    {
-                        let at = out.len();
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, ';');
-                    tt_ident(out, "dst");
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "cast");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_punct_alone(out, '<');
-                    {
-                        ctx.target_type(out)
-                    };
-                    tt_punct_alone(out, '>');
-                    {
-                        let at = out.len();
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "write");
-                    {
-                        let at = out.len();
-                        out.push(TokenTree::from(ctx.target.name.clone()));
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        out.push(TokenTree::from(variant.name.clone()));
-                        {
-                            let at = out.len();
-                            for (i, field) in variant.fields.iter().enumerate() {
-                                out.push(TokenTree::from(field.name.clone()));
-                                tt_punct_alone(out, ':');
-                                tt_ident(out, "temp2");
-                                tt_punct_alone(out, '.');
-                                out.push(Literal::usize_unsuffixed(i).into());
-                                tt_punct_alone(out, ',');
-                            }
-                            tt_group(out, Delimiter::Brace, at);
-                        };
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(out, ';');
-                    TokenStream::from_iter(out.drain(len..))
-                }
+            if let Err(err) = enum_variant_from_json_struct(out, ctx, variant, untagged) {
+                return Err(err);
             }
         }
         EnumKind::None => {
-            let len = out.len();
             tt_ident(out, "dst");
             tt_punct_alone(out, '.');
             tt_ident(out, "cast");
@@ -2060,10 +2444,7 @@ fn enum_variant_from_json(
                 ctx.target_type(out)
             };
             tt_punct_alone(out, '>');
-            {
-                let at = out.len();
-                tt_group(out, Delimiter::Parenthesis, at);
-            };
+            tt_group_empty(out, Delimiter::Parenthesis);
             tt_punct_alone(out, '.');
             tt_ident(out, "write");
             {
@@ -2074,10 +2455,16 @@ fn enum_variant_from_json(
                 out.push(TokenTree::from(variant.name.clone()));
                 tt_group(out, Delimiter::Parenthesis, at);
             };
-            TokenStream::from_iter(out.drain(len..))
+            tt_punct_alone(out, ';');
+            if untagged {
+                tt_ident(out, "break");
+                tt_punct_joint(out, '\'');
+                tt_ident(out, "success");
+            };
         }
     };
-    out.push(TokenTree::Group(Group::new(Delimiter::Brace, body)));
+    let ts = TokenStream::from_iter(out.drain(start..));
+    out.push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
     Ok(())
 }
 fn enum_from_json(
@@ -2088,63 +2475,244 @@ fn enum_from_json(
     if ctx.target.flattenable {
         return Err(Error::msg("Flattening enums not supported yet."));
     }
-    let body = {
-        let len = out.len();
-        tt_ident(out, "let");
-        tt_ident(out, "Ok");
-        {
-            let at = out.len();
-            tt_ident(out, "Some");
-            {
-                let at = out.len();
-                tt_ident(out, "variant");
-                tt_group(out, Delimiter::Parenthesis, at);
-            };
-            tt_group(out, Delimiter::Parenthesis, at);
-        };
-        tt_punct_alone(out, '=');
-        tt_ident(out, "parser");
-        tt_punct_alone(out, '.');
-        tt_ident(out, "enter_object");
-        {
-            let at = out.len();
-            tt_group(out, Delimiter::Parenthesis, at);
-        };
-        tt_ident(out, "else");
-        {
-            let at = out.len();
-            tt_ident(out, "return");
-            tt_ident(out, "Err");
-            {
-                let at = out.len();
-                tt_punct_alone(out, '&');
-                tt_ident(out, "DecodeError");
+    let mut mixed_strings_and_objects = false;
+    let inline_tag = match &ctx.target.tag {
+        Tag::Inline(literal) => Some(literal),
+        Tag::Untagged => {
+            let body = {
+                let len = out.len();
+                tt_ident(out, "let");
+                tt_ident(out, "initial_index");
+                tt_punct_alone(out, '=');
+                tt_ident(out, "parser");
+                tt_punct_alone(out, '.');
+                tt_ident(out, "index");
+                tt_punct_alone(out, ';');
+                tt_punct_joint(out, '\'');
+                tt_ident(out, "success");
+                tt_punct_alone(out, ':');
                 {
                     let at = out.len();
-                    tt_ident(out, "message");
-                    tt_punct_alone(out, ':');
-                    out.push(Literal::string("Expected single field object for enum").into());
+                    for (i, variant) in variants.iter().enumerate() {
+                        {
+                            let at = out.len();
+                            if i != 0 {
+                                tt_ident(out, "parser");
+                                tt_punct_alone(out, '.');
+                                tt_ident(out, "index");
+                                tt_punct_alone(out, '=');
+                                tt_ident(out, "initial_index");
+                                tt_punct_alone(out, ';');
+                            };
+                            if let Err(err) = enum_variant_from_json(out, ctx, variant, true) {
+                                return Err(err);
+                            };
+                            tt_group(out, Delimiter::Brace, at);
+                        };
+                    }
+                    tt_ident(out, "return");
+                    tt_ident(out, "Err");
+                    {
+                        let at = out.len();
+                        tt_punct_alone(out, '&');
+                        tt_punct_joint(out, ':');
+                        tt_punct_alone(out, ':');
+                        tt_ident(out, "jsony");
+                        tt_punct_joint(out, ':');
+                        tt_punct_alone(out, ':');
+                        tt_ident(out, "json");
+                        tt_punct_joint(out, ':');
+                        tt_punct_alone(out, ':');
+                        tt_ident(out, "DecodeError");
+                        {
+                            let at = out.len();
+                            tt_ident(out, "message");
+                            tt_punct_alone(out, ':');
+                            out.push(
+                                Literal::string("Untagged enum didn't match any variant").into(),
+                            );
+                            tt_group(out, Delimiter::Brace, at);
+                        };
+                        tt_group(out, Delimiter::Parenthesis, at);
+                    };
                     tt_group(out, Delimiter::Brace, at);
                 };
-                tt_group(out, Delimiter::Parenthesis, at);
+                tt_ident(out, "parser");
+                tt_punct_alone(out, '.');
+                tt_ident(out, "clear_error");
+                tt_group_empty(out, Delimiter::Parenthesis);
+                tt_punct_alone(out, ';');
+                tt_ident(out, "Ok");
+                {
+                    let at = out.len();
+                    tt_group_empty(out, Delimiter::Parenthesis);
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                TokenStream::from_iter(out.drain(len..))
             };
-            tt_punct_alone(out, ';');
-            tt_group(out, Delimiter::Brace, at);
+            impl_from_json(out, ctx, body)?;
+            return Ok(());
+        }
+        Tag::Default => {
+            for variants in variants {
+                if let EnumKind::None = variants.kind {
+                    mixed_strings_and_objects = true;
+                    break;
+                }
+            }
+            None
+        }
+    };
+    let mut body = {
+        let len = out.len();
+        {
+            if let Some(tag) = inline_tag {
+                {
+                    tt_ident(out, "let");
+                    tt_ident(out, "variant");
+                    tt_punct_alone(out, '=');
+                    tt_ident(out, "match");
+                    tt_ident(out, "parser");
+                    tt_punct_alone(out, '.');
+                    {
+                        if let Some(content) = &ctx.target.content {
+                            {
+                                tt_ident(out, "tag_query_at_content_next_object");
+                                {
+                                    let at = out.len();
+                                    out.push(Literal::string(tag).into());
+                                    tt_punct_alone(out, ',');
+                                    out.push(Literal::string(content).into());
+                                    tt_group(out, Delimiter::Parenthesis, at);
+                                };
+                            }
+                        } else {
+                            {
+                                tt_ident(out, "tag_query_next_object");
+                                {
+                                    let at = out.len();
+                                    out.push(Literal::string(tag).into());
+                                    tt_group(out, Delimiter::Parenthesis, at);
+                                };
+                            }
+                        }
+                    };
+                    {
+                        let at = out.len();
+                        tt_ident(out, "Ok");
+                        {
+                            let at = out.len();
+                            tt_ident(out, "value");
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_punct_joint(out, '=');
+                        tt_punct_alone(out, '>');
+                        tt_ident(out, "value");
+                        tt_punct_alone(out, ',');
+                        tt_ident(out, "Err");
+                        {
+                            let at = out.len();
+                            tt_ident(out, "err");
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_punct_joint(out, '=');
+                        tt_punct_alone(out, '>');
+                        tt_ident(out, "return");
+                        tt_ident(out, "Err");
+                        {
+                            let at = out.len();
+                            tt_ident(out, "err");
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_punct_alone(out, ',');
+                        tt_group(out, Delimiter::Brace, at);
+                    };
+                    tt_punct_alone(out, ';');
+                }
+            } else {
+                {
+                    tt_ident(out, "let");
+                    tt_ident(out, "Ok");
+                    {
+                        let at = out.len();
+                        tt_ident(out, "Some");
+                        {
+                            let at = out.len();
+                            tt_ident(out, "variant");
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_group(out, Delimiter::Parenthesis, at);
+                    };
+                    tt_punct_alone(out, '=');
+                    tt_ident(out, "parser");
+                    tt_punct_alone(out, '.');
+                    {
+                        if mixed_strings_and_objects {
+                            {
+                                tt_ident(out, "enter_seen_object");
+                            }
+                        } else {
+                            {
+                                tt_ident(out, "enter_object");
+                            }
+                        }
+                    };
+                    tt_group_empty(out, Delimiter::Parenthesis);
+                    tt_ident(out, "else");
+                    {
+                        let at = out.len();
+                        tt_ident(out, "return");
+                        tt_ident(out, "Err");
+                        {
+                            let at = out.len();
+                            tt_punct_alone(out, '&');
+                            tt_ident(out, "jsony");
+                            tt_punct_joint(out, ':');
+                            tt_punct_alone(out, ':');
+                            tt_ident(out, "json");
+                            tt_punct_joint(out, ':');
+                            tt_punct_alone(out, ':');
+                            tt_ident(out, "DecodeError");
+                            {
+                                let at = out.len();
+                                tt_ident(out, "message");
+                                tt_punct_alone(out, ':');
+                                out.push(
+                                    Literal::string("Expected single field object for enum").into(),
+                                );
+                                tt_group(out, Delimiter::Brace, at);
+                            };
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_punct_alone(out, ';');
+                        tt_group(out, Delimiter::Brace, at);
+                    };
+                    tt_punct_alone(out, ';');
+                }
+            }
         };
-        tt_punct_alone(out, ';');
         tt_ident(out, "match");
         tt_ident(out, "variant");
         {
             let at = out.len();
-            for (_, variant) in variants.iter().enumerate() {
-                out.push(variant_key_literal(ctx, variant).into());
-                tt_punct_joint(out, '=');
-                tt_punct_alone(out, '>');
-                if let Err(err) = enum_variant_from_json(out, ctx, variant) {
-                    return Err(err);
-                };
-                tt_punct_alone(out, ',');
-            }
+            {
+                for variant in variants {
+                    if mixed_strings_and_objects {
+                        if let EnumKind::None = variant.kind {
+                            continue;
+                        }
+                    }
+                    {
+                        out.push(variant_key_literal(ctx, variant).into());
+                        tt_punct_joint(out, '=');
+                        tt_punct_alone(out, '>');
+                        if let Err(err) = enum_variant_from_json(out, ctx, variant, false) {
+                            return Err(err);
+                        };
+                        tt_punct_alone(out, ',');
+                    };
+                }
+            };
             tt_ident(out, "_");
             tt_punct_joint(out, '=');
             tt_punct_alone(out, '>');
@@ -2158,10 +2726,7 @@ fn enum_from_json(
                     tt_ident(out, "variant");
                     tt_punct_alone(out, '.');
                     tt_ident(out, "to_string");
-                    {
-                        let at = out.len();
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
+                    tt_group_empty(out, Delimiter::Parenthesis);
                     tt_group(out, Delimiter::Parenthesis, at);
                 };
                 tt_punct_alone(out, ';');
@@ -2186,133 +2751,389 @@ fn enum_from_json(
             };
             tt_group(out, Delimiter::Brace, at);
         };
-        tt_ident(out, "let");
-        tt_ident(out, "err");
-        tt_punct_alone(out, '=');
-        tt_ident(out, "match");
-        tt_ident(out, "parser");
-        tt_punct_alone(out, '.');
-        tt_ident(out, "object_step");
         {
-            let at = out.len();
-            tt_group(out, Delimiter::Parenthesis, at);
+            if let Some(_) = inline_tag {
+                if ctx.target.content.is_some() {
+                    {
+                        tt_ident(out, "parser");
+                        tt_punct_alone(out, '.');
+                        tt_ident(out, "discard_remaining_object_fields");
+                        tt_group_empty(out, Delimiter::Parenthesis);
+                    }
+                } else {
+                    {
+                        tt_ident(out, "Ok");
+                        {
+                            let at = out.len();
+                            tt_group_empty(out, Delimiter::Parenthesis);
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                    }
+                }
+            } else {
+                {
+                    tt_ident(out, "let");
+                    tt_ident(out, "err");
+                    tt_punct_alone(out, '=');
+                    tt_ident(out, "match");
+                    tt_ident(out, "parser");
+                    tt_punct_alone(out, '.');
+                    tt_ident(out, "object_step");
+                    tt_group_empty(out, Delimiter::Parenthesis);
+                    {
+                        let at = out.len();
+                        tt_ident(out, "Ok");
+                        {
+                            let at = out.len();
+                            tt_ident(out, "None");
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_punct_joint(out, '=');
+                        tt_punct_alone(out, '>');
+                        {
+                            let at = out.len();
+                            tt_ident(out, "return");
+                            tt_ident(out, "Ok");
+                            {
+                                let at = out.len();
+                                tt_group_empty(out, Delimiter::Parenthesis);
+                                tt_group(out, Delimiter::Parenthesis, at);
+                            };
+                            tt_group(out, Delimiter::Brace, at);
+                        };
+                        tt_punct_alone(out, ',');
+                        tt_ident(out, "Err");
+                        {
+                            let at = out.len();
+                            tt_ident(out, "err");
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_punct_joint(out, '=');
+                        tt_punct_alone(out, '>');
+                        {
+                            let at = out.len();
+                            tt_ident(out, "Err");
+                            {
+                                let at = out.len();
+                                tt_ident(out, "err");
+                                tt_group(out, Delimiter::Parenthesis, at);
+                            };
+                            tt_group(out, Delimiter::Brace, at);
+                        };
+                        tt_punct_alone(out, ',');
+                        tt_ident(out, "Ok");
+                        {
+                            let at = out.len();
+                            tt_ident(out, "Some");
+                            {
+                                let at = out.len();
+                                tt_ident(out, "_");
+                                tt_group(out, Delimiter::Parenthesis, at);
+                            };
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_punct_joint(out, '=');
+                        tt_punct_alone(out, '>');
+                        {
+                            let at = out.len();
+                            tt_ident(out, "Err");
+                            {
+                                let at = out.len();
+                                tt_punct_alone(out, '&');
+                                tt_ident(out, "jsony");
+                                tt_punct_joint(out, ':');
+                                tt_punct_alone(out, ':');
+                                tt_ident(out, "json");
+                                tt_punct_joint(out, ':');
+                                tt_punct_alone(out, ':');
+                                tt_ident(out, "DecodeError");
+                                {
+                                    let at = out.len();
+                                    tt_ident(out, "message");
+                                    tt_punct_alone(out, ':');
+                                    out.push(
+                                        Literal::string("More the one field in enum tab object")
+                                            .into(),
+                                    );
+                                    tt_group(out, Delimiter::Brace, at);
+                                };
+                                tt_group(out, Delimiter::Parenthesis, at);
+                            };
+                            tt_group(out, Delimiter::Brace, at);
+                        };
+                        tt_punct_alone(out, ',');
+                        tt_group(out, Delimiter::Brace, at);
+                    };
+                    tt_punct_alone(out, ';');
+                    tt_ident(out, "std");
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_ident(out, "ptr");
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_ident(out, "drop_in_place");
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_punct_alone(out, '<');
+                    {
+                        ctx.target_type(out)
+                    };
+                    tt_punct_alone(out, '>');
+                    {
+                        let at = out.len();
+                        tt_ident(out, "dst");
+                        tt_punct_alone(out, '.');
+                        tt_ident(out, "cast");
+                        tt_group_empty(out, Delimiter::Parenthesis);
+                        tt_punct_alone(out, '.');
+                        tt_ident(out, "as_mut");
+                        tt_group_empty(out, Delimiter::Parenthesis);
+                        tt_group(out, Delimiter::Parenthesis, at);
+                    };
+                    tt_punct_alone(out, ';');
+                    tt_ident(out, "return");
+                    tt_ident(out, "err");
+                    tt_punct_alone(out, ';');
+                }
+            }
         };
-        {
-            let at = out.len();
-            tt_ident(out, "Ok");
+        TokenStream::from_iter(out.drain(len..))
+    };
+    if mixed_strings_and_objects {
+        body = {
+            let len = out.len();
+            tt_ident(out, "match");
+            tt_ident(out, "parser");
+            tt_punct_alone(out, '.');
+            tt_ident(out, "peek");
+            tt_group_empty(out, Delimiter::Parenthesis);
             {
                 let at = out.len();
-                tt_ident(out, "None");
-                tt_group(out, Delimiter::Parenthesis, at);
-            };
-            tt_punct_joint(out, '=');
-            tt_punct_alone(out, '>');
-            {
-                let at = out.len();
-                tt_ident(out, "return");
                 tt_ident(out, "Ok");
                 {
                     let at = out.len();
-                    {
-                        let at = out.len();
-                        tt_group(out, Delimiter::Parenthesis, at);
-                    };
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_ident(out, "jsony");
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_ident(out, "parser");
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_ident(out, "Peek");
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_ident(out, "Object");
                     tt_group(out, Delimiter::Parenthesis, at);
                 };
-                tt_group(out, Delimiter::Brace, at);
-            };
-            tt_punct_alone(out, ',');
-            tt_ident(out, "Err");
-            {
-                let at = out.len();
-                tt_ident(out, "err");
-                tt_group(out, Delimiter::Parenthesis, at);
-            };
-            tt_punct_joint(out, '=');
-            tt_punct_alone(out, '>');
-            {
-                let at = out.len();
+                tt_punct_joint(out, '=');
+                tt_punct_alone(out, '>');
+                out.push(TokenTree::Group(Group::new(Delimiter::Brace, body)));
+                tt_punct_alone(out, ',');
+                tt_ident(out, "Ok");
+                {
+                    let at = out.len();
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_ident(out, "jsony");
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_ident(out, "parser");
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_ident(out, "Peek");
+                    tt_punct_joint(out, ':');
+                    tt_punct_alone(out, ':');
+                    tt_ident(out, "String");
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_joint(out, '=');
+                tt_punct_alone(out, '>');
+                tt_ident(out, "match");
+                tt_ident(out, "parser");
+                tt_punct_alone(out, '.');
+                tt_ident(out, "read_seen_string_unescaped");
+                tt_group_empty(out, Delimiter::Parenthesis);
+                {
+                    let at = out.len();
+                    tt_ident(out, "Ok");
+                    {
+                        let at = out.len();
+                        tt_ident(out, "variant");
+                        tt_group(out, Delimiter::Parenthesis, at);
+                    };
+                    tt_punct_joint(out, '=');
+                    tt_punct_alone(out, '>');
+                    {
+                        let at = out.len();
+                        tt_ident(out, "let");
+                        tt_ident(out, "value");
+                        tt_punct_alone(out, '=');
+                        tt_ident(out, "match");
+                        tt_ident(out, "variant");
+                        {
+                            let at = out.len();
+                            {
+                                for variant in variants {
+                                    if let EnumKind::None = variant.kind {
+                                        {
+                                            out.push(variant_key_literal(ctx, variant).into());
+                                            tt_punct_joint(out, '=');
+                                            tt_punct_alone(out, '>');
+                                            out.push(TokenTree::from(ctx.target.name.clone()));
+                                            tt_punct_joint(out, ':');
+                                            tt_punct_alone(out, ':');
+                                            out.push(TokenTree::from(variant.name.clone()));
+                                            tt_punct_alone(out, ',');
+                                        };
+                                    }
+                                }
+                            };
+                            tt_ident(out, "_");
+                            tt_punct_joint(out, '=');
+                            tt_punct_alone(out, '>');
+                            {
+                                let at = out.len();
+                                tt_ident(out, "parser");
+                                tt_punct_alone(out, '.');
+                                tt_ident(out, "report_error");
+                                {
+                                    let at = out.len();
+                                    tt_ident(out, "variant");
+                                    tt_punct_alone(out, '.');
+                                    tt_ident(out, "to_string");
+                                    tt_group_empty(out, Delimiter::Parenthesis);
+                                    tt_group(out, Delimiter::Parenthesis, at);
+                                };
+                                tt_punct_alone(out, ';');
+                                tt_ident(out, "return");
+                                tt_ident(out, "Err");
+                                {
+                                    let at = out.len();
+                                    tt_punct_alone(out, '&');
+                                    tt_punct_joint(out, ':');
+                                    tt_punct_alone(out, ':');
+                                    tt_ident(out, "jsony");
+                                    tt_punct_joint(out, ':');
+                                    tt_punct_alone(out, ':');
+                                    tt_ident(out, "parser");
+                                    tt_punct_joint(out, ':');
+                                    tt_punct_alone(out, ':');
+                                    tt_ident(out, "UNKNOWN_VARIANT");
+                                    tt_group(out, Delimiter::Parenthesis, at);
+                                };
+                                tt_punct_alone(out, ';');
+                                tt_group(out, Delimiter::Brace, at);
+                            };
+                            tt_group(out, Delimiter::Brace, at);
+                        };
+                        tt_punct_alone(out, ';');
+                        tt_ident(out, "dst");
+                        tt_punct_alone(out, '.');
+                        tt_ident(out, "cast");
+                        tt_punct_joint(out, ':');
+                        tt_punct_alone(out, ':');
+                        tt_punct_alone(out, '<');
+                        {
+                            ctx.target_type(out)
+                        };
+                        tt_punct_alone(out, '>');
+                        tt_group_empty(out, Delimiter::Parenthesis);
+                        tt_punct_alone(out, '.');
+                        tt_ident(out, "write");
+                        {
+                            let at = out.len();
+                            tt_ident(out, "value");
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_punct_alone(out, ';');
+                        tt_ident(out, "return");
+                        tt_ident(out, "Ok");
+                        {
+                            let at = out.len();
+                            tt_group_empty(out, Delimiter::Parenthesis);
+                            tt_group(out, Delimiter::Parenthesis, at);
+                        };
+                        tt_punct_alone(out, ';');
+                        tt_group(out, Delimiter::Brace, at);
+                    };
+                    tt_ident(out, "Err");
+                    {
+                        let at = out.len();
+                        tt_ident(out, "err");
+                        tt_group(out, Delimiter::Parenthesis, at);
+                    };
+                    tt_punct_joint(out, '=');
+                    tt_punct_alone(out, '>');
+                    tt_ident(out, "return");
+                    tt_ident(out, "Err");
+                    {
+                        let at = out.len();
+                        tt_ident(out, "err");
+                        tt_group(out, Delimiter::Parenthesis, at);
+                    };
+                    tt_punct_alone(out, ',');
+                    tt_group(out, Delimiter::Brace, at);
+                };
+                tt_punct_alone(out, ',');
+                tt_ident(out, "Ok");
+                {
+                    let at = out.len();
+                    tt_ident(out, "_");
+                    tt_group(out, Delimiter::Parenthesis, at);
+                };
+                tt_punct_joint(out, '=');
+                tt_punct_alone(out, '>');
+                {
+                    let at = out.len();
+                    tt_ident(out, "return");
+                    tt_ident(out, "Err");
+                    {
+                        let at = out.len();
+                        tt_punct_alone(out, '&');
+                        tt_ident(out, "jsony");
+                        tt_punct_joint(out, ':');
+                        tt_punct_alone(out, ':');
+                        tt_ident(out, "json");
+                        tt_punct_joint(out, ':');
+                        tt_punct_alone(out, ':');
+                        tt_ident(out, "DecodeError");
+                        {
+                            let at = out.len();
+                            tt_ident(out, "message");
+                            tt_punct_alone(out, ':');
+                            out.push(
+                                Literal::string("Expected either an object or a string").into(),
+                            );
+                            tt_punct_alone(out, ',');
+                            tt_group(out, Delimiter::Brace, at);
+                        };
+                        tt_group(out, Delimiter::Parenthesis, at);
+                    };
+                    tt_punct_alone(out, ';');
+                    tt_group(out, Delimiter::Brace, at);
+                };
                 tt_ident(out, "Err");
                 {
                     let at = out.len();
                     tt_ident(out, "err");
                     tt_group(out, Delimiter::Parenthesis, at);
                 };
-                tt_group(out, Delimiter::Brace, at);
-            };
-            tt_punct_alone(out, ',');
-            tt_ident(out, "Ok");
-            {
-                let at = out.len();
-                tt_ident(out, "Some");
-                {
-                    let at = out.len();
-                    tt_ident(out, "_");
-                    tt_group(out, Delimiter::Parenthesis, at);
-                };
-                tt_group(out, Delimiter::Parenthesis, at);
-            };
-            tt_punct_joint(out, '=');
-            tt_punct_alone(out, '>');
-            {
-                let at = out.len();
+                tt_punct_joint(out, '=');
+                tt_punct_alone(out, '>');
+                tt_ident(out, "return");
                 tt_ident(out, "Err");
                 {
                     let at = out.len();
-                    tt_punct_alone(out, '&');
-                    tt_ident(out, "DecodeError");
-                    {
-                        let at = out.len();
-                        tt_ident(out, "message");
-                        tt_punct_alone(out, ':');
-                        out.push(Literal::string("More the one field in enum tab object").into());
-                        tt_group(out, Delimiter::Brace, at);
-                    };
+                    tt_ident(out, "err");
                     tt_group(out, Delimiter::Parenthesis, at);
                 };
+                tt_punct_alone(out, ',');
                 tt_group(out, Delimiter::Brace, at);
             };
-            tt_punct_alone(out, ',');
-            tt_group(out, Delimiter::Brace, at);
-        };
-        tt_punct_alone(out, ';');
-        tt_ident(out, "std");
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_ident(out, "ptr");
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_ident(out, "drop_in_place");
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_punct_alone(out, '<');
-        {
-            ctx.target_type(out)
-        };
-        tt_punct_alone(out, '>');
-        {
-            let at = out.len();
-            tt_ident(out, "dst");
-            tt_punct_alone(out, '.');
-            tt_ident(out, "cast");
-            {
-                let at = out.len();
-                tt_group(out, Delimiter::Parenthesis, at);
-            };
-            tt_punct_alone(out, '.');
-            tt_ident(out, "as_mut");
-            {
-                let at = out.len();
-                tt_group(out, Delimiter::Parenthesis, at);
-            };
-            tt_group(out, Delimiter::Parenthesis, at);
-        };
-        tt_punct_alone(out, ';');
-        tt_ident(out, "return");
-        tt_ident(out, "err");
-        tt_punct_alone(out, ';');
-        TokenStream::from_iter(out.drain(len..))
-    };
+            TokenStream::from_iter(out.drain(len..))
+        }
+    }
     impl_from_json(out, ctx, body)?;
     Ok(())
 }
@@ -2567,10 +3388,7 @@ fn enum_from_binary(
         tt_ident(out, "decoder");
         tt_punct_alone(out, '.');
         tt_ident(out, "byte");
-        {
-            let at = out.len();
-            tt_group(out, Delimiter::Parenthesis, at);
-        };
+        tt_group_empty(out, Delimiter::Parenthesis);
         {
             let at = out.len();
             {
@@ -2666,6 +3484,9 @@ fn handle_enum(target: &DeriveTargetInner, variants: &[EnumVariant]) -> Result<T
         }
     }
     ctx.temp = (0..max_tuples).map(var).collect::<Vec<_>>();
+    if target.to_json {
+        enum_to_json(&mut output, &ctx, variants)?;
+    }
     if target.from_json {
         enum_from_json(&mut output, &ctx, variants)?;
     }
@@ -2689,7 +3510,9 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
         from_json: false,
         to_binary: false,
         to_json: false,
+        content: None,
         flattenable: false,
+        tag: Tag::Default,
         rename_all: crate::case::RenameRule::None,
     };
     let (kind, body) = ast::extract_derive_target(&mut target, &outer_tokens)?;
