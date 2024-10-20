@@ -114,7 +114,7 @@ macro_rules! append_tok {
 macro_rules! splat { ($d:tt; $($tt:tt)*) => { { $(append_tok!($tt $d);)* } } }
 
 macro_rules! token_stream { ($d:tt; $($tt:tt)*) => {{
-    let len = $d.buf.len(); $(append_tok!($tt $d);)* TokenStream::from_iter($d.buf.drain(len..))
+    let len = $d.buf.len(); $(append_tok!($tt $d);)* $d.split_off_stream(len)
 }}}
 
 struct GenericBoundFormating {
@@ -266,9 +266,14 @@ fn impl_to_binary(
     Ok(())
 }
 
+enum ToJsonKind<'a> {
+    Static(&'static str),
+    Forward(&'a Field<'a>),
+}
+
 fn impl_to_json(
     output: &mut RustWriter,
-    kind: &str,
+    kind: ToJsonKind,
     Ctx {
         target, crate_path, ..
     }: &Ctx,
@@ -283,10 +288,19 @@ fn impl_to_json(
         >]  [?(!target.where_clauses.is_empty() || !target.generic_field_types.is_empty())
              where [
                 for ty in &target.generic_field_types {
-                    splat!(output; [~ty]: [~&crate_path]::ToBinary,)
+                    splat!(output; [~ty]: [~&crate_path]::ToJson,)
                 }
              ]] {
-            type Kind = [~&crate_path]::json::[@Ident::new(kind, Span::call_site()).into()];
+            type Kind = [
+                match kind {
+                    ToJsonKind::Static(kind) => {
+                        splat!(output; [~&crate_path]::json::[@Ident::new(kind, Span::call_site()).into()])
+                    },
+                    ToJsonKind::Forward(field) => {
+                        splat!(output; <[~field.ty] as [~&crate_path]::ToJson>::Kind)
+                    },
+                }
+            ];
             fn jsonify_into(&self, out: &mut jsony::TextWriter) -> Self::Kind [
                 output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
@@ -605,6 +619,74 @@ fn required_bitset(ordered: &[&Field]) -> u64 {
     ((1 << ordered.len()) - 1) ^ ((1 << defaults) - 1)
 }
 
+fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+    let head = out.buf.len();
+    match fields {
+        [] => {
+            throw!("FromJson not implemented for Tuples without fields yet.")
+        }
+        [field] => {
+            splat!(out;
+                < [~field.ty] as ::jsony::FromJson<#[#ctx.lifetime]> >::emplace_from_json(
+                    // to remove addition is repr(transparent) or repr(c)
+                    dst[?(!matches!(ctx.target.repr, ast::Repr::Transparent | ast::Repr::C))
+                        .byte_add(
+                            ::std::mem::offset_of!(
+                                [ctx.dead_target_type(out)],
+                                [@Literal::usize_unsuffixed(0).into()]
+                            )
+                        )
+                    ],
+                    parser
+                )
+            );
+            ToJsonKind::Forward(field)
+        }
+        _ => {
+            throw!("FromJson not implemented for Tuples with mulitple fields yet.")
+        }
+    };
+    let stream = out.split_off_stream(head);
+    impl_from_json(out, ctx, stream)
+}
+
+fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+    let head = out.buf.len();
+    let kind = match fields {
+        [] => {
+            splat!(out; out.push_str([
+                out.buf.push(TokenTree::Literal(Literal::string("null")));
+            ]));
+            ToJsonKind::Static("AnyValue")
+        }
+        [field] => {
+            splat!(out;
+                <[~field.ty] as ::jsony::ToJson>::jsonify_into(&self.[#Literal::usize_unsuffixed(0)], out)
+            );
+            ToJsonKind::Forward(field)
+        }
+        _ => {
+            let mut first = true;
+            splat!(
+                out;
+                out.start_json_array();
+                [for ((i, field) in fields.iter().enumerate()) {
+                    [if first {
+                        first = false;
+                    } else {
+                        splat!(out; out.push_comma());
+                    }]
+                    <[~field.ty] as ::jsony::ToJson>::jsonify_into(&self.[#Literal::usize_unsuffixed(i)], out);
+                }]
+                out.end_json_array()
+            );
+            ToJsonKind::Static("ArrayValue")
+        }
+    };
+    let stream = out.split_off_stream(head);
+    impl_to_json(out, kind, ctx, stream)
+}
+
 fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     let mut text = String::new();
     let mut first = true;
@@ -630,7 +712,7 @@ fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(
         out.end_json_object()
     );
 
-    impl_to_json(out, "ObjectValue", ctx, body)
+    impl_to_json(out, ToJsonKind::Static("ObjectValue"), ctx, body)
 }
 
 fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
@@ -772,7 +854,7 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
     } else {
         "StringValue"
     };
-    impl_to_json(out, kind, ctx, stream)
+    impl_to_json(out, ToJsonKind::Static(kind), ctx, stream)
 }
 fn enum_variant_to_json_struct(
     out: &mut RustWriter,
@@ -1254,6 +1336,14 @@ fn handle_tuple_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<T
     let mut output = RustWriter::new();
     let ctx = Ctx::new(&mut output, target)?;
 
+    if target.from_json {
+        tuple_struct_from_json(&mut output, &ctx, fields)?;
+    }
+
+    if target.to_json {
+        tuple_struct_to_json(&mut output, &ctx, fields)?;
+    }
+
     if target.to_binary {
         let body = token_stream! { (&mut output); [
             for (i, field) in fields.iter().enumerate() {
@@ -1397,6 +1487,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
         flattenable: false,
         tag: Tag::Default,
         rename_all: crate::case::RenameRule::None,
+        repr: ast::Repr::Default,
     };
     let (kind, body) = ast::extract_derive_target(&mut target, &outer_tokens)?;
 

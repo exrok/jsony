@@ -83,6 +83,9 @@ impl RustWriter {
         let group = TokenTree::Group(Group::new(delimiter, TokenStream::new()));
         self.buf.push(group);
     }
+    pub fn split_off_stream(&mut self, from: usize) -> TokenStream {
+        TokenStream::from_iter(self.buf.drain(from..))
+    }
     #[allow(dead_code)]
     #[inline(never)]
     fn blit(&mut self, start: u32, len: u32) {

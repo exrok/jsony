@@ -80,6 +80,9 @@ impl RustWriter {
         ));
         self.buf.push(group);
     }
+    pub fn split_off_stream(&mut self, from: usize) -> TokenStream {
+        TokenStream::from_iter(self.buf.drain(from..))
+    }
     pub fn tt_group_empty(&mut self, delimiter: Delimiter) {
         let group = TokenTree::Group(Group::new(delimiter, TokenStream::new()));
         self.buf.push(group);

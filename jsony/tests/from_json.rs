@@ -147,14 +147,14 @@ fn recursion_limits() {
         .unwrap();
     assert!(err.to_string().contains("limit"));
 
-    // TODO uncomment once derive transparent implemented
-    // #[derive(Jsony, Debug)]
-    // struct NestedArray(Vec<NestedArray>);
+    #[derive(Jsony, Debug)]
+    struct NestedArray(Vec<NestedArray>);
 
-    // from_json::<NestedArray>(&recurse(128, "[", "", "]")).unwrap();
-    // let err = from_json::<NestedArray>(&recurse(129, "[", "", "]"))
-    //     .err()
-    //     .unwrap();
+    from_json::<NestedArray>(&recurse(128, "[", "[]", "]")).unwrap();
+    let err = from_json::<NestedArray>(&recurse(129, "[", "[]", "]"))
+        .err()
+        .unwrap();
+    assert!(err.to_string().contains("limit"));
 
     #[derive(Jsony)]
     #[jsony(untagged)]

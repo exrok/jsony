@@ -113,11 +113,8 @@ fn main() {
     }
 
     util::print_pretty_and_copy(codegen::derive(tokens! {
-        #[jsony(untagged)]
-        enum Untagged {
-            Array(Vec<Untagged>),
-            Object { key: Option<Box<Untagged>> },
-            Number(f64),
-        }
+        #[jsony(ToJson, FromJson)]
+        #[repr(transparent)]
+        struct Untagged(u32)
     }));
 }

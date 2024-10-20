@@ -49,6 +49,14 @@ pub enum Tag {
 }
 
 #[cfg_attr(feature = "debug", derive(Debug))]
+pub enum Repr {
+    Transparent,
+    C,
+    Default,
+    Unknown,
+}
+
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct DeriveTargetInner<'a> {
     pub name: Ident,
     pub generics: Vec<Generic<'a>>,
@@ -63,6 +71,7 @@ pub struct DeriveTargetInner<'a> {
     pub flattenable: bool,
     pub content: Option<String>,
     pub tag: Tag, // pub untagged: bool,
+    pub repr: Repr,
 }
 
 impl<'a> DeriveTargetInner<'a> {
@@ -250,6 +259,49 @@ fn parse_container_attr(
     Ok(())
 }
 
+fn extract_container_attr(
+    target: &mut DeriveTargetInner,
+    stream: TokenStream,
+) -> Result<(), Error> {
+    let mut toks = stream.into_iter();
+    let Some(TokenTree::Ident(ident)) = toks.next() else {
+        return Ok(());
+    };
+    let Some(TokenTree::Group(group)) = toks.next() else {
+        return Ok(());
+    };
+    let name = ident.to_string();
+    if name == "jsony" {
+        parse_attrs(group.stream(), &mut |attr, value| {
+            parse_container_attr(target, attr, value)
+        })
+    } else if name == "repr" {
+        for toks in group.stream() {
+            let TokenTree::Ident(ident) = toks else {
+                continue;
+            };
+            let name = ident.to_string();
+            match name.as_str() {
+                "transparent" => {
+                    target.repr = Repr::Transparent;
+                }
+                "C" => {
+                    target.repr = Repr::C;
+                }
+                "packet" => {
+                    throw!("repr(packed) not supported")
+                }
+                _ => {
+                    target.repr = Repr::Unknown;
+                }
+            }
+        }
+        Ok(())
+    } else {
+        Ok(())
+    }
+}
+
 pub fn extract_derive_target<'a>(
     target: &mut DeriveTargetInner<'a>,
     toks: &'a [TokenTree],
@@ -259,13 +311,7 @@ pub fn extract_derive_target<'a>(
         let ident = match next!(toks) {
             TokenTree::Ident(ident) => ident,
             TokenTree::Punct(ch) if ch.as_char() == '#' => {
-                let Some(attrs) = extract_jsony_attr(expect_next!(Group, toks).stream()) else {
-                    continue;
-                };
-                //todo should collect errors instead of bailing immedialtely
-                parse_attrs(attrs, &mut |attr, value| {
-                    parse_container_attr(target, attr, value)
-                })?;
+                extract_container_attr(target, expect_next!(Group, toks).stream())?;
                 continue;
             }
             _ => continue,

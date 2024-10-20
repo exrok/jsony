@@ -132,7 +132,7 @@ macro_rules! append_tok {
 macro_rules! splat { ($d:tt; $($tt:tt)*) => { { $(append_tok!($tt $d);)* } } }
 
 macro_rules! token_stream { ($d:tt; $($tt:tt)*) => {{
-    let len = $d.buf.len(); $(append_tok!($tt $d);)* TokenStream::from_iter($d.buf.drain(len..))
+    let len = $d.buf.len(); $(append_tok!($tt $d);)* $d.split_off_stream(len)
 }}}
 
 fn is_char(tt: &TokenTree, ch: char) -> bool {
