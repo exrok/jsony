@@ -113,11 +113,11 @@ fn main() {
     }
 
     util::print_pretty_and_copy(codegen::derive(tokens! {
-        #[derive(Debug)]
-        #[jsony(FromJson)]
-        enum Simple {
-            Alpha(u32),
-            Delta,
+        #[jsony(untagged)]
+        enum Untagged {
+            Array(Vec<Untagged>),
+            Object { key: Option<Box<Untagged>> },
+            Number(f64),
         }
     }));
 }

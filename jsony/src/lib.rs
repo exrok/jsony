@@ -105,11 +105,7 @@ pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, &'static Decod
         let mut parser = Parser::new(json);
         match unsafe { func(value, &mut parser) } {
             Ok(()) => Ok(()),
-            Err(err) => {
-                // todo add drop
-                println!("Error At: {:?}", parser);
-                Err(err)
-            }
+            Err(err) => Err(err),
         }
     }
     let mut value = std::mem::MaybeUninit::<T>::uninit();

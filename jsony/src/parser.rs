@@ -61,6 +61,7 @@ static NULL_REST: [u8; 3] = [b'u', b'l', b'l'];
 pub struct Parser<'j> {
     pub ctx: Ctx<'j>,
     pub index: usize,
+    pub remaining_depth: i32,
 }
 
 impl<'j> fmt::Debug for Parser<'j> {
@@ -128,6 +129,13 @@ pub static UNKNOWN_VARIANT: DecodeError = DecodeError {
     message: "Unknown enum variant",
 };
 
+pub static DUPLICATE_FIELD: DecodeError = DecodeError {
+    message: "Duplicate field",
+};
+pub static RECURSION_LIMIT_EXCEEDED: DecodeError = DecodeError {
+    message: "Recursion limit exceeded",
+};
+
 fn extract_numeric_literal(
     bytes: &[u8],
     mut index: usize,
@@ -183,6 +191,7 @@ fn extract_raw_string(
     }
 }
 
+const DEFAULT_DEPTH_LIMIT: i32 = 128;
 /// consume_X, assumes we already know following thing must be type X
 /// because we peeked and so the prefix. If you call `consume_X` with
 /// peeking your code is likely buggy.
@@ -191,6 +200,7 @@ impl<'j> Parser<'j> {
         Self {
             ctx: Ctx::new(data),
             index: 0,
+            remaining_depth: DEFAULT_DEPTH_LIMIT,
         }
     }
     pub fn report_static_error(&mut self, error: &'j str) {
@@ -245,6 +255,10 @@ impl<'j> Parser<'j> {
                 self.index += 1;
                 Ok(None)
             } else {
+                self.remaining_depth -= 1;
+                if self.remaining_depth < 0 {
+                    return Err(&RECURSION_LIMIT_EXCEEDED);
+                }
                 Ok(Some(Peek::new(next)))
             }
         } else {
@@ -290,6 +304,7 @@ impl<'j> Parser<'j> {
                 }
                 b']' => {
                     self.index += 1;
+                    self.remaining_depth += 1;
                     Ok(None)
                 }
                 _ => Err(&EXPECTED_LIST_COMMA_OR_END),
@@ -364,6 +379,7 @@ impl<'j> Parser<'j> {
             Ok(value) => Ok(Some(Parser {
                 ctx: Ctx::new(self.ctx.data),
                 index: self.index + (self.ctx.data.len() - value.len()),
+                remaining_depth: self.remaining_depth,
             })),
             Err(_) => Err(&TODO_ERROR),
         }
@@ -375,7 +391,13 @@ impl<'j> Parser<'j> {
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
             match next {
-                b'"' => Ok(Some(())),
+                b'"' => {
+                    self.remaining_depth -= 1;
+                    if self.remaining_depth < 0 {
+                        return Err(&RECURSION_LIMIT_EXCEEDED);
+                    }
+                    Ok(Some(()))
+                }
                 b'}' => {
                     self.index += 1;
                     Ok(None)
@@ -494,6 +516,7 @@ impl<'j> Parser<'j> {
             return Err(&EOF_WHILE_PARSING_OBJECT);
         }
         let initial_index = self.index;
+        let initial_remaining_depth = self.remaining_depth;
         let mut current_field_name = match self.enter_seen_object() {
             Ok(Some(name)) => name,
             Ok(None) => {
@@ -508,6 +531,7 @@ impl<'j> Parser<'j> {
                 match self.read_string_unescaped() {
                     Ok(value) => {
                         self.index = initial_index;
+                        self.remaining_depth = initial_remaining_depth;
                         return Ok(value);
                     }
                     Err(err) => {
@@ -548,7 +572,13 @@ impl<'j> Parser<'j> {
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
             match next {
-                b'"' => self.read_seen_unescaped_object_key().map(Some),
+                b'"' => {
+                    self.remaining_depth -= 1;
+                    if self.remaining_depth < 0 {
+                        return Err(&RECURSION_LIMIT_EXCEEDED);
+                    }
+                    self.read_seen_unescaped_object_key().map(Some)
+                }
                 b'}' => {
                     self.index += 1;
                     Ok(None)
@@ -574,6 +604,7 @@ impl<'j> Parser<'j> {
                 }
                 b'}' => {
                     self.index += 1;
+                    self.remaining_depth += 1;
                     Ok(None)
                 }
                 _ => Err(&EXPECTED_OBJECT_COMMA_OR_END),
@@ -597,6 +628,7 @@ impl<'j> Parser<'j> {
                 }
                 b'}' => {
                     self.index += 1;
+                    self.remaining_depth += 1;
                     Ok(None)
                 }
                 _ => Err(&EXPECTED_OBJECT_COMMA_OR_END),

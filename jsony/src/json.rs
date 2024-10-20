@@ -107,6 +107,11 @@ pub unsafe trait FromJsonFieldVisitor<'a> {
 pub struct DecodeError {
     pub message: &'static str,
 }
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message)
+    }
+}
 
 static INVALID_NUMERIC_LITERAL: DecodeError = DecodeError {
     message: "Invalid numeric literal",
@@ -176,6 +181,22 @@ unsafe impl<'a> FromJson<'a> for String {
             }
             Err(err) => Err(err),
         }
+    }
+}
+unsafe impl<'a, T: Sized + FromJson<'a>> FromJson<'a> for Box<T> {
+    unsafe fn emplace_from_json(
+        dest: NonNull<()>,
+        parser: &mut Parser<'a>,
+    ) -> Result<(), &'static DecodeError> {
+        let mut raw = Box::<T>::new_uninit();
+        if let Err(err) = <T as FromJson<'a>>::emplace_from_json(
+            NonNull::new_unchecked(raw.as_mut_ptr()).cast(),
+            parser,
+        ) {
+            return Err(err);
+        }
+        dest.cast::<Box<T>>().write(raw.assume_init());
+        Ok(())
     }
 }
 

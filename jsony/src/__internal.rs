@@ -63,7 +63,10 @@ unsafe impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
     }
 }
 
-use crate::{json::FieldVistor, parser::Parser};
+use crate::{
+    json::FieldVistor,
+    parser::{Parser, DUPLICATE_FIELD},
+};
 
 type DecodeFn<'a> = unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>;
 use super::DecodeError;
@@ -123,9 +126,8 @@ impl<'a> ObjectSchema<'a> {
                                     continue;
                                 }
                                 if bitset & mask != 0 {
-                                    break 'with_next_key &DecodeError {
-                                        message: "Duplicate field",
-                                    };
+                                    parser.report_static_error(&field.name);
+                                    break 'with_next_key &DUPLICATE_FIELD;
                                 }
                                 //todo porpotogate error
                                 if let Err(err) =
@@ -135,15 +137,15 @@ impl<'a> ObjectSchema<'a> {
                                 }
                                 bitset |= mask;
                                 //todo should maybe should remove this
-                                if unsued.is_none() && bitset & all == all {
-                                    // todo handle error opimtize
-                                    while let Ok(Some(_)) = parser.object_step() {
-                                        if let Err(err) = parser.skip_value() {
-                                            break 'with_next_key err;
-                                        }
-                                    }
-                                    return Ok(());
-                                }
+                                // if unsued.is_none() && bitset & all == all {
+                                //     // todo handle error opimtize
+                                //     while let Ok(Some(_)) = parser.object_step() {
+                                //         if let Err(err) = parser.skip_value() {
+                                //             break 'with_next_key err;
+                                //         }
+                                //     }
+                                //     return Ok(());
+                                // }
                                 break 'next;
                             }
                             if let Some(ref mut unsued_processor) = unsued {

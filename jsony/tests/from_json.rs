@@ -126,3 +126,48 @@ fn enum_default_tagging() {
         ]
     )
 }
+
+#[test]
+fn recursion_limits() {
+    #[derive(Jsony, Debug)]
+    struct NestedObject {
+        a: Option<Box<NestedObject>>,
+    }
+    fn recurse(depth: usize, prefix: &str, terminal: &str, suffix: &str) -> String {
+        let mut out = String::with_capacity(depth * (prefix.len() + suffix.len()) + terminal.len());
+        (0..depth).for_each(|_| out.push_str(prefix));
+        out.push_str(terminal);
+        (0..depth).for_each(|_| out.push_str(suffix));
+        println!("{}", out);
+        out
+    }
+    from_json::<NestedObject>(&recurse(128, "{\"a\":", "null", "}")).unwrap();
+    let err = from_json::<NestedObject>(&recurse(129, "{\"a\":", "null", "}"))
+        .err()
+        .unwrap();
+    assert!(err.to_string().contains("limit"));
+
+    // TODO uncomment once derive transparent implemented
+    // #[derive(Jsony, Debug)]
+    // struct NestedArray(Vec<NestedArray>);
+
+    // from_json::<NestedArray>(&recurse(128, "[", "", "]")).unwrap();
+    // let err = from_json::<NestedArray>(&recurse(129, "[", "", "]"))
+    //     .err()
+    //     .unwrap();
+
+    #[derive(Jsony)]
+    #[jsony(untagged)]
+    #[allow(unused)]
+    enum Untagged {
+        Array(Vec<Untagged>),
+        // If untagged to doesn't make sure to restore remaining limit after
+        // failing a match on this `FakeObject` then we'll fail.
+        FakeObject { key: bool },
+        Object { key: Option<Box<Untagged>> },
+        Number(f64),
+    }
+
+    let foo = recurse(63, "{\"key\": [", "0", "]}");
+    from_json::<Vec<Untagged>>(&format!("[{foo},{foo},{foo}]")).unwrap();
+}

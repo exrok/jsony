@@ -1064,10 +1064,14 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
             let body = token_stream! {
                 out;
                 let initial_index = parser.index;
+                let initial_remaining_depth = parser.remaining_depth;
                 #success: {
                     [for ((i, variant) in variants.iter().enumerate()) {
                         {
-                            [?(i != 0) parser.index = initial_index;]
+                            [?(i != 0)
+                                parser.index = initial_index;
+                                parser.remaining_depth = initial_remaining_depth;
+                            ]
                             [try enum_variant_from_json(out, ctx, variant, true)]
                         }
                     }]
