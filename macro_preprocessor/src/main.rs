@@ -1,17 +1,22 @@
+use aho_corasick::AhoCorasick;
 use ra_ap_rustc_lexer::{tokenize, TokenKind};
+use std::collections::HashMap;
+use std::io::Write;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::slice::Iter as SliceIter;
 
-#[derive(Debug, Hash, PartialEq, Eq)]
+// note the order here is important for the sorting of the merges
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 enum Kind {
-    PushIdent,
     PushPunctAlone,
     PushPunctJoint,
+    PushIdent,
+    PushEmptyGroup,
 }
 
 #[derive(Debug, Hash, PartialEq, Eq)]
-struct Fnctl<'a> {
+struct Stmt<'a> {
     kind: Kind,
     buffer: &'a str,
     literal: &'a str,
@@ -19,19 +24,45 @@ struct Fnctl<'a> {
 fn munch_thing<'a>(
     raw: &'a str,
     from: &mut SliceIter<'_, (TokenKind, Range<usize>)>,
-) -> Option<(Fnctl<'a>, Range<usize>)> {
+) -> Option<(Stmt<'a>, Range<usize>)> {
     let (start, kind) = loop {
         match from.next() {
             Some((TokenKind::Ident, range)) => match &raw[range.clone()] {
                 "tt_ident" => break (range, Kind::PushIdent),
                 "tt_punct_joint" => break (range, Kind::PushPunctJoint),
                 "tt_punct_alone" => break (range, Kind::PushPunctAlone),
+                "tt_group_empty" => break (range, Kind::PushEmptyGroup),
                 _ => return None,
             },
             Some((TokenKind::Whitespace, _)) => continue,
             _ => return None,
         }
     };
+    let mut group = 0;
+    let writer_start = 'foo: {
+        for (i, &ch) in raw.as_bytes()[..start.start].iter().enumerate().rev() {
+            if group > 0 {
+                if ch == b'(' {
+                    group -= 1;
+                }
+                if ch == b')' {
+                    group += 1;
+                }
+                continue;
+            }
+            if ch == b')' {
+                group += 1;
+                continue;
+            }
+            if ch == b'.' || ch.is_ascii_alphabetic() || ch == b'_' {
+                continue;
+            }
+            break 'foo i + 1;
+        }
+        0
+    };
+    let raw_writer = &raw[writer_start..start.start];
+    let writer = raw_writer.strip_suffix('.').unwrap_or(raw_writer).trim();
     let mut toks = from.clone();
     // let mut toks = toks.filter(|(tok, _)| !matches!(tok, TokenKind::Whitespace));
     let mut next = || loop {
@@ -40,16 +71,40 @@ fn munch_thing<'a>(
             other => return other,
         }
     };
-    let (paren, paren_span) = next()?;
+    let (paren, _) = next()?;
     if *paren != TokenKind::OpenParen {
         return None;
     }
-    let buffer_name = loop {
-        let (tok, tok_span) = next()?;
-        if *tok == TokenKind::Comma {
-            break raw[paren_span.end..tok_span.start].trim();
+    if kind == Kind::PushEmptyGroup {
+        let (TokenKind::Ident { .. }, _) = next()? else {
+            return None;
+        };
+        let (TokenKind::Colon { .. }, _) = next()? else {
+            return None;
+        };
+        let (TokenKind::Colon { .. }, _) = next()? else {
+            return None;
+        };
+        let (TokenKind::Ident { .. }, value) = next()? else {
+            return None;
+        };
+        if next()?.0 != TokenKind::CloseParen {
+            return None;
         }
-    };
+        let (TokenKind::Semi, end) = next()? else {
+            return None;
+        };
+        *from = toks;
+        return Some((
+            Stmt {
+                kind,
+                buffer: writer,
+                literal: &raw[value.clone()],
+            },
+            writer_start..end.end,
+        ));
+    }
+
     let (TokenKind::Literal { .. }, value) = next()? else {
         return None;
     };
@@ -61,12 +116,12 @@ fn munch_thing<'a>(
     };
     *from = toks;
     Some((
-        Fnctl {
+        Stmt {
             kind,
-            buffer: buffer_name,
+            buffer: writer,
             literal: &raw[value.clone()],
         },
-        start.start..end.end,
+        writer_start..end.end,
     ))
 }
 
@@ -78,9 +133,8 @@ fn modules(input: &str) -> impl Iterator<Item = (&str, &str)> {
     })
 }
 
-fn line_by_line_transform(input: &str) -> String {
+fn line_by_line_transform(input: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input.len());
-    let input = input.as_bytes();
     let mut iter = memchr::memchr_iter(b'\n', input);
     let mut line_start = 0;
     let mut write_from = 0;
@@ -125,138 +179,87 @@ fn line_by_line_transform(input: &str) -> String {
         };
     }
     output.extend_from_slice(&input[write_from..]);
-    unsafe { String::from_utf8_unchecked(output) }
-}
-
-#[allow(dead_code)]
-fn merge_tts(bytes: &[u8]) -> Vec<u8> {
-    let mut end = 0;
-    let data = std::str::from_utf8(bytes).unwrap();
-    let tokens: Vec<(TokenKind, Range<usize>)> = tokenize(&data)
-        .map(move |tok| {
-            let start = end;
-            end += tok.len as usize;
-            (tok.kind, start..end)
-        })
-        .collect();
-    let mut iter = tokens.iter();
-    // let mut thetoks: HashSet<Fnctl<'_>> = HashSet::new();
-    let mut output = Vec::with_capacity(data.len());
-    let mut write_from = 0;
-    let mut handle_group = |group: &[(Fnctl, std::ops::Range<usize>)]| {
-        if group.len() <= 1 {
-            return;
-        }
-        output.extend_from_slice(&bytes[write_from..group[0].1.start]);
-        write_from = group.last().unwrap().1.end;
-        output.extend_from_slice(b"tt_append(");
-        output.extend_from_slice(group[0].0.buffer.as_bytes());
-        output.extend_from_slice(b",&[");
-        for tt in group {
-            match tt.0.kind {
-                Kind::PushIdent => {
-                    output.extend_from_slice(b"StaticIdent(");
-                    output.extend_from_slice(tt.0.literal.as_bytes());
-                    output.extend_from_slice(b"),");
-                }
-                Kind::PushPunctAlone => {
-                    output.extend_from_slice(b"StaticPunct(");
-                    output.extend_from_slice(tt.0.literal.as_bytes());
-                    output.extend_from_slice(b",true),");
-                }
-                Kind::PushPunctJoint => {
-                    output.extend_from_slice(b"StaticPunct(");
-                    output.extend_from_slice(tt.0.literal.as_bytes());
-                    output.extend_from_slice(b",false),");
-                }
-            }
-        }
-        output.extend_from_slice(b"]);");
-    };
-    let mut current_group: Vec<(Fnctl, std::ops::Range<usize>)> = Vec::new();
-    let mut current_buffer = "";
-    while iter.len() > 0 {
-        if let Some((fnctl, range)) = munch_thing(&data, &mut iter) {
-            if fnctl.buffer != current_buffer {
-                if !current_group.is_empty() {
-                    handle_group(&current_group);
-                    current_group.clear();
-                }
-                current_buffer = fnctl.buffer;
-                current_group.push((fnctl, range))
-            } else {
-                current_buffer = fnctl.buffer;
-                current_group.push((fnctl, range))
-            }
-        } else {
-            if !current_group.is_empty() {
-                handle_group(&current_group);
-                current_group.clear();
-            }
-        }
-    }
-    handle_group(&current_group);
-    output.extend_from_slice(&bytes[write_from..]);
     output
 }
-#[test]
-fn tt_merging2() {
-    let value = merge_tts(
-        br#"
-tt_ident(&mut output, "encoder");
-tt_punct_alone(&mut output, '.');
-foo();
-tt_punct_alone(output, '<');
-tt_punct_joint(output, '\'');
-tt_punct_joint(dude, '\'');
-"#,
-    );
-    let expected = r#"
-tt_append(&mut output,&[StaticIdent("encoder"),StaticPunct('.',true),]);
-foo();
-tt_append(output,&[StaticPunct('<',true),StaticPunct('\'',false),]);
-tt_punct_joint(dude, '\'');
-"#;
-    assert_eq!(std::str::from_utf8(&value).unwrap().trim(), expected.trim())
+
+struct TTMergeBlocks<'a> {
+    stmts: Vec<(Stmt<'a>, Range<usize>)>,
+    splits: Vec<usize>,
 }
-#[test]
-fn tt_merging() {
-    let value = merge_tts(
-        br#"
-            {
-                let at = output.len();
-                tt_ident(output, "decoder");
-                tt_punct_alone(output, ':');
-                tt_punct_alone(output, '&');
-                tt_ident(output, "mut");
-                output.extend_from_slice(&crate_path);
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "binary");
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "Decoder");
-                tt_punct_alone(output, '<');
-                tt_punct_joint(output, '\'');
-                output.push(TokenTree::from(lifetime.clone()));
-                tt_punct_alone(output, '>');
-                tt_group(output, Delimiter::Parenthesis, at);
-            };
-"#,
-    );
-    let expected = r#"
-tt_append(&mut output,&[StaticIdent("encoder"),StaticPunct('.',true),]);
-foo();
-tt_append(output,&[StaticPunct('<',true),StaticPunct('\'',false),]);
-tt_punct_joint(dude, '\'');
-"#;
-    let fmted = std::str::from_utf8(&value).unwrap().trim();
-    println!("{}", fmted);
-    assert_eq!(fmted, expected.trim())
+
+impl<'a> TTMergeBlocks<'a> {
+    fn groups(&self) -> impl Iterator<Item = &[(Stmt<'a>, Range<usize>)]> {
+        let mut prev = 0;
+        self.splits.iter().map(move |&end| {
+            let start = prev;
+            prev = end;
+            &self.stmts[start..end]
+        })
+    }
+    fn new(bytes: &'a [u8]) -> Self {
+        let mut this = TTMergeBlocks {
+            stmts: Vec::new(),
+            splits: Vec::new(),
+        };
+        let mut end = 0;
+        let data = std::str::from_utf8(bytes).unwrap();
+        let tokens: Vec<(TokenKind, Range<usize>)> = tokenize(&data)
+            .map(move |tok| {
+                let start = end;
+                end += tok.len as usize;
+                (tok.kind, start..end)
+            })
+            .collect();
+        let mut iter = tokens.iter();
+        let mut current_buffer = "";
+        let mut last_split = 0;
+        let mut last_end = 0;
+        while iter.len() > 0 {
+            if let Some((fnctl, range)) = munch_thing(&data, &mut iter) {
+                if data[last_end..range.start]
+                    .as_bytes()
+                    .iter()
+                    .any(|ch| !ch.is_ascii_whitespace())
+                    && data[last_end..range.start]
+                        .as_bytes()
+                        .iter()
+                        .all(|ch| ch.is_ascii_whitespace() || *ch == b';')
+                {
+                    println!("{:?} {:#?}", &data[last_end - 10..range.start + 10], fnctl);
+                }
+
+                if fnctl.buffer != current_buffer
+                    || data[last_end..range.start]
+                        .as_bytes()
+                        .iter()
+                        .any(|ch| !ch.is_ascii_whitespace())
+                {
+                    if this.stmts.len() != last_split {
+                        this.splits.push(this.stmts.len());
+                        last_split = this.stmts.len();
+                    }
+                }
+                last_end = range.end;
+                current_buffer = fnctl.buffer;
+                this.stmts.push((fnctl, range))
+            }
+        }
+        if this.stmts.len() != last_split {
+            this.splits.push(this.stmts.len());
+        }
+        this
+    }
 }
 
 fn pipe_rustfmt(data: &[u8]) -> Vec<u8> {
-    let mut rustfmt = std::process::Command::new("rustfmt")
+    let mut rustfmt_path = format!(
+        "{}/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt",
+        std::env::var("HOME").unwrap_or_default()
+    );
+    if !std::path::Path::exists(rustfmt_path.as_ref()) {
+        rustfmt_path = "rustfmt".into()
+    }
+    let mut rustfmt = std::process::Command::new(rustfmt_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -266,13 +269,521 @@ fn pipe_rustfmt(data: &[u8]) -> Vec<u8> {
     let output = rustfmt.wait_with_output().unwrap();
     output.stdout
 }
+const REPLACEMENTS: &[(&str, &str)] = &[
+    ("((&mut output),", "(&mut output,"),
+    (" (&mut output).", " output."),
+    ("((&mut out),", "(&mut out,"),
+    (" (&mut out).", " out."),
+    (
+        "::core::panicking::panic(\"not yet implemented\")",
+        "todo!()",
+    ),
+];
+
+fn export_merged_blocks(files: &[&[u8]]) -> (Vec<u8>, Vec<Vec<u8>>) {
+    let merges: Vec<_> = files.iter().map(|data| TTMergeBlocks::new(data)).collect();
+    let mut distinct_stmts: HashMap<(Kind, &str), u64> = HashMap::new();
+    distinct_stmts.insert((Kind::PushEmptyGroup, "Parenthesis"), 0x1_0000_0000);
+    distinct_stmts.insert((Kind::PushEmptyGroup, "Brace"), 0x2_0000_0000);
+    distinct_stmts.insert((Kind::PushEmptyGroup, "Bracket"), 0x3_0000_0000);
+    distinct_stmts.insert((Kind::PushEmptyGroup, "Empty"), 0x4_0000_0000);
+    for merge in &merges {
+        for (stmt, _) in &merge.stmts {
+            *distinct_stmts.entry((stmt.kind, stmt.literal)).or_insert(0) += 1;
+        }
+    }
+    // We sort these to ensure reproduceable results.
+    assert!((distinct_stmts.len() + (b' ' as usize)) < u8::MAX as usize);
+    let mut distinct_stmts: Vec<(u64, Kind, &str)> = distinct_stmts
+        .into_iter()
+        .map(|((kind, text), count)| (count | ((kind as u64) << 49), kind, text))
+        .collect();
+    // Try to map most common punctionuation to `\t`, `\n` & `\r`
+    {
+        let mut puncts = Vec::new();
+        for stmt in &mut distinct_stmts {
+            if !matches!(stmt.1, Kind::PushPunctAlone | Kind::PushPunctJoint) {
+                continue;
+            }
+            puncts.push(stmt);
+        }
+        puncts.sort_unstable_by_key(|(k, _, _)| *k as u32);
+        let mut iter = puncts.iter_mut().rev();
+        let minimizing = [b'\t' as u64, b'\n' as u64, b'\r' as u64];
+        for idx in minimizing {
+            if let Some((c, _, _)) = iter.next() {
+                *c = idx;
+            }
+        }
+        let mut i = 0;
+        for (c, _, _) in iter {
+            while minimizing.contains(&i) {
+                i += 1;
+            }
+            *c = i;
+            i += 1;
+        }
+    }
+    distinct_stmts.sort_unstable();
+    let stmt_id: HashMap<(Kind, &str), u8> = distinct_stmts
+        .iter()
+        .enumerate()
+        .map(|(i, (_, kind, text))| ((*kind, *text), (i as u8)))
+        .collect();
+    let mut max_ident = 0usize;
+    let mut max_punct = 0usize;
+    for (i, (_, kind, _)) in distinct_stmts.iter().enumerate() {
+        if matches!(kind, Kind::PushPunctAlone | Kind::PushPunctJoint) {
+            max_punct = i;
+        }
+        if matches!(kind, Kind::PushIdent) {
+            max_ident = i;
+        }
+    }
+    if distinct_stmts.is_empty() {
+        panic!("NO stmts found");
+    }
+    let puncts = &distinct_stmts[..max_punct + 1];
+    let idents = &distinct_stmts[max_punct + 1..max_ident + 1];
+    // we implement greedy substring compression
+    // at the time of implementation brings down the size from 1400 -> 1036
+    let mut stmt_slice_buffer: Vec<u8> = Vec::new();
+
+    let mut current_slice = Vec::<u8>::new();
+    // todo consider remapping the space so that &\x00 never happen and
+    // that the majority of text gets mapped to asscie charaters
+    let mut g_count = 0;
+    let mut og_count = 0;
+    let mut outputs: Vec<Vec<u8>> = Vec::new();
+    for (merge, data) in merges.iter().zip(files) {
+        let mut output: Vec<u8> = Vec::new();
+        let mut written = 0;
+        for group in merge.groups() {
+            g_count += 1;
+            og_count += group.len();
+            current_slice.clear();
+            for (stmt, _) in group {
+                let id = stmt_id[&(stmt.kind, stmt.literal)];
+                current_slice.push(id);
+            }
+            output.extend_from_slice(&data[written..group[0].1.start]);
+            written = group.last().unwrap().1.end;
+            if let [(stmt, _)] = group {
+                match stmt.kind {
+                    Kind::PushPunctAlone | Kind::PushPunctJoint => {
+                        write!(output, "{}.blit_punct({});", stmt.buffer, current_slice[0])
+                            .unwrap();
+                    }
+                    Kind::PushIdent => {
+                        write!(
+                            output,
+                            "{}.blit_ident({});",
+                            stmt.buffer,
+                            current_slice[0] - puncts.len() as u8
+                        )
+                        .unwrap();
+                    }
+                    Kind::PushEmptyGroup => {
+                        output.extend_from_slice(&data[group[0].1.start..written])
+                    }
+                }
+            } else if group.len() > 0 {
+                let start =
+                    if let Some(start) = memchr::memmem::find(&stmt_slice_buffer, &current_slice) {
+                        start
+                    } else {
+                        let start = stmt_slice_buffer.len();
+                        stmt_slice_buffer.extend_from_slice(&current_slice);
+                        start
+                    };
+                write!(
+                    output,
+                    "{}.blit({}, {});",
+                    group[0].0.buffer,
+                    start,
+                    current_slice.len()
+                )
+                .unwrap();
+            }
+        }
+        output.extend_from_slice(&data[written..]);
+        outputs.push(output);
+    }
+    println!("Calls: {} -> {}", og_count, g_count);
+    println!("{}", stmt_slice_buffer.len());
+    println!("{}", stmt_slice_buffer.escape_ascii().to_string());
+    println!("{}", stmt_slice_buffer.escape_ascii().to_string().len());
+    println!("{}", [7, 8, 9, 10, 11, 12, 13].escape_ascii());
+    let cache_template = stringify! {
+        use proc_macro::{ Punct, Spacing };
+
+        use super::IdentCacheEntry;
+
+        pub static BLIT_SRC: &[u8] = __PLACEHOLDER__;
+
+        pub const IDENT_SIZE: usize = __PLACEHOLDER__;
+        static NAMES: &[&str] = &[__PLACEHOLDER__];
+        pub fn ident_cache_initial_state() -> Box<[IdentCacheEntry; IDENT_SIZE]> {
+            unsafe {
+                let mut cache =
+                    std::alloc::alloc(std::alloc::Layout::array::<IdentCacheEntry>(IDENT_SIZE).unwrap())
+                        as *mut IdentCacheEntry;
+                for (i, &name) in NAMES.iter().enumerate() {
+                    std::ptr::write(cache.add(i), IdentCacheEntry::Empty(name));
+                }
+                Box::from_raw(cache as *mut [IdentCacheEntry; IDENT_SIZE])
+            }
+        }
+
+        pub const PUNCT_SIZE: usize = __PLACEHOLDER__;
+        pub fn punct_cache_initial_state() -> [Punct; PUNCT_SIZE] {
+            [__PLACEHOLDER__]
+        }
+    };
+    let mut segments = cache_template.split("__PLACEHOLDER__");
+
+    let mut cache_output = Vec::<u8>::new();
+
+    cache_output.extend_from_slice(segments.next().unwrap().as_bytes());
+
+    let _ = write!(cache_output, "b\"{}\"", stmt_slice_buffer.escape_ascii());
+    cache_output.extend_from_slice(segments.next().unwrap().as_bytes());
+    let _ = write!(cache_output, "{}", idents.len());
+    cache_output.extend_from_slice(segments.next().unwrap().as_bytes());
+    for ident in idents {
+        let _ = write!(cache_output, "{},", ident.2);
+    }
+    cache_output.extend_from_slice(segments.next().unwrap().as_bytes());
+    let _ = write!(cache_output, "{}", puncts.len());
+    cache_output.extend_from_slice(segments.next().unwrap().as_bytes());
+    for (_, kind, literal) in puncts {
+        match kind {
+            Kind::PushPunctAlone => {
+                let _ = write!(cache_output, "Punct::new({}, Spacing::Alone),", literal);
+            }
+            Kind::PushPunctJoint => {
+                let _ = write!(cache_output, "Punct::new({}, Spacing::Joint),", literal);
+            }
+            _ => (),
+        }
+    }
+    cache_output.extend_from_slice(segments.next().unwrap().as_bytes());
+
+    return (cache_output, outputs);
+}
+
+#[derive(Debug)]
+struct Match<'a, 'b> {
+    text: &'a str,
+    components: &'b [MatchComponent<'a>; 4],
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+struct TokPair<'a> {
+    kind: TokenKind,
+    text: &'a str,
+}
+
+#[derive(Debug)]
+struct MatchComponent<'a> {
+    text: &'a str,
+    tokens: &'a [TokPair<'a>],
+}
+
+#[derive(Debug)]
+enum MatchEntry<'a> {
+    Const(TokPair<'a>),
+    Define(usize, fn(TokPair) -> bool),
+    Use(usize),
+}
+
+fn ext<'a>(foo: &'a str, a: &str, bb: &str) -> &'a str {
+    let a = a.as_bytes().as_ptr();
+    let b = bb.as_bytes().as_ptr();
+    unsafe {
+        if !foo.as_bytes().as_ptr_range().contains(&a)
+            || !foo.as_bytes().as_ptr_range().contains(&b)
+        {
+            return "";
+        }
+        if a > b {
+            return "";
+        }
+        let ptr = foo.as_bytes().as_ptr();
+        let offset = a.offset_from(ptr) as usize;
+        let len = b.offset_from(a) as usize + bb.len();
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr.add(offset), len as usize))
+    }
+}
+
+// returns the last token of the match token
+fn try_match<'a, 'b>(
+    raw_input: &'a str,
+    iter: &mut SliceIter<'a, TokPair<'a>>,
+    entries: &'a [MatchEntry],
+    bindings: &'b mut [MatchComponent<'a>; 4],
+) -> Option<Match<'a, 'b>> {
+    let mut iter = iter.clone();
+    let start = iter.as_slice();
+    let mut entries = entries.iter().peekable();
+    while let Some(entry) = entries.next() {
+        match entry {
+            MatchEntry::Const(pair) => {
+                let pt = iter.next()?;
+                if pair != pt {
+                    return None;
+                }
+                if entries.len() == 0 {
+                    return Some(Match {
+                        text: ext(raw_input, &start[0].text, pt.text),
+                        components: bindings,
+                    });
+                }
+            }
+            MatchEntry::Define(idx, fnx) => {
+                let terminal = entries
+                    .next()
+                    .expect("Variables to always have a next token");
+                let MatchEntry::Const(terminal) = terminal else {
+                    panic!("Vars might be followed by a const")
+                };
+                let lookahead = if let Some(MatchEntry::Const(lookahead)) = entries.peek() {
+                    Some(lookahead)
+                } else {
+                    None
+                };
+                let start = iter.as_slice();
+                let tok = iter.next()?;
+                if !fnx(*tok) {
+                    return None;
+                }
+                let mut len = 1;
+                let mut tok = iter.next()?;
+                loop {
+                    if !fnx(*tok) {
+                        if tok != terminal {
+                            return None;
+                        }
+                        break;
+                    }
+                    if tok == terminal {
+                        if let Some(lookahead) = lookahead {
+                            if let Some(f) = iter.as_slice().first() {
+                                if f == lookahead {
+                                    break;
+                                }
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    tok = iter.next()?;
+                    len += 1;
+                }
+                bindings[*idx] = MatchComponent {
+                    text: ext(raw_input, start[0].text, start[len - 1].text),
+                    tokens: &start[..len],
+                };
+            }
+            MatchEntry::Use(idx) => {
+                let comp = &bindings[*idx];
+                if !iter.as_slice().starts_with(comp.tokens) {
+                    return None;
+                }
+                for _ in 0..comp.tokens.len() {
+                    iter.next();
+                }
+            }
+        }
+    }
+    todo!();
+}
+
+fn structual_replace(
+    pattern: &str,
+    input_string: &str,
+    bindings: &[(&str, fn(TokPair) -> bool)],
+    mapper: &mut dyn FnMut(&mut Vec<u8>, Match) -> bool,
+) -> Vec<u8> {
+    let mut defined_vars = 0u32;
+    let match_entries: Vec<MatchEntry> = tokenize(&pattern)
+        .map({
+            let mut end = 0;
+            move |tok| {
+                let start = end;
+                end += tok.len as usize;
+                (tok.kind, &pattern[start..end])
+            }
+        })
+        .filter(|(tok, _)| {
+            if let TokenKind::Whitespace = tok {
+                return false;
+            }
+            true
+        })
+        .map(|(tok, text)| {
+            if tok == TokenKind::Ident {
+                for (i, (name, fnx)) in bindings.iter().enumerate() {
+                    if text == *name {
+                        if defined_vars & (1 << i) == 0 {
+                            defined_vars |= 1 << i;
+                            return MatchEntry::Define(i, *fnx);
+                        } else {
+                            return MatchEntry::Use(i);
+                        }
+                    }
+                }
+            }
+
+            MatchEntry::Const(TokPair { kind: tok, text })
+        })
+        .collect();
+    let tokens: Vec<TokPair> = tokenize(&input_string)
+        .map({
+            let mut end = 0;
+            move |tok| {
+                let start = end;
+                end += tok.len as usize;
+                (tok.kind, &input_string[start..end])
+            }
+        })
+        .filter(|(tok, _)| {
+            if let TokenKind::Whitespace = tok {
+                return false;
+            }
+            true
+        })
+        .map(|(tok, text)| TokPair { kind: tok, text })
+        .collect();
+    let mut vars = [
+        MatchComponent {
+            text: "",
+            tokens: &[],
+        },
+        MatchComponent {
+            text: "",
+            tokens: &[],
+        },
+        MatchComponent {
+            text: "",
+            tokens: &[],
+        },
+        MatchComponent {
+            text: "",
+            tokens: &[],
+        },
+    ];
+    let mut iter = tokens.iter();
+    let mut output: Vec<u8> = Vec::new();
+    let mut written = 0;
+    loop {
+        let mut trial = iter.clone();
+        if let Some(mat) = try_match(input_string, &mut trial, &match_entries, &mut vars) {
+            iter = trial;
+            let start = unsafe { mat.text.as_ptr().offset_from(input_string.as_ptr()) };
+            output.extend_from_slice(&input_string.as_bytes()[written..start as usize]);
+            written = start as usize + mat.text.len();
+            mapper(&mut output, mat);
+        }
+        if iter.next().is_none() {
+            break;
+        }
+    }
+    output.extend_from_slice(&input_string.as_bytes()[written..]);
+    output
+}
+
+#[allow(dead_code, unused)]
+fn replace_text() {
+    let pattern = stringify!(
+        {
+            let at = V_BUFFER.buf.len();
+            V_BUFFER.V_METHOD(V_PARAMS);
+            V_BUFFER.tt_group(V_DELIM, at);
+        };
+    );
+    let pattern = stringify!(TokenTree::from(V_BUFFER.clone()));
+    let input = stringify!(
+        println!("{}", );
+        fn main() {
+            out.blit(567, 4);
+            {
+                let at = out.buf.len();
+                out.blit_ident(115);
+                out.tt_group(Delimiter::Parenthesis, at);
+            };
+            out.blit(571, 4);
+        }
+    );
+    let file = std::fs::read_to_string("/home/user/Projects/git/jsony/jsony_macros/src/codegen.rs")
+        .unwrap();
+    let mut count = 0;
+    let gen = structual_replace(
+        pattern,
+        &file,
+        &[
+            ("V_BUFFER", |x| {
+                matches!(
+                    x.kind,
+                    TokenKind::Ident
+                        | TokenKind::Dot
+                        | TokenKind::OpenParen
+                        | TokenKind::CloseParen
+                )
+            }),
+            ("V_METHOD", |x| x.kind == TokenKind::Ident),
+            ("V_PARAMS", |x| x.kind != TokenKind::CloseParen),
+            ("V_DELIM", |x| {
+                matches!(x.kind, TokenKind::Ident | TokenKind::Colon)
+            }),
+        ],
+        &mut |output,
+              Match {
+                  text,
+                  components: [buffer, method, params, delim],
+              }| {
+            count += 1;
+            println!("{} {}", method.text, params.text);
+            // println!("{:?}", method);
+            // println!("{:?}", params);
+            // println!("{:?}", delim);
+            // write!(
+            //     output,
+            //     "{}.grouped_ident_blit({}, {});",
+            //     components[0].text, components[1].text, components[2].text,
+            // )
+            // .unwrap();
+            false
+        },
+    );
+    println!("{}", count);
+    // println!("{}", String::from_utf8(pipe_rustfmt(&gen)).unwrap());
+}
 
 fn main() {
+    // flicky();
+    // if true {
+    //     return;
+    // }
     let mut args = std::env::args();
     let _ = args.next();
     let source_crate_path: PathBuf = args.next().unwrap().into();
     let final_crate_path: PathBuf = args.next().unwrap().into();
-
+    let ac = AhoCorasick::builder()
+        .build(REPLACEMENTS.iter().map(|(x, _)| x))
+        .unwrap();
+    let apply_replacements = |data: &[u8]| {
+        let mut output: Vec<u8> = Vec::with_capacity(data.len());
+        ac.replace_all_with_bytes(data, &mut output, |m, _, dst| {
+            dst.extend_from_slice(REPLACEMENTS[m.pattern().as_usize()].1.as_bytes());
+            true
+        });
+        output
+    };
+    let base_transform = |data: &[u8]| {
+        let res = line_by_line_transform(data);
+        apply_replacements(&res)
+    };
     let output = std::process::Command::new("cargo")
         .args([
             "expand",
@@ -288,59 +799,35 @@ fn main() {
         .unwrap();
 
     let data = String::from_utf8(output.stdout).unwrap();
+    let mut codegen_code: Option<Vec<u8>> = None;
+    let mut template_code: Option<Vec<u8>> = None;
     for (name, body) in modules(&data) {
         if name == "ast" {
-            let res = line_by_line_transform(body);
-            let tx = pipe_rustfmt(res.as_bytes());
-            let res = std::str::from_utf8(&tx).unwrap();
-            let res = res.replace("((&mut output),", "(&mut output,");
-            let res = res.replace(" (&mut output).", " output.");
-            let res = res.replace("((&mut out),", "(&mut out,");
-            let res = res.replace(" (&mut out).", " out.");
-            let res = res.replace(
-                "::core::panicking::panic(\"not yet implemented\")",
-                "todo!()",
-            );
-            std::fs::write(
-                final_crate_path.join("src/ast.rs"),
-                pipe_rustfmt(res.as_bytes()),
-            )
-            .unwrap();
+            let code = base_transform(body.as_bytes());
+            std::fs::write(final_crate_path.join("src/ast.rs"), pipe_rustfmt(&code)).unwrap();
         } else if name == "codegen" {
-            let res = line_by_line_transform(body);
-            let tx = pipe_rustfmt(res.as_bytes());
-            let res = std::str::from_utf8(&tx).unwrap();
-            let res = res.replace("((&mut output),", "(&mut output,");
-            let res = res.replace(" (&mut output).", " output.");
-            let res = res.replace("((&mut out),", "(&mut out,");
-            let res = res.replace(" (&mut out).", " out.");
-            let res = res.replace(
-                "::core::panicking::panic(\"not yet implemented\")",
-                "todo!()",
-            );
-            let res = res.as_bytes();
-            // let res = merge_tts(res);
-
-            std::fs::write(final_crate_path.join("src/codegen.rs"), pipe_rustfmt(&res)).unwrap();
+            codegen_code = Some(base_transform(body.as_bytes()));
         } else if name == "template" {
-            let res = line_by_line_transform(body);
-            let tx = pipe_rustfmt(res.as_bytes());
-            let res = std::str::from_utf8(&tx).unwrap();
-            let res = res.replace("((&mut output),", "(&mut output,");
-            let res = res.replace("((&mut self.out),", "(&mut self.out,");
-            let res = res.replace(" (&mut output).", " output.");
-            let res = res.replace("((&mut out),", "(&mut out,");
-            let res = res.replace(" (&mut out).", " out.");
-            let res = res.replace(
-                "::core::panicking::panic(\"not yet implemented\")",
-                "todo!()",
-            );
-
-            std::fs::write(
-                final_crate_path.join("src/template.rs"),
-                pipe_rustfmt(res.as_bytes()),
-            )
-            .unwrap();
+            template_code = Some(base_transform(body.as_bytes()));
         }
     }
+    let codegen_code = codegen_code.expect("to find codegen module");
+    let template_code = template_code.expect("to find template module");
+
+    let (cache_file, processed) = export_merged_blocks(&[&codegen_code, &template_code]);
+    std::fs::write(
+        final_crate_path.join("src/writer/cache.rs"),
+        pipe_rustfmt(&cache_file),
+    )
+    .unwrap();
+    std::fs::write(
+        final_crate_path.join("src/codegen.rs"),
+        pipe_rustfmt(&processed[0]),
+    )
+    .unwrap();
+    std::fs::write(
+        final_crate_path.join("src/template.rs"),
+        pipe_rustfmt(&processed[1]),
+    )
+    .unwrap();
 }

@@ -4,6 +4,7 @@ use crate::ast::{
 };
 use crate::case::RenameRule;
 use crate::util::MemoryPool;
+use crate::writer::RustWriter;
 use crate::Error;
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
@@ -17,58 +18,27 @@ use StaticToken::Ident as StaticIdent;
 #[allow(unused)]
 use StaticToken::Punct as StaticPunct;
 #[allow(unused)]
-fn tt_append_blit(output: &mut Vec<TokenTree>, chr: &str) {
-    output.extend(chr.as_bytes().iter().map(|tok| match *tok {
-        1 => TokenTree::Ident(Ident::new("hello", Span::call_site())),
-        v => TokenTree::Punct(Punct::new(
-            ':',
-            if v & 0b1 == 0 {
-                Spacing::Joint
-            } else {
-                Spacing::Alone
-            },
-        )),
-    }));
-}
-#[allow(unused)]
-fn tt_append(output: &mut Vec<TokenTree>, chr: &'static [StaticToken]) {
-    output.extend(chr.iter().map(|tok| match tok {
-        StaticIdent(value) => TokenTree::Ident(Ident::new(value, Span::call_site())),
-        StaticPunct(chr, spacing) => TokenTree::Punct(Punct::new(
-            *chr,
-            if *spacing {
-                Spacing::Joint
-            } else {
-                Spacing::Alone
-            },
-        )),
-    }));
-}
-fn tt_punct_alone(out: &mut Vec<TokenTree>, chr: char) {
-    out.push(TokenTree::Punct(Punct::new(chr, Spacing::Alone)));
-}
-fn tt_punct_joint(out: &mut Vec<TokenTree>, chr: char) {
-    out.push(TokenTree::Punct(Punct::new(chr, Spacing::Joint)));
-}
-fn tt_ident(out: &mut Vec<TokenTree>, ident: &str) {
-    out.push(TokenTree::Ident(Ident::new(ident, Span::call_site())));
-}
-fn tt_group_empty(out: &mut Vec<TokenTree>, delimiter: Delimiter) {
-    out.push(TokenTree::Group(Group::new(delimiter, TokenStream::new())));
-}
-fn tt_group(out: &mut Vec<TokenTree>, delimiter: Delimiter, from: usize) {
-    let group = TokenTree::Group(Group::new(
-        delimiter,
-        TokenStream::from_iter(out.drain(from..)),
-    ));
-    out.push(group);
+fn tt_append_blit(output: &mut RustWriter, chr: &str) {
+    output
+        .buf
+        .extend(chr.as_bytes().iter().map(|tok| match *tok {
+            1 => TokenTree::Ident(Ident::new("hello", Span::call_site())),
+            v => TokenTree::Punct(Punct::new(
+                ':',
+                if v & 0b1 == 0 {
+                    Spacing::Joint
+                } else {
+                    Spacing::Alone
+                },
+            )),
+        }));
 }
 
 struct GenericBoundFormating {
     lifetimes: bool,
     bounds: bool,
 }
-fn fmt_generics(buffer: &mut Vec<TokenTree>, generics: &[Generic], fmt: GenericBoundFormating) {
+fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBoundFormating) {
     let mut first = true;
     for generic in generics {
         if !fmt.lifetimes
@@ -82,21 +52,21 @@ fn fmt_generics(buffer: &mut Vec<TokenTree>, generics: &[Generic], fmt: GenericB
         if first {
             first = false;
         } else {
-            tt_punct_alone(buffer, ',');
+            buffer.blit_punct(0);
         }
         match generic.kind {
             GenericKind::Lifetime => {
-                tt_punct_joint(buffer, '\'');
+                buffer.blit_punct(6);
             }
             GenericKind::Type => (),
             GenericKind::Const => {
-                tt_ident(buffer, "const");
+                buffer.blit_ident(116);
             }
         }
-        buffer.push(generic.ident.clone().into());
+        buffer.buf.push(generic.ident.clone().into());
         if fmt.bounds && !generic.bounds.is_empty() {
-            tt_punct_alone(buffer, ':');
-            buffer.extend(generic.bounds.iter().cloned());
+            buffer.blit_punct(9);
+            buffer.buf.extend(generic.bounds.iter().cloned());
         }
     }
 }
@@ -113,7 +83,7 @@ const DEF: GenericBoundFormating = GenericBoundFormating {
     bounds: true,
 };
 fn bodyless_impl_from(
-    output: &mut Vec<TokenTree>,
+    output: &mut RustWriter,
     sub: Option<Ident>,
     trait_name: Ident,
     Ctx {
@@ -126,63 +96,51 @@ fn bodyless_impl_from(
 ) -> Result<(), Error> {
     let any_generics = !target.generics.is_empty();
     {
-        tt_ident(output, "impl");
-        tt_punct_alone(output, '<');
-        tt_punct_joint(output, '\'');
-        output.push(TokenTree::from(lifetime.clone()));
+        output.blit(0, 3);
+        output.buf.push(TokenTree::from(lifetime.clone()));
         if !generics.is_empty() {
-            tt_punct_alone(output, ',');
+            output.blit_punct(0);
             {
                 fmt_generics(output, generics, DEF)
             };
         };
-        tt_punct_alone(output, '>');
-        output.extend_from_slice(&crate_path);
-        tt_punct_joint(output, ':');
-        tt_punct_alone(output, ':');
+        output.blit_punct(1);
+        output.buf.extend_from_slice(&crate_path);
+        output.blit(3, 2);
         if let Some(sub) = sub {
-            output.push(TokenTree::from(sub.clone()));
-            tt_punct_joint(output, ':');
-            tt_punct_alone(output, ':');
+            output.buf.push(TokenTree::from(sub.clone()));
+            output.blit(3, 2);
         };
-        output.push(TokenTree::from(trait_name.clone()));
-        tt_punct_alone(output, '<');
-        tt_punct_joint(output, '\'');
-        output.push(TokenTree::from(lifetime.clone()));
-        tt_punct_alone(output, '>');
-        tt_ident(output, "for");
-        output.push(TokenTree::from(target.name.clone()));
+        output.buf.push(TokenTree::from(trait_name.clone()));
+        output.blit(1, 2);
+        output.buf.push(TokenTree::from(lifetime.clone()));
+        output.blit(5, 2);
+        output.buf.push(TokenTree::from(target.name.clone()));
         if any_generics {
-            tt_punct_alone(output, '<');
+            output.blit_punct(3);
             {
                 fmt_generics(output, &target.generics, USE)
             };
-            tt_punct_alone(output, '>');
+            output.blit_punct(1);
         };
         if !target.where_clauses.is_empty() || !target.generic_field_types.is_empty() {
-            tt_ident(output, "where");
+            output.blit_ident(106);
             for ty in &target.generic_field_types {
-                output.extend_from_slice(ty);
-                tt_punct_alone(output, ':');
-                output.push(TokenTree::from(trait_name.clone()));
-                tt_punct_alone(output, '<');
-                tt_punct_joint(output, '\'');
-                output.push(TokenTree::from(lifetime.clone()));
-                tt_punct_alone(output, '>');
-                tt_punct_alone(output, ',');
+                output.buf.extend_from_slice(ty);
+                output.blit_punct(9);
+                output.buf.push(TokenTree::from(trait_name.clone()));
+                output.blit(1, 2);
+                output.buf.push(TokenTree::from(lifetime.clone()));
+                output.blit(7, 2);
             }
-            output.extend_from_slice(&target.where_clauses);
+            output.buf.extend_from_slice(&target.where_clauses);
         };
     };
     Ok(())
 }
-fn impl_from_binary(
-    output: &mut Vec<TokenTree>,
-    ctx: &Ctx,
-    inner: TokenStream,
-) -> Result<(), Error> {
+fn impl_from_binary(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
     {
-        tt_ident(output, "unsafe");
+        output.blit_ident(132);
         if let Err(err) = bodyless_impl_from(
             output,
             None,
@@ -192,47 +150,36 @@ fn impl_from_binary(
             return Err(err);
         };
         {
-            let at = output.len();
-            tt_ident(output, "fn");
-            tt_ident(output, "binary_decode");
+            let at = output.buf.len();
+            output.blit(9, 2);
             {
-                let at = output.len();
-                tt_ident(output, "decoder");
-                tt_punct_alone(output, ':');
-                tt_punct_alone(output, '&');
-                tt_ident(output, "mut");
-                output.extend_from_slice(&ctx.crate_path);
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "binary");
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "Decoder");
-                tt_punct_alone(output, '<');
-                tt_punct_joint(output, '\'');
-                output.push(TokenTree::from(ctx.lifetime.clone()));
-                tt_punct_alone(output, '>');
-                tt_group(output, Delimiter::Parenthesis, at);
+                let at = output.buf.len();
+                output.blit(11, 4);
+                output.buf.extend_from_slice(&ctx.crate_path);
+                output.blit(15, 8);
+                output.buf.push(TokenTree::from(ctx.lifetime.clone()));
+                output.blit_punct(1);
+                output.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_joint(output, '-');
-            tt_punct_alone(output, '>');
-            tt_ident(output, "Self");
+            output.blit(23, 3);
             {
-                output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+                output
+                    .buf
+                    .push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             };
-            tt_group(output, Delimiter::Brace, at);
+            output.tt_group(Delimiter::Brace, at);
         };
     };
     Ok(())
 }
 fn impl_from_json_field_visitor(
-    output: &mut Vec<TokenTree>,
+    output: &mut RustWriter,
     ctx: &Ctx,
-    ty: &dyn Fn(&mut Vec<TokenTree>),
+    ty: &dyn Fn(&mut RustWriter),
     inner: TokenStream,
 ) -> Result<(), Error> {
     {
-        tt_ident(output, "unsafe");
+        output.blit_ident(132);
         if let Err(err) = bodyless_impl_from(
             output,
             Some(Ident::new("json", Span::call_site())),
@@ -242,148 +189,65 @@ fn impl_from_json_field_visitor(
             return Err(err);
         };
         {
-            let at = output.len();
-            tt_ident(output, "type");
-            tt_ident(output, "Vistor");
-            tt_punct_alone(output, '=');
+            let at = output.buf.len();
+            output.blit(26, 3);
             {
                 ty(output)
             };
-            tt_punct_alone(output, ';');
-            tt_ident(output, "unsafe");
-            tt_ident(output, "fn");
-            tt_ident(output, "new_field_visitor");
+            output.blit(29, 4);
             {
-                let at = output.len();
-                tt_ident(output, "dst");
-                tt_punct_alone(output, ':');
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "std");
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "ptr");
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "NonNull");
-                tt_punct_alone(output, '<');
-                tt_group_empty(output, Delimiter::Parenthesis);
-                tt_punct_alone(output, '>');
-                tt_punct_alone(output, ',');
-                tt_ident(output, "parser");
-                tt_punct_alone(output, ':');
-                tt_punct_alone(output, '&');
-                output.extend_from_slice(&ctx.crate_path);
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "parser");
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "Parser");
-                tt_punct_alone(output, '<');
-                tt_punct_joint(output, '\'');
-                output.push(TokenTree::from(ctx.lifetime.clone()));
-                tt_punct_alone(output, '>');
-                tt_group(output, Delimiter::Parenthesis, at);
+                let at = output.buf.len();
+                output.blit(33, 18);
+                output.buf.extend_from_slice(&ctx.crate_path);
+                output.blit(51, 8);
+                output.buf.push(TokenTree::from(ctx.lifetime.clone()));
+                output.blit_punct(1);
+                output.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_joint(output, '-');
-            tt_punct_alone(output, '>');
-            tt_ident(output, "Self");
-            tt_punct_joint(output, ':');
-            tt_punct_alone(output, ':');
-            tt_ident(output, "Vistor");
+            output.blit(59, 6);
             {
-                output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+                output
+                    .buf
+                    .push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             };
-            tt_group(output, Delimiter::Brace, at);
+            output.tt_group(Delimiter::Brace, at);
         };
     };
     Ok(())
 }
-fn impl_from_json(output: &mut Vec<TokenTree>, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
+fn impl_from_json(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
     {
-        tt_ident(output, "unsafe");
+        output.blit_ident(132);
         if let Err(err) =
             bodyless_impl_from(output, None, Ident::new("FromJson", Span::call_site()), ctx)
         {
             return Err(err);
         };
         {
-            let at = output.len();
-            tt_ident(output, "unsafe");
-            tt_ident(output, "fn");
-            tt_ident(output, "emplace_from_json");
+            let at = output.buf.len();
+            output.blit(65, 3);
             {
-                let at = output.len();
-                tt_ident(output, "dst");
-                tt_punct_alone(output, ':');
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "std");
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "ptr");
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "NonNull");
-                tt_punct_alone(output, '<');
-                tt_group_empty(output, Delimiter::Parenthesis);
-                tt_punct_alone(output, '>');
-                tt_punct_alone(output, ',');
-                tt_ident(output, "parser");
-                tt_punct_alone(output, ':');
-                tt_punct_alone(output, '&');
-                tt_ident(output, "mut");
-                output.extend_from_slice(&ctx.crate_path);
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "parser");
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "Parser");
-                tt_punct_alone(output, '<');
-                tt_punct_joint(output, '\'');
-                output.push(TokenTree::from(ctx.lifetime.clone()));
-                tt_punct_alone(output, '>');
-                tt_group(output, Delimiter::Parenthesis, at);
+                let at = output.buf.len();
+                output.blit(68, 19);
+                output.buf.extend_from_slice(&ctx.crate_path);
+                output.blit(51, 8);
+                output.buf.push(TokenTree::from(ctx.lifetime.clone()));
+                output.blit_punct(1);
+                output.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_joint(output, '-');
-            tt_punct_alone(output, '>');
-            tt_punct_joint(output, ':');
-            tt_punct_alone(output, ':');
-            tt_ident(output, "std");
-            tt_punct_joint(output, ':');
-            tt_punct_alone(output, ':');
-            tt_ident(output, "result");
-            tt_punct_joint(output, ':');
-            tt_punct_alone(output, ':');
-            tt_ident(output, "Result");
-            tt_punct_alone(output, '<');
-            tt_group_empty(output, Delimiter::Parenthesis);
-            tt_punct_alone(output, ',');
-            tt_punct_alone(output, '&');
-            tt_punct_joint(output, '\'');
-            tt_ident(output, "static");
-            tt_punct_joint(output, ':');
-            tt_punct_alone(output, ':');
-            tt_ident(output, "jsony");
-            tt_punct_joint(output, ':');
-            tt_punct_alone(output, ':');
-            tt_ident(output, "json");
-            tt_punct_joint(output, ':');
-            tt_punct_alone(output, ':');
-            tt_ident(output, "DecodeError");
-            tt_punct_alone(output, '>');
+            output.blit(87, 27);
             {
-                output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+                output
+                    .buf
+                    .push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             };
-            tt_group(output, Delimiter::Brace, at);
+            output.tt_group(Delimiter::Brace, at);
         };
     };
     Ok(())
 }
 fn impl_to_binary(
-    output: &mut Vec<TokenTree>,
+    output: &mut RustWriter,
     Ctx {
         target, crate_path, ..
     }: &Ctx,
@@ -391,70 +255,55 @@ fn impl_to_binary(
 ) -> Result<(), Error> {
     let any_generics = !target.generics.is_empty();
     {
-        tt_ident(output, "unsafe");
-        tt_ident(output, "impl");
+        output.blit(114, 2);
         if any_generics {
-            tt_punct_alone(output, '<');
+            output.blit_punct(3);
             {
                 fmt_generics(output, &target.generics, DEF)
             };
-            tt_punct_alone(output, '>');
+            output.blit_punct(1);
         };
-        output.extend_from_slice(&crate_path);
-        tt_punct_joint(output, ':');
-        tt_punct_alone(output, ':');
-        tt_ident(output, "ToBinary");
-        tt_ident(output, "for");
-        output.push(TokenTree::from(target.name.clone()));
+        output.buf.extend_from_slice(&crate_path);
+        output.blit(116, 4);
+        output.buf.push(TokenTree::from(target.name.clone()));
         if any_generics {
-            tt_punct_alone(output, '<');
+            output.blit_punct(3);
             {
                 fmt_generics(output, &target.generics, USE)
             };
-            tt_punct_alone(output, '>');
+            output.blit_punct(1);
         };
         if !target.where_clauses.is_empty() || !target.generic_field_types.is_empty() {
-            tt_ident(output, "where");
+            output.blit_ident(106);
             {
                 for ty in &target.generic_field_types {
                     {
-                        output.extend_from_slice(ty);
-                        tt_punct_alone(output, ':');
-                        tt_ident(output, "ToBinary");
-                        tt_punct_alone(output, ',');
+                        output.buf.extend_from_slice(ty);
+                        output.blit(120, 3);
                     }
                 }
             };
         };
         {
-            let at = output.len();
-            tt_ident(output, "fn");
-            tt_ident(output, "binary_encode");
+            let at = output.buf.len();
+            output.blit(123, 2);
             {
-                let at = output.len();
-                tt_punct_alone(output, '&');
-                tt_ident(output, "self");
-                tt_punct_alone(output, ',');
-                tt_ident(output, "encoder");
-                tt_punct_alone(output, ':');
-                tt_punct_alone(output, '&');
-                tt_ident(output, "mut");
-                tt_ident(output, "Vec");
-                tt_punct_alone(output, '<');
-                tt_ident(output, "u8");
-                tt_punct_alone(output, '>');
-                tt_group(output, Delimiter::Parenthesis, at);
+                let at = output.buf.len();
+                output.blit(125, 11);
+                output.tt_group(Delimiter::Parenthesis, at);
             };
             {
-                output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+                output
+                    .buf
+                    .push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             };
-            tt_group(output, Delimiter::Brace, at);
+            output.tt_group(Delimiter::Brace, at);
         };
     };
     Ok(())
 }
 fn impl_to_json(
-    output: &mut Vec<TokenTree>,
+    output: &mut RustWriter,
     kind: &str,
     Ctx {
         target, crate_path, ..
@@ -463,83 +312,56 @@ fn impl_to_json(
 ) -> Result<(), Error> {
     let any_generics = !target.generics.is_empty();
     {
-        tt_ident(output, "impl");
+        output.blit_ident(86);
         if any_generics {
-            tt_punct_alone(output, '<');
+            output.blit_punct(3);
             {
                 fmt_generics(output, &target.generics, DEF)
             };
-            tt_punct_alone(output, '>');
+            output.blit_punct(1);
         };
-        output.extend_from_slice(&crate_path);
-        tt_punct_joint(output, ':');
-        tt_punct_alone(output, ':');
-        tt_ident(output, "ToJson");
-        tt_ident(output, "for");
-        output.push(TokenTree::from(target.name.clone()));
+        output.buf.extend_from_slice(&crate_path);
+        output.blit(136, 4);
+        output.buf.push(TokenTree::from(target.name.clone()));
         if any_generics {
-            tt_punct_alone(output, '<');
+            output.blit_punct(3);
             {
                 fmt_generics(output, &target.generics, USE)
             };
-            tt_punct_alone(output, '>');
+            output.blit_punct(1);
         };
         if !target.where_clauses.is_empty() || !target.generic_field_types.is_empty() {
-            tt_ident(output, "where");
+            output.blit_ident(106);
             {
                 for ty in &target.generic_field_types {
                     {
-                        output.extend_from_slice(ty);
-                        tt_punct_alone(output, ':');
-                        output.extend_from_slice(&crate_path);
-                        tt_punct_joint(output, ':');
-                        tt_punct_alone(output, ':');
-                        tt_ident(output, "ToBinary");
-                        tt_punct_alone(output, ',');
+                        output.buf.extend_from_slice(ty);
+                        output.blit_punct(9);
+                        output.buf.extend_from_slice(&crate_path);
+                        output.blit(140, 4);
                     }
                 }
             };
         };
         {
-            let at = output.len();
-            tt_ident(output, "type");
-            tt_ident(output, "Kind");
-            tt_punct_alone(output, '=');
-            output.extend_from_slice(&crate_path);
-            tt_punct_joint(output, ':');
-            tt_punct_alone(output, ':');
-            tt_ident(output, "json");
-            tt_punct_joint(output, ':');
-            tt_punct_alone(output, ':');
-            output.push(Ident::new(kind, Span::call_site()).into());
-            tt_punct_alone(output, ';');
-            tt_ident(output, "fn");
-            tt_ident(output, "jsonify_into");
+            let at = output.buf.len();
+            output.blit(144, 3);
+            output.buf.extend_from_slice(&crate_path);
+            output.blit(107, 5);
+            output.buf.push(Ident::new(kind, Span::call_site()).into());
+            output.blit(147, 3);
             {
-                let at = output.len();
-                tt_punct_alone(output, '&');
-                tt_ident(output, "self");
-                tt_punct_alone(output, ',');
-                tt_ident(output, "out");
-                tt_punct_alone(output, ':');
-                tt_punct_alone(output, '&');
-                tt_ident(output, "mut");
-                tt_ident(output, "jsony");
-                tt_punct_joint(output, ':');
-                tt_punct_alone(output, ':');
-                tt_ident(output, "TextWriter");
-                tt_group(output, Delimiter::Parenthesis, at);
+                let at = output.buf.len();
+                output.blit(150, 11);
+                output.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_joint(output, '-');
-            tt_punct_alone(output, '>');
-            tt_ident(output, "Self");
-            tt_punct_joint(output, ':');
-            tt_punct_alone(output, ':');
-            tt_ident(output, "Kind");
+            output.blit(161, 6);
             {
-                output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+                output
+                    .buf
+                    .push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             };
-            tt_group(output, Delimiter::Brace, at);
+            output.tt_group(Delimiter::Brace, at);
         };
     };
     Ok(())
@@ -552,50 +374,44 @@ struct Ctx<'a> {
     temp: Vec<Ident>,
 }
 impl<'a> Ctx<'a> {
-    pub fn dead_target_type(&self, out: &mut Vec<TokenTree>) {
+    pub fn dead_target_type(&self, out: &mut RustWriter) {
         {
-            out.push(TokenTree::from(self.target.name.clone()));
+            out.buf.push(TokenTree::from(self.target.name.clone()));
             if !self.target.generics.is_empty() {
-                tt_punct_alone(out, '<');
+                out.blit_punct(3);
                 {
                     fmt_generics(out, &self.target.generics, DEAD_USE)
                 };
-                tt_punct_alone(out, '>');
+                out.blit_punct(1);
             };
         }
     }
-    pub fn target_type(&self, out: &mut Vec<TokenTree>) {
+    pub fn target_type(&self, out: &mut RustWriter) {
         {
-            out.push(TokenTree::from(self.target.name.clone()));
+            out.buf.push(TokenTree::from(self.target.name.clone()));
             if !self.target.generics.is_empty() {
-                tt_punct_alone(out, '<');
+                out.blit_punct(3);
                 {
                     fmt_generics(out, &self.target.generics, USE)
                 };
-                tt_punct_alone(out, '>');
+                out.blit_punct(1);
             };
         }
     }
-    fn new(target: &'a DeriveTargetInner) -> Result<Ctx<'a>, Error> {
+    fn new(out: &mut RustWriter, target: &'a DeriveTargetInner) -> Result<Ctx<'a>, Error> {
         let crate_path = if let Some(value) = &target.path_override {
             let content = value.to_string();
             #[allow(unused)]
             let inner = &content[1..content.len() - 1];
-            let mut out = Vec::<TokenTree>::new();
             {
-                tt_punct_joint(&mut out, ':');
-                tt_punct_alone(&mut out, ':');
-                tt_ident(&mut out, "jsony");
+                out.blit(104, 3);
             };
-            out
+            std::mem::take(&mut out.buf)
         } else {
-            let mut out = Vec::<TokenTree>::new();
             {
-                tt_punct_joint(&mut out, ':');
-                tt_punct_alone(&mut out, ':');
-                tt_ident(&mut out, "jsony");
+                out.blit(104, 3);
             };
-            out
+            std::mem::take(&mut out.buf)
         };
         let (lt, generics) = if let [Generic {
             kind: GenericKind::Lifetime,
@@ -630,104 +446,78 @@ fn var(num: usize) -> Ident {
     Ident::new(x, Span::call_site())
 }
 fn binary_encode_field(
-    output: &mut Vec<TokenTree>,
+    output: &mut RustWriter,
     ctx: &Ctx,
     field: &Field,
-    place: &dyn Fn(&mut Vec<TokenTree>),
+    place: &dyn Fn(&mut RustWriter),
 ) {
     {
-        tt_punct_alone(output, '<');
-        output.extend_from_slice(field.ty);
-        tt_ident(output, "as");
-        output.extend_from_slice(&ctx.crate_path);
-        tt_punct_joint(output, ':');
-        tt_punct_alone(output, ':');
-        tt_ident(output, "ToBinary");
-        tt_punct_alone(output, '>');
-        tt_punct_joint(output, ':');
-        tt_punct_alone(output, ':');
-        tt_ident(output, "binary_encode");
+        output.blit_punct(3);
+        output.buf.extend_from_slice(field.ty);
+        output.blit_ident(136);
+        output.buf.extend_from_slice(&ctx.crate_path);
+        output.blit(167, 7);
         {
-            let at = output.len();
+            let at = output.buf.len();
             {
                 place(output)
             };
-            tt_punct_alone(output, ',');
-            tt_ident(output, "encoder");
-            tt_group(output, Delimiter::Parenthesis, at);
+            output.blit(127, 2);
+            output.tt_group(Delimiter::Parenthesis, at);
         };
-        tt_punct_alone(output, ';');
+        output.blit_punct(13);
     };
 }
-fn binary_decode_field(out: &mut Vec<TokenTree>, ctx: &Ctx, field: &Field) {
+fn binary_decode_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
     {
-        tt_punct_alone(out, '<');
-        out.extend_from_slice(field.ty);
-        tt_ident(out, "as");
+        out.blit_punct(3);
+        out.buf.extend_from_slice(field.ty);
+        out.blit_ident(136);
         {
             ctx.FromBinary(out)
         };
-        tt_punct_alone(out, '>');
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_ident(out, "binary_decode");
+        out.blit(174, 4);
         {
-            let at = out.len();
-            tt_ident(out, "decoder");
-            tt_group(out, Delimiter::Parenthesis, at);
+            let at = out.buf.len();
+            out.blit_ident(83);
+            out.tt_group(Delimiter::Parenthesis, at);
         };
     };
 }
 impl Ctx<'_> {
     #[allow(non_snake_case)]
-    fn FromJson(&self, out: &mut Vec<TokenTree>) {
+    fn FromJson(&self, out: &mut RustWriter) {
         {
-            out.extend_from_slice(&self.crate_path);
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "FromJson");
-            tt_punct_alone(out, '<');
-            tt_punct_joint(out, '\'');
-            out.push(TokenTree::from(self.lifetime.clone()));
-            tt_punct_alone(out, '>');
+            out.buf.extend_from_slice(&self.crate_path);
+            out.blit(178, 5);
+            out.buf.push(TokenTree::from(self.lifetime.clone()));
+            out.blit_punct(1);
         }
     }
     #[allow(non_snake_case)]
-    fn FromBinary(&self, out: &mut Vec<TokenTree>) {
+    fn FromBinary(&self, out: &mut RustWriter) {
         {
-            out.extend_from_slice(&self.crate_path);
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "FromBinary");
-            tt_punct_alone(out, '<');
-            tt_punct_joint(out, '\'');
-            out.push(TokenTree::from(self.lifetime.clone()));
-            tt_punct_alone(out, '>');
+            out.buf.extend_from_slice(&self.crate_path);
+            out.blit(183, 5);
+            out.buf.push(TokenTree::from(self.lifetime.clone()));
+            out.blit_punct(1);
         }
     }
 }
-fn schema_field_decode(out: &mut Vec<TokenTree>, ctx: &Ctx, field: &Field) -> Result<(), Error> {
+fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) -> Result<(), Error> {
     {
-        out.extend_from_slice(&ctx.crate_path);
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_ident(out, "__internal");
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_ident(out, "erase");
+        out.buf.extend_from_slice(&ctx.crate_path);
+        out.blit(188, 6);
         {
-            let at = out.len();
-            tt_punct_alone(out, '<');
-            out.extend_from_slice(field.ty);
-            tt_ident(out, "as");
+            let at = out.buf.len();
+            out.blit_punct(3);
+            out.buf.extend_from_slice(field.ty);
+            out.blit_ident(136);
             {
                 ctx.FromJson(out)
             };
-            tt_punct_alone(out, '>');
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "emplace_from_json");
-            tt_group(out, Delimiter::Parenthesis, at);
+            out.blit(194, 4);
+            out.tt_group(Delimiter::Parenthesis, at);
         };
     }
     Ok(())
@@ -799,7 +589,7 @@ fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) -> Result<(), 
     Ok(())
 }
 fn struct_schema(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     fields: &[&Field],
     temp_tuple: Option<&Ident>,
@@ -808,8 +598,8 @@ fn struct_schema(
         GenericKind::Lifetime => true,
         _ => false,
     }) {
-        let x = out.len();
-        tt_punct_alone(out, '<');
+        let x = out.buf.len();
+        out.blit_punct(3);
         fmt_generics(
             out,
             &ctx.target.generics,
@@ -818,303 +608,181 @@ fn struct_schema(
                 bounds: false,
             },
         );
-        tt_punct_alone(out, '>');
-        TokenTree::Group(Group::new(Delimiter::None, out.drain(x..).collect()))
+        out.blit_punct(1);
+        TokenTree::Group(Group::new(Delimiter::None, out.buf.drain(x..).collect()))
     } else {
         TokenTree::Group(Group::new(Delimiter::None, TokenStream::new()))
     };
     let ts = {
-        let len = out.len();
+        let len = out.buf.len();
         for (i, field) in fields.iter().enumerate() {
-            out.extend_from_slice(&ctx.crate_path);
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "__internal");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "Field");
+            out.buf.extend_from_slice(&ctx.crate_path);
+            out.blit(198, 6);
             {
-                let at = out.len();
-                tt_ident(out, "name");
-                tt_punct_alone(out, ':');
-                out.push(field_name_literal(ctx, field).into());
-                tt_punct_alone(out, ',');
-                tt_ident(out, "offset");
-                tt_punct_alone(out, ':');
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "std");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "mem");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "offset_of");
-                tt_punct_alone(out, '!');
+                let at = out.buf.len();
+                out.blit(204, 2);
+                out.buf.push(field_name_literal(ctx, field).into());
+                out.blit(206, 13);
                 {
-                    let at = out.len();
+                    let at = out.buf.len();
                     {
                         if let Some(ty) = temp_tuple {
                             {
-                                out.push(TokenTree::from(ty.clone()));
-                                tt_punct_alone(out, ',');
-                                out.push(Literal::usize_unsuffixed(i).into());
+                                out.buf.push(TokenTree::from(ty.clone()));
+                                out.blit_punct(0);
+                                out.buf.push(Literal::usize_unsuffixed(i).into());
                             }
                         } else {
                             {
-                                out.push(TokenTree::from(ctx.target.name.clone()));
-                                out.push(TokenTree::from(ag_gen.clone()));
-                                tt_punct_alone(out, ',');
-                                out.push(TokenTree::from(field.name.clone()));
+                                out.buf.push(TokenTree::from(ctx.target.name.clone()));
+                                out.buf.push(TokenTree::from(ag_gen.clone()));
+                                out.blit_punct(0);
+                                out.buf.push(TokenTree::from(field.name.clone()));
                             }
                         }
                     };
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ',');
-                tt_ident(out, "decode");
-                tt_punct_alone(out, ':');
+                out.blit(219, 3);
                 if let Err(err) = schema_field_decode(out, ctx, field) {
                     return Err(err);
                 };
-                tt_group(out, Delimiter::Brace, at);
+                out.tt_group(Delimiter::Brace, at);
             };
-            tt_punct_alone(out, ',');
+            out.blit_punct(0);
         }
-        TokenStream::from_iter(out.drain(len..))
+        TokenStream::from_iter(out.buf.drain(len..))
     };
     let schema_fields = TokenTree::Group(Group::new(Delimiter::Bracket, ts));
     let ts = {
-        let len = out.len();
+        let len = out.buf.len();
         {
             for field in fields {
                 {
-                    tt_ident(out, "std");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "mem");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "transmute");
+                    out.blit(222, 7);
                     {
-                        let at = out.len();
-                        tt_ident(out, "std");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "ptr");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "drop_in_place");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_punct_alone(out, '<');
-                        out.extend_from_slice(field.ty);
-                        tt_punct_alone(out, '>');
-                        tt_ident(out, "as");
-                        tt_ident(out, "unsafe");
-                        tt_ident(out, "fn");
+                        let at = out.buf.len();
+                        out.blit(229, 10);
+                        out.buf.extend_from_slice(field.ty);
+                        out.blit(239, 4);
                         {
-                            let at = out.len();
-                            tt_punct_alone(out, '*');
-                            tt_ident(out, "mut");
-                            out.extend_from_slice(field.ty);
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            let at = out.buf.len();
+                            out.blit(243, 2);
+                            out.buf.extend_from_slice(field.ty);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_group(out, Delimiter::Parenthesis, at);
+                        out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    tt_punct_alone(out, ',');
+                    out.blit_punct(0);
                 }
             }
         };
-        TokenStream::from_iter(out.drain(len..))
+        TokenStream::from_iter(out.buf.drain(len..))
     };
     let schema_drops = TokenTree::Group(Group::new(Delimiter::Bracket, ts));
     let ts = {
-        let len = out.len();
+        let len = out.buf.len();
         {
             for field in fields {
                 let Some(default) = &field.attr.default else {
                     break;
                 };
                 {
-                    tt_punct_alone(out, '|');
-                    tt_ident(out, "ptr");
-                    tt_punct_alone(out, ':');
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "std");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "ptr");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "NonNull");
-                    tt_punct_alone(out, '<');
-                    tt_group_empty(out, Delimiter::Parenthesis);
-                    tt_punct_alone(out, '>');
-                    tt_punct_alone(out, '|');
+                    out.blit(245, 16);
                     {
-                        let at = out.len();
-                        tt_ident(out, "let");
-                        tt_ident(out, "value");
-                        tt_punct_alone(out, ':');
-                        out.extend_from_slice(field.ty);
-                        tt_punct_alone(out, '=');
-                        out.extend_from_slice(default);
-                        tt_punct_alone(out, ';');
-                        tt_ident(out, "unsafe");
+                        let at = out.buf.len();
+                        out.blit(261, 3);
+                        out.buf.extend_from_slice(field.ty);
+                        out.blit_punct(5);
+                        out.buf.extend_from_slice(default);
+                        out.blit(29, 2);
                         {
-                            let at = out.len();
-                            tt_ident(out, "ptr");
-                            tt_punct_alone(out, '.');
-                            tt_ident(out, "cast");
-                            tt_group_empty(out, Delimiter::Parenthesis);
-                            tt_punct_alone(out, '.');
-                            tt_ident(out, "write");
+                            let at = out.buf.len();
+                            out.blit(264, 6);
                             {
-                                let at = out.len();
-                                tt_ident(out, "value");
-                                tt_group(out, Delimiter::Parenthesis, at);
+                                let at = out.buf.len();
+                                out.blit_ident(126);
+                                out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            tt_punct_alone(out, ';');
-                            tt_group(out, Delimiter::Brace, at);
+                            out.blit_punct(13);
+                            out.tt_group(Delimiter::Brace, at);
                         };
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "jsony");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "__internal");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "UnsafeReturn");
-                        tt_group(out, Delimiter::Brace, at);
+                        out.blit(270, 9);
+                        out.tt_group(Delimiter::Brace, at);
                     };
-                    tt_punct_alone(out, ',');
+                    out.blit_punct(0);
                 }
             }
         };
-        TokenStream::from_iter(out.drain(len..))
+        TokenStream::from_iter(out.buf.drain(len..))
     };
     let schema_defaults = TokenTree::Group(Group::new(Delimiter::Bracket, ts));
     {
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_ident(out, "jsony");
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_ident(out, "__internal");
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_ident(out, "ObjectSchemaInner");
+        out.blit(279, 9);
         {
-            let at = out.len();
-            tt_ident(out, "fields");
-            tt_punct_alone(out, ':');
-            tt_punct_alone(out, '&');
-            out.push(schema_fields);
-            tt_punct_alone(out, ',');
-            tt_ident(out, "drops");
-            tt_punct_alone(out, ':');
-            tt_punct_alone(out, '&');
-            out.push(schema_drops);
-            tt_punct_alone(out, ',');
-            tt_ident(out, "defaults");
-            tt_punct_alone(out, ':');
-            tt_punct_alone(out, '&');
-            out.push(schema_defaults);
-            tt_punct_alone(out, ',');
-            tt_group(out, Delimiter::Brace, at);
+            let at = out.buf.len();
+            out.blit(288, 3);
+            out.buf.push(schema_fields);
+            out.blit(291, 4);
+            out.buf.push(schema_drops);
+            out.blit(295, 4);
+            out.buf.push(schema_defaults);
+            out.blit_punct(0);
+            out.tt_group(Delimiter::Brace, at);
         };
     }
     Ok(())
 }
 fn body_of_struct_from_json_with_flatten(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     flatten_field: &Field,
 ) -> TokenStream {
     {
-        let len = out.len();
-        tt_ident(out, "let");
-        tt_ident(out, "mut");
-        tt_ident(out, "flatten_visitor");
-        tt_punct_alone(out, '=');
-        tt_punct_alone(out, '<');
-        out.extend_from_slice(flatten_field.ty);
-        tt_ident(out, "as");
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_ident(out, "jsony");
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_ident(out, "json");
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_ident(out, "FromJsonFieldVisitor");
-        tt_punct_alone(out, '>');
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_ident(out, "new_field_visitor");
+        let len = out.buf.len();
+        out.blit(299, 5);
+        out.buf.extend_from_slice(flatten_field.ty);
+        out.blit(304, 14);
         {
-            let at = out.len();
-            tt_ident(out, "dst");
-            tt_punct_alone(out, '.');
-            tt_ident(out, "byte_add");
+            let at = out.buf.len();
+            out.blit(318, 3);
             {
-                let at = out.len();
-                tt_ident(out, "offset_of");
-                tt_punct_alone(out, '!');
+                let at = out.buf.len();
+                out.blit(217, 2);
                 {
-                    let at = out.len();
+                    let at = out.buf.len();
                     {
                         ctx.dead_target_type(out)
                     };
-                    tt_punct_alone(out, ',');
-                    out.push(TokenTree::from(flatten_field.name.clone()));
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    out.blit_punct(0);
+                    out.buf.push(TokenTree::from(flatten_field.name.clone()));
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_group(out, Delimiter::Parenthesis, at);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_alone(out, ',');
-            tt_ident(out, "parser");
-            tt_punct_alone(out, ',');
-            tt_group(out, Delimiter::Parenthesis, at);
+            out.blit(321, 3);
+            out.tt_group(Delimiter::Parenthesis, at);
         };
-        tt_punct_alone(out, ';');
-        tt_ident(out, "__schema_inner");
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_punct_alone(out, '<');
-        tt_punct_joint(out, '\'');
-        out.push(TokenTree::from(ctx.lifetime.clone()));
+        out.blit(324, 6);
+        out.buf.push(TokenTree::from(ctx.lifetime.clone()));
         if !ctx.generics.is_empty() {
-            tt_punct_alone(out, ',');
+            out.blit_punct(0);
             {
                 fmt_generics(out, ctx.generics, USE)
             };
         };
-        tt_punct_alone(out, '>');
-        tt_group_empty(out, Delimiter::Parenthesis);
-        tt_punct_alone(out, '.');
-        tt_ident(out, "decode");
+        out.blit(330, 4);
         {
-            let at = out.len();
-            tt_ident(out, "dst");
-            tt_punct_alone(out, ',');
-            tt_ident(out, "parser");
-            tt_punct_alone(out, ',');
-            tt_ident(out, "Some");
+            let at = out.buf.len();
+            out.blit(334, 5);
             {
-                let at = out.len();
-                tt_punct_alone(out, '&');
-                tt_ident(out, "mut");
-                tt_ident(out, "flatten_visitor");
-                tt_group(out, Delimiter::Parenthesis, at);
+                let at = out.buf.len();
+                out.blit(339, 3);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_group(out, Delimiter::Parenthesis, at);
+            out.tt_group(Delimiter::Parenthesis, at);
         };
-        TokenStream::from_iter(out.drain(len..))
+        TokenStream::from_iter(out.buf.drain(len..))
     }
 }
 fn schema_ordered_fields<'a>(fields: &'a [Field<'a>]) -> Vec<&'a Field<'a>> {
@@ -1142,22 +810,16 @@ fn required_bitset(ordered: &[&Field]) -> u64 {
     }
     ((1 << ordered.len()) - 1) ^ ((1 << defaults) - 1)
 }
-fn struct_to_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     let mut text = String::new();
     let mut first = true;
     let body = {
-        let len = out.len();
-        tt_ident(out, "out");
-        tt_punct_alone(out, '.');
-        tt_ident(out, "start_json_object");
-        tt_group_empty(out, Delimiter::Parenthesis);
-        tt_punct_alone(out, ';');
+        let len = out.buf.len();
+        out.blit(342, 5);
         for field in fields {
-            tt_ident(out, "out");
-            tt_punct_alone(out, '.');
-            tt_ident(out, "push_str");
+            out.blit(347, 3);
             {
-                let at = out.len();
+                let at = out.buf.len();
                 {
                     text.clear();
                     if first {
@@ -1169,45 +831,28 @@ fn struct_to_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Resu
                         return Err(err);
                     }
                     text.push(':');
-                    out.push(TokenTree::Literal(Literal::string(&text)));
+                    out.buf.push(TokenTree::Literal(Literal::string(&text)));
                 };
-                tt_group(out, Delimiter::Parenthesis, at);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_alone(out, ';');
-            tt_punct_alone(out, '<');
-            out.extend_from_slice(field.ty);
-            tt_ident(out, "as");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "jsony");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "ToJson");
-            tt_punct_alone(out, '>');
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "jsonify_into");
+            out.blit(350, 2);
+            out.buf.extend_from_slice(field.ty);
+            out.blit(352, 11);
             {
-                let at = out.len();
-                tt_punct_alone(out, '&');
-                tt_ident(out, "self");
-                tt_punct_alone(out, '.');
-                out.push(TokenTree::from(field.name.clone()));
-                tt_punct_alone(out, ',');
-                tt_ident(out, "out");
-                tt_group(out, Delimiter::Parenthesis, at);
+                let at = out.buf.len();
+                out.blit(363, 3);
+                out.buf.push(TokenTree::from(field.name.clone()));
+                out.blit(152, 2);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_alone(out, ';');
+            out.blit_punct(13);
         }
-        tt_ident(out, "out");
-        tt_punct_alone(out, '.');
-        tt_ident(out, "end_json_object");
-        tt_group_empty(out, Delimiter::Parenthesis);
-        TokenStream::from_iter(out.drain(len..))
+        out.blit(366, 4);
+        TokenStream::from_iter(out.buf.drain(len..))
     };
     impl_to_json(out, "ObjectValue", ctx, body)
 }
-fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     let mut flattening: Option<&Field> = None;
     for field in fields {
         if field.attr.flatten {
@@ -1222,200 +867,112 @@ fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Re
     }
     let ordered_fields = schema_ordered_fields(fields);
     {
-        tt_ident(out, "const");
-        tt_ident(out, "_");
-        tt_punct_alone(out, ':');
-        tt_group_empty(out, Delimiter::Parenthesis);
-        tt_punct_alone(out, '=');
+        out.blit(370, 5);
         {
-            let at = out.len();
-            tt_ident(out, "const");
-            tt_ident(out, "unsafe");
-            tt_ident(out, "fn");
-            tt_ident(out, "__schema_inner");
-            tt_punct_alone(out, '<');
-            tt_punct_joint(out, '\'');
-            out.push(TokenTree::from(ctx.lifetime.clone()));
+            let at = out.buf.len();
+            out.blit(375, 6);
+            out.buf.push(TokenTree::from(ctx.lifetime.clone()));
             if !ctx.generics.is_empty() {
-                tt_punct_alone(out, ',');
+                out.blit_punct(0);
                 {
                     fmt_generics(out, ctx.generics, DEF)
                 };
             };
-            tt_punct_alone(out, '>');
-            tt_group_empty(out, Delimiter::Parenthesis);
-            tt_punct_joint(out, '-');
-            tt_punct_alone(out, '>');
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "jsony");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "__internal");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "ObjectSchema");
-            tt_punct_alone(out, '<');
-            tt_punct_joint(out, '\'');
-            out.push(TokenTree::from(ctx.lifetime.clone()));
-            tt_punct_alone(out, '>');
+            out.blit(381, 15);
+            out.buf.push(TokenTree::from(ctx.lifetime.clone()));
+            out.blit_punct(1);
             if !ctx.target.where_clauses.is_empty() || !ctx.target.generic_field_types.is_empty() {
-                tt_ident(out, "where");
+                out.blit_ident(106);
                 for ty in &ctx.target.generic_field_types {
-                    out.extend_from_slice(ty);
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "FromJson");
-                    tt_punct_alone(out, '<');
-                    tt_punct_joint(out, '\'');
-                    out.push(TokenTree::from(ctx.lifetime.clone()));
-                    tt_punct_alone(out, '>');
+                    out.buf.extend_from_slice(ty);
+                    out.blit(179, 4);
+                    out.buf.push(TokenTree::from(ctx.lifetime.clone()));
+                    out.blit_punct(1);
                 }
             };
             {
-                let at = out.len();
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "jsony");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "__internal");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "ObjectSchema");
+                let at = out.buf.len();
+                out.blit(385, 9);
                 {
-                    let at = out.len();
-                    tt_ident(out, "inner");
-                    tt_punct_alone(out, ':');
-                    tt_punct_alone(out, '&');
-                    tt_ident(out, "const");
+                    let at = out.buf.len();
+                    out.blit(396, 4);
                     {
-                        let at = out.len();
+                        let at = out.buf.len();
                         {
                             struct_schema(out, ctx, &ordered_fields, None)?
                         };
-                        tt_group(out, Delimiter::Brace, at);
+                        out.tt_group(Delimiter::Brace, at);
                     };
-                    tt_punct_alone(out, ',');
-                    tt_ident(out, "phantom");
-                    tt_punct_alone(out, ':');
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "std");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "marker");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "PhantomData");
-                    tt_group(out, Delimiter::Brace, at);
+                    out.blit(400, 12);
+                    out.tt_group(Delimiter::Brace, at);
                 };
-                tt_group(out, Delimiter::Brace, at);
+                out.tt_group(Delimiter::Brace, at);
             };
             {
                 let ts = if let Some(flatten_field) = flattening {
                     body_of_struct_from_json_with_flatten(out, ctx, flatten_field)
                 } else {
                     {
-                        let len = out.len();
-                        tt_ident(out, "__schema_inner");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_punct_alone(out, '<');
-                        tt_punct_joint(out, '\'');
-                        out.push(TokenTree::from(ctx.lifetime.clone()));
+                        let len = out.buf.len();
+                        out.blit(325, 5);
+                        out.buf.push(TokenTree::from(ctx.lifetime.clone()));
                         if !ctx.generics.is_empty() {
-                            tt_punct_alone(out, ',');
+                            out.blit_punct(0);
                             {
                                 fmt_generics(out, ctx.generics, USE)
                             };
                         };
-                        tt_punct_alone(out, '>');
-                        tt_group_empty(out, Delimiter::Parenthesis);
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "decode");
+                        out.blit(330, 4);
                         {
-                            let at = out.len();
-                            tt_ident(out, "dst");
-                            tt_punct_alone(out, ',');
-                            tt_ident(out, "parser");
-                            tt_punct_alone(out, ',');
-                            tt_ident(out, "None");
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            let at = out.buf.len();
+                            out.blit(412, 5);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        TokenStream::from_iter(out.drain(len..))
+                        TokenStream::from_iter(out.buf.drain(len..))
                     }
                 };
                 impl_from_json(out, ctx, ts)?;
                 if ctx.target.flattenable {
                     let body = {
-                        let len = out.len();
-                        tt_ident(out, "jsony");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "__internal");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "DynamicFieldDecoder");
+                        let len = out.buf.len();
+                        out.blit(417, 7);
                         {
-                            let at = out.len();
-                            tt_ident(out, "destination");
-                            tt_punct_alone(out, ':');
-                            tt_ident(out, "dst");
-                            tt_punct_alone(out, ',');
-                            tt_ident(out, "schema");
-                            tt_punct_alone(out, ':');
-                            tt_ident(out, "__schema_inner");
-                            tt_punct_joint(out, ':');
-                            tt_punct_alone(out, ':');
-                            tt_punct_alone(out, '<');
-                            tt_punct_joint(out, '\'');
-                            out.push(TokenTree::from(ctx.lifetime.clone()));
+                            let at = out.buf.len();
+                            out.blit(424, 11);
+                            out.buf.push(TokenTree::from(ctx.lifetime.clone()));
                             if !ctx.generics.is_empty() {
-                                tt_punct_alone(out, ',');
+                                out.blit_punct(0);
                                 {
                                     fmt_generics(out, ctx.generics, USE)
                                 };
                             };
-                            tt_punct_alone(out, '>');
-                            tt_group_empty(out, Delimiter::Parenthesis);
-                            tt_punct_alone(out, ',');
-                            tt_ident(out, "bitset");
-                            tt_punct_alone(out, ':');
-                            out.push(TokenTree::from(Literal::u64_unsuffixed(0).clone()));
-                            tt_punct_alone(out, ',');
-                            tt_ident(out, "required");
-                            tt_punct_alone(out, ':');
-                            out.push(TokenTree::from(
+                            out.blit(435, 5);
+                            out.buf
+                                .push(TokenTree::from(Literal::u64_unsuffixed(0).clone()));
+                            out.blit(440, 3);
+                            out.buf.push(TokenTree::from(
                                 Literal::u64_unsuffixed(required_bitset(&ordered_fields)).clone(),
                             ));
-                            tt_punct_alone(out, ',');
-                            tt_group(out, Delimiter::Brace, at);
+                            out.blit_punct(0);
+                            out.tt_group(Delimiter::Brace, at);
                         };
-                        TokenStream::from_iter(out.drain(len..))
+                        TokenStream::from_iter(out.buf.drain(len..))
                     };
                     impl_from_json_field_visitor(
                         out,
                         ctx,
                         &(|out| {
-                            tt_ident(out, "jsony");
-                            tt_punct_joint(out, ':');
-                            tt_punct_alone(out, ':');
-                            tt_ident(out, "__internal");
-                            tt_punct_joint(out, ':');
-                            tt_punct_alone(out, ':');
-                            tt_ident(out, "DynamicFieldDecoder");
-                            tt_punct_alone(out, '<');
-                            tt_punct_joint(out, '\'');
-                            out.push(TokenTree::from(ctx.lifetime.clone()));
-                            tt_punct_alone(out, '>');
+                            out.blit(443, 9);
+                            out.buf.push(TokenTree::from(ctx.lifetime.clone()));
+                            out.blit_punct(1);
                         }),
                         body,
                     )?;
                 }
             };
-            tt_group(out, Delimiter::Brace, at);
+            out.tt_group(Delimiter::Brace, at);
         };
-        tt_punct_alone(out, ';');
+        out.blit_punct(13);
     };
     Ok(())
 }
@@ -1423,43 +980,29 @@ fn variant_key_literal(_ctx: &Ctx, variant: &EnumVariant) -> Literal {
     let buf = variant.name.to_string();
     Literal::string(&buf)
 }
-fn enum_to_json(
-    out: &mut Vec<TokenTree>,
-    ctx: &Ctx,
-    variants: &[EnumVariant],
-) -> Result<(), Error> {
+fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
     let mut text = String::with_capacity(64);
-    let start = out.len();
+    let start = out.buf.len();
     let mut all_objects = true;
     if let Tag::Inline(tag_name) = &ctx.target.tag {
         {
-            tt_ident(out, "out");
-            tt_punct_alone(out, '.');
-            tt_ident(out, "start_json_object");
-            tt_group_empty(out, Delimiter::Parenthesis);
-            tt_punct_alone(out, ';');
+            out.blit(342, 5);
         };
         text.push('"');
         crate::template::raw_escape(&tag_name, &mut text);
         text.push_str("\":");
         {
-            tt_ident(out, "out");
-            tt_punct_alone(out, '.');
-            tt_ident(out, "push_str");
+            out.blit(347, 3);
             {
-                let at = out.len();
-                out.push(Literal::string(&text).into());
-                tt_group(out, Delimiter::Parenthesis, at);
+                let at = out.buf.len();
+                out.buf.push(Literal::string(&text).into());
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_alone(out, ';');
+            out.blit_punct(13);
         };
     } else if all_objects {
         {
-            tt_ident(out, "out");
-            tt_punct_alone(out, '.');
-            tt_ident(out, "start_json_object");
-            tt_group_empty(out, Delimiter::Parenthesis);
-            tt_punct_alone(out, ';');
+            out.blit(342, 5);
         };
     }
     for variant in variants {
@@ -1470,34 +1013,31 @@ fn enum_to_json(
         break;
     }
     {
-        tt_ident(out, "match");
-        tt_ident(out, "self");
+        out.blit(452, 2);
         {
-            let at = out.len();
+            let at = out.buf.len();
             {
                 for (_, variant) in variants.iter().enumerate() {
                     {
-                        out.push(TokenTree::from(ctx.target.name.clone()));
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        out.push(TokenTree::from(variant.name.clone()));
+                        out.buf.push(TokenTree::from(ctx.target.name.clone()));
+                        out.blit(3, 2);
+                        out.buf.push(TokenTree::from(variant.name.clone()));
                     }
                     match variant.kind {
                         EnumKind::Tuple => {
                             {
-                                let at = out.len();
+                                let at = out.buf.len();
                                 {
                                     for (i, _) in variant.fields.iter().enumerate() {
                                         {
-                                            out.push(TokenTree::from(ctx.temp[i].clone()));
-                                            tt_punct_alone(out, ',');
+                                            out.buf.push(TokenTree::from(ctx.temp[i].clone()));
+                                            out.blit_punct(0);
                                         }
                                     }
                                 };
-                                tt_group(out, Delimiter::Parenthesis, at);
+                                out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            tt_punct_joint(out, '=');
-                            tt_punct_alone(out, '>');
+                            out.blit(454, 2);
                             {
                                 text.clear();
                                 enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
@@ -1505,27 +1045,25 @@ fn enum_to_json(
                         }
                         EnumKind::Struct => {
                             {
-                                let at = out.len();
+                                let at = out.buf.len();
                                 {
                                     for field in variant.fields {
                                         {
-                                            out.push(TokenTree::from(field.name.clone()));
-                                            tt_punct_alone(out, ',');
+                                            out.buf.push(TokenTree::from(field.name.clone()));
+                                            out.blit_punct(0);
                                         }
                                     }
                                 };
-                                tt_group(out, Delimiter::Brace, at);
+                                out.tt_group(Delimiter::Brace, at);
                             };
-                            tt_punct_joint(out, '=');
-                            tt_punct_alone(out, '>');
+                            out.blit(454, 2);
                             {
                                 text.clear();
                                 enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
                             };
                         }
                         EnumKind::None => {
-                            tt_punct_joint(out, '=');
-                            tt_punct_alone(out, '>');
+                            out.blit(454, 2);
                             {
                                 text.clear();
                                 enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
@@ -1534,34 +1072,22 @@ fn enum_to_json(
                     }
                 }
             };
-            tt_group(out, Delimiter::Brace, at);
+            out.tt_group(Delimiter::Brace, at);
         };
     };
     if let Tag::Inline(..) = &ctx.target.tag {
         {
-            tt_ident(out, "out");
-            tt_punct_alone(out, '.');
-            tt_ident(out, "end_json_object");
-            tt_group_empty(out, Delimiter::Parenthesis);
-            tt_punct_alone(out, ';');
+            out.blit(456, 5);
         };
     } else if all_objects {
         {
-            tt_ident(out, "out");
-            tt_punct_alone(out, '.');
-            tt_ident(out, "end_json_object");
-            tt_group_empty(out, Delimiter::Parenthesis);
-            tt_punct_alone(out, ';');
+            out.blit(456, 5);
         };
     }
     {
-        tt_ident(out, "Self");
-        tt_punct_joint(out, ':');
-        tt_punct_alone(out, ':');
-        tt_ident(out, "Kind");
-        tt_group_empty(out, Delimiter::Brace);
+        out.blit(461, 5);
     };
-    let stream = out.drain(start..).collect();
+    let stream = out.buf.drain(start..).collect();
     let kind = if all_objects {
         "ObjectValue"
     } else {
@@ -1570,7 +1096,7 @@ fn enum_to_json(
     impl_to_json(out, kind, ctx, stream)
 }
 fn enum_variant_to_json_struct(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     variant: &EnumVariant,
     text: &mut String,
@@ -1595,11 +1121,7 @@ fn enum_variant_to_json_struct(
         {
             match ctx.target.tag {
                 Tag::Untagged => {
-                    tt_ident(out, "out");
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "start_json_object");
-                    tt_group_empty(out, Delimiter::Parenthesis);
-                    tt_punct_alone(out, ';');
+                    out.blit(342, 5);
                 }
                 Tag::Inline(..) if ctx.target.content.is_some() => text.push('{'),
                 Tag::Default => text.push('{'),
@@ -1607,11 +1129,9 @@ fn enum_variant_to_json_struct(
             }
         };
         for field in variant.fields {
-            tt_ident(out, "out");
-            tt_punct_alone(out, '.');
-            tt_ident(out, "push_str");
+            out.blit(347, 3);
             {
-                let at = out.len();
+                let at = out.buf.len();
                 {
                     if first {
                         first = false;
@@ -1622,69 +1142,49 @@ fn enum_variant_to_json_struct(
                         return Err(err);
                     }
                     text.push(':');
-                    out.push(TokenTree::Literal(Literal::string(&text)));
+                    out.buf.push(TokenTree::Literal(Literal::string(&text)));
                     text.clear();
                 };
-                tt_group(out, Delimiter::Parenthesis, at);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_alone(out, ';');
-            tt_punct_alone(out, '<');
-            out.extend_from_slice(field.ty);
-            tt_ident(out, "as");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "jsony");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "ToJson");
-            tt_punct_alone(out, '>');
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "jsonify_into");
+            out.blit(350, 2);
+            out.buf.extend_from_slice(field.ty);
+            out.blit(352, 11);
             {
-                let at = out.len();
-                out.push(TokenTree::from(field.name.clone()));
-                tt_punct_alone(out, ',');
-                tt_ident(out, "out");
-                tt_group(out, Delimiter::Parenthesis, at);
+                let at = out.buf.len();
+                out.buf.push(TokenTree::from(field.name.clone()));
+                out.blit(152, 2);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_alone(out, ';');
+            out.blit_punct(13);
         }
         {
             match ctx.target.tag {
                 Tag::Untagged => {
-                    tt_ident(out, "out");
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "end_json_object");
-                    tt_group_empty(out, Delimiter::Parenthesis);
-                    tt_punct_alone(out, ';');
+                    out.blit(456, 5);
                 }
                 Tag::Default => {
                     text.push('}');
                     {
-                        tt_ident(out, "out");
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "push_str");
+                        out.blit(347, 3);
                         {
-                            let at = out.len();
-                            out.push(Literal::string(&text).into());
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            let at = out.buf.len();
+                            out.buf.push(Literal::string(&text).into());
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_punct_alone(out, ';');
+                        out.blit_punct(13);
                     };
                 }
                 Tag::Inline(..) if ctx.target.content.is_some() => {
                     text.push('}');
                     {
-                        tt_ident(out, "out");
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "push_str");
+                        out.blit(347, 3);
                         {
-                            let at = out.len();
-                            out.push(Literal::string(&text).into());
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            let at = out.buf.len();
+                            out.buf.push(Literal::string(&text).into());
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_punct_alone(out, ';');
+                        out.blit_punct(13);
                     };
                 }
                 _ => (),
@@ -1694,13 +1194,13 @@ fn enum_variant_to_json_struct(
     Ok(())
 }
 fn enum_variant_to_json(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     variant: &EnumVariant,
     text: &mut String,
     all_objects: bool,
 ) -> Result<(), Error> {
-    let start = out.len();
+    let start = out.buf.len();
     match &ctx.target.tag {
         Tag::Inline(..) => {
             variant_name_json(ctx, variant, text)?;
@@ -1718,11 +1218,7 @@ fn enum_variant_to_json(
             } else {
                 if !all_objects {
                     {
-                        tt_ident(out, "out");
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "start_json_object");
-                        tt_group_empty(out, Delimiter::Parenthesis);
-                        tt_punct_alone(out, ';');
+                        out.blit(342, 5);
                     };
                 }
                 variant_name_json(ctx, variant, text)?;
@@ -1739,27 +1235,16 @@ fn enum_variant_to_json(
                 ));
             };
             {
-                tt_punct_alone(out, '<');
-                out.extend_from_slice(field.ty);
-                tt_ident(out, "as");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "jsony");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "ToJson");
-                tt_punct_alone(out, '>');
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "jsonify_into");
+                out.blit_punct(3);
+                out.buf.extend_from_slice(field.ty);
+                out.blit(352, 11);
                 {
-                    let at = out.len();
-                    out.push(TokenTree::from(ctx.temp[0].clone()));
-                    tt_punct_alone(out, ',');
-                    tt_ident(out, "out");
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.buf.push(TokenTree::from(ctx.temp[0].clone()));
+                    out.blit(152, 2);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ';');
+                out.blit_punct(13);
             }
         }
         EnumKind::Struct => {
@@ -1772,15 +1257,13 @@ fn enum_variant_to_json(
             variant_name_json(ctx, variant, text)?;
             text.push('"');
             {
-                tt_ident(out, "out");
-                tt_punct_alone(out, '.');
-                tt_ident(out, "push_str");
+                out.blit(347, 3);
                 {
-                    let at = out.len();
-                    out.push(Literal::string(&text).into());
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.buf.push(Literal::string(&text).into());
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ';');
+                out.blit_punct(13);
             };
             text.clear();
         }
@@ -1791,23 +1274,20 @@ fn enum_variant_to_json(
                 if let EnumKind::None = variant.kind {
                 } else {
                     {
-                        tt_ident(out, "out");
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "end_json_object");
-                        tt_group_empty(out, Delimiter::Parenthesis);
-                        tt_punct_alone(out, ';');
+                        out.blit(456, 5);
                     };
                 }
             }
             _ => (),
         }
     }
-    let ts = out.drain(start..).collect();
-    out.push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
+    let ts = out.buf.drain(start..).collect();
+    out.buf
+        .push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
     Ok(())
 }
 fn enum_variant_from_json_struct(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     variant: &EnumVariant,
     untagged: bool,
@@ -1827,44 +1307,28 @@ fn enum_variant_from_json_struct(
     }
     if let Some(flatten_field) = flattening {
         {
-            tt_ident(out, "type");
-            tt_ident(out, "__TEMP");
+            out.blit(466, 2);
             if ctx.target.has_lifetime() {
-                tt_punct_alone(out, '<');
-                tt_punct_joint(out, '\'');
-                out.push(TokenTree::from(ctx.lifetime.clone()));
-                tt_punct_alone(out, '>');
+                out.blit(1, 2);
+                out.buf.push(TokenTree::from(ctx.lifetime.clone()));
+                out.blit_punct(1);
             };
-            tt_punct_alone(out, '=');
+            out.blit_punct(5);
             {
-                let at = out.len();
+                let at = out.buf.len();
                 for field in &ordered_fields {
-                    out.extend_from_slice(field.ty);
-                    tt_punct_alone(out, ',');
+                    out.buf.extend_from_slice(field.ty);
+                    out.blit_punct(0);
                 }
-                tt_group(out, Delimiter::Parenthesis, at);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_alone(out, ';');
-            tt_ident(out, "let");
-            tt_ident(out, "schema");
-            tt_punct_alone(out, '=');
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "jsony");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "__internal");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "ObjectSchema");
+            out.blit(468, 13);
             {
-                let at = out.len();
-                tt_ident(out, "inner");
-                tt_punct_alone(out, ':');
-                tt_ident(out, "const");
+                let at = out.buf.len();
+                out.blit(481, 3);
                 {
-                    let at = out.len();
-                    tt_punct_alone(out, '&');
+                    let at = out.buf.len();
+                    out.blit_punct(4);
                     if let Err(err) = struct_schema(
                         out,
                         ctx,
@@ -1873,286 +1337,122 @@ fn enum_variant_from_json_struct(
                     ) {
                         return Err(err);
                     };
-                    tt_group(out, Delimiter::Brace, at);
+                    out.tt_group(Delimiter::Brace, at);
                 };
-                tt_punct_alone(out, ',');
-                tt_ident(out, "phantom");
-                tt_punct_alone(out, ':');
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "std");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "marker");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "PhantomData");
-                tt_punct_alone(out, ',');
-                tt_group(out, Delimiter::Brace, at);
+                out.blit(484, 13);
+                out.tt_group(Delimiter::Brace, at);
             };
-            tt_punct_alone(out, ';');
-            tt_ident(out, "let");
-            tt_ident(out, "mut");
-            tt_ident(out, "temp");
-            tt_punct_alone(out, '=');
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "std");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "mem");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "MaybeUninit");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_punct_alone(out, '<');
-            tt_ident(out, "__TEMP");
-            tt_punct_alone(out, '>');
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "uninit");
-            tt_group_empty(out, Delimiter::Parenthesis);
-            tt_punct_alone(out, ';');
-            tt_ident(out, "let");
-            tt_ident(out, "mut");
-            tt_ident(out, "temp_flatten");
-            tt_punct_alone(out, '=');
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "std");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "mem");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "MaybeUninit");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_punct_alone(out, '<');
-            out.extend_from_slice(flatten_field.ty);
-            tt_punct_alone(out, '>');
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "uninit");
-            tt_group_empty(out, Delimiter::Parenthesis);
-            tt_punct_alone(out, ';');
-            tt_ident(out, "let");
-            tt_ident(out, "mut");
-            tt_ident(out, "flatten_visitor");
-            tt_punct_alone(out, '=');
-            tt_punct_alone(out, '<');
-            out.extend_from_slice(flatten_field.ty);
-            tt_ident(out, "as");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "jsony");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "json");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "FromJsonFieldVisitor");
-            tt_punct_alone(out, '>');
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "new_field_visitor");
+            out.blit(497, 40);
+            out.buf.extend_from_slice(flatten_field.ty);
+            out.blit(537, 11);
+            out.buf.extend_from_slice(flatten_field.ty);
+            out.blit(304, 14);
             {
-                let at = out.len();
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "std");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "ptr");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "NonNull");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "new_unchecked");
+                let at = out.buf.len();
+                out.blit(548, 12);
                 {
-                    let at = out.len();
-                    tt_ident(out, "temp_flatten");
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "as_mut_ptr");
-                    tt_group_empty(out, Delimiter::Parenthesis);
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "cast");
-                    tt_group_empty(out, Delimiter::Parenthesis);
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.blit(560, 7);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ',');
-                tt_ident(out, "parser");
-                tt_punct_alone(out, ',');
-                tt_group(out, Delimiter::Parenthesis, at);
+                out.blit(321, 3);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_alone(out, ';');
-            tt_ident(out, "if");
-            tt_ident(out, "let");
-            tt_ident(out, "Err");
+            out.blit(567, 4);
             {
-                let at = out.len();
-                tt_ident(out, "_err");
-                tt_group(out, Delimiter::Parenthesis, at);
+                let at = out.buf.len();
+                out.blit_ident(115);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_alone(out, '=');
-            tt_ident(out, "schema");
-            tt_punct_alone(out, '.');
-            tt_ident(out, "decode");
+            out.blit(571, 4);
             {
-                let at = out.len();
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "std");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "ptr");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "NonNull");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "new_unchecked");
+                let at = out.buf.len();
+                out.blit(548, 12);
                 {
-                    let at = out.len();
-                    tt_ident(out, "temp");
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "as_mut_ptr");
-                    tt_group_empty(out, Delimiter::Parenthesis);
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "cast");
-                    tt_group_empty(out, Delimiter::Parenthesis);
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.blit(575, 7);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ',');
-                tt_ident(out, "parser");
-                tt_punct_alone(out, ',');
-                tt_ident(out, "Some");
+                out.blit(335, 4);
                 {
-                    let at = out.len();
-                    tt_punct_alone(out, '&');
-                    tt_ident(out, "mut");
-                    tt_ident(out, "flatten_visitor");
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.blit(339, 3);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ',');
-                tt_group(out, Delimiter::Parenthesis, at);
+                out.blit_punct(0);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
             {
-                let at = out.len();
+                let at = out.buf.len();
                 if !untagged {
-                    tt_ident(out, "return");
-                    tt_ident(out, "Err");
+                    out.blit(582, 2);
                     {
-                        let at = out.len();
-                        tt_ident(out, "_err");
-                        tt_group(out, Delimiter::Parenthesis, at);
+                        let at = out.buf.len();
+                        out.blit_ident(115);
+                        out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    tt_punct_alone(out, ';');
+                    out.blit_punct(13);
                 };
-                tt_group(out, Delimiter::Brace, at);
+                out.tt_group(Delimiter::Brace, at);
             };
-            tt_ident(out, "else");
+            out.blit_ident(84);
             {
-                let at = out.len();
-                tt_ident(out, "let");
-                tt_ident(out, "temp2");
-                tt_punct_alone(out, '=');
-                tt_ident(out, "temp");
-                tt_punct_alone(out, '.');
-                tt_ident(out, "assume_init");
-                tt_group_empty(out, Delimiter::Parenthesis);
-                tt_punct_alone(out, ';');
-                tt_ident(out, "dst");
-                tt_punct_alone(out, '.');
-                tt_ident(out, "cast");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_punct_alone(out, '<');
+                let at = out.buf.len();
+                out.blit(584, 14);
                 {
                     ctx.target_type(out)
                 };
-                tt_punct_alone(out, '>');
-                tt_group_empty(out, Delimiter::Parenthesis);
-                tt_punct_alone(out, '.');
-                tt_ident(out, "write");
+                out.blit(598, 4);
                 {
-                    let at = out.len();
-                    out.push(TokenTree::from(ctx.target.name.clone()));
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    out.push(TokenTree::from(variant.name.clone()));
+                    let at = out.buf.len();
+                    out.buf.push(TokenTree::from(ctx.target.name.clone()));
+                    out.blit(3, 2);
+                    out.buf.push(TokenTree::from(variant.name.clone()));
                     {
-                        let at = out.len();
+                        let at = out.buf.len();
                         for (i, field) in ordered_fields.iter().enumerate() {
-                            out.push(TokenTree::from(field.name.clone()));
-                            tt_punct_alone(out, ':');
-                            tt_ident(out, "temp2");
-                            tt_punct_alone(out, '.');
-                            out.push(Literal::usize_unsuffixed(i).into());
-                            tt_punct_alone(out, ',');
+                            out.buf.push(TokenTree::from(field.name.clone()));
+                            out.blit(602, 3);
+                            out.buf.push(Literal::usize_unsuffixed(i).into());
+                            out.blit_punct(0);
                         }
-                        out.push(TokenTree::from(flatten_field.name.clone()));
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "temp_flatten");
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "assume_init");
-                        tt_group_empty(out, Delimiter::Parenthesis);
-                        tt_punct_alone(out, ',');
-                        tt_group(out, Delimiter::Brace, at);
+                        out.buf.push(TokenTree::from(flatten_field.name.clone()));
+                        out.blit(605, 6);
+                        out.tt_group(Delimiter::Brace, at);
                     };
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ';');
+                out.blit_punct(13);
                 if untagged {
-                    tt_ident(out, "break");
-                    tt_punct_joint(out, '\'');
-                    tt_ident(out, "success");
+                    out.blit(611, 3);
                 };
-                tt_group(out, Delimiter::Brace, at);
+                out.tt_group(Delimiter::Brace, at);
             };
         }
     } else {
         {
-            tt_ident(out, "type");
-            tt_ident(out, "__TEMP");
+            out.blit(466, 2);
             if ctx.target.has_lifetime() {
-                tt_punct_alone(out, '<');
-                tt_punct_joint(out, '\'');
-                out.push(TokenTree::from(ctx.lifetime.clone()));
-                tt_punct_alone(out, '>');
+                out.blit(1, 2);
+                out.buf.push(TokenTree::from(ctx.lifetime.clone()));
+                out.blit_punct(1);
             };
-            tt_punct_alone(out, '=');
+            out.blit_punct(5);
             {
-                let at = out.len();
+                let at = out.buf.len();
                 for field in &ordered_fields {
-                    out.extend_from_slice(field.ty);
-                    tt_punct_alone(out, ',');
+                    out.buf.extend_from_slice(field.ty);
+                    out.blit_punct(0);
                 }
-                tt_group(out, Delimiter::Parenthesis, at);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_alone(out, ';');
-            tt_ident(out, "let");
-            tt_ident(out, "schema");
-            tt_punct_alone(out, '=');
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "jsony");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "__internal");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "ObjectSchema");
+            out.blit(468, 13);
             {
-                let at = out.len();
-                tt_ident(out, "inner");
-                tt_punct_alone(out, ':');
-                tt_ident(out, "const");
+                let at = out.buf.len();
+                out.blit(481, 3);
                 {
-                    let at = out.len();
-                    tt_punct_alone(out, '&');
+                    let at = out.buf.len();
+                    out.blit_punct(4);
                     if let Err(err) = struct_schema(
                         out,
                         ctx,
@@ -2161,168 +1461,84 @@ fn enum_variant_from_json_struct(
                     ) {
                         return Err(err);
                     };
-                    tt_group(out, Delimiter::Brace, at);
+                    out.tt_group(Delimiter::Brace, at);
                 };
-                tt_punct_alone(out, ',');
-                tt_ident(out, "phantom");
-                tt_punct_alone(out, ':');
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "std");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "marker");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "PhantomData");
-                tt_punct_alone(out, ',');
-                tt_group(out, Delimiter::Brace, at);
+                out.blit(484, 13);
+                out.tt_group(Delimiter::Brace, at);
             };
-            tt_punct_alone(out, ';');
-            tt_ident(out, "let");
-            tt_ident(out, "mut");
-            tt_ident(out, "temp");
-            tt_punct_alone(out, '=');
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "std");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "mem");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "MaybeUninit");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_punct_alone(out, '<');
-            tt_ident(out, "__TEMP");
-            tt_punct_alone(out, '>');
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_ident(out, "uninit");
-            tt_group_empty(out, Delimiter::Parenthesis);
-            tt_punct_alone(out, ';');
-            tt_ident(out, "if");
-            tt_ident(out, "let");
-            tt_ident(out, "Err");
+            out.blit(614, 27);
             {
-                let at = out.len();
-                tt_ident(out, "_err");
-                tt_group(out, Delimiter::Parenthesis, at);
+                let at = out.buf.len();
+                out.blit_ident(115);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_alone(out, '=');
-            tt_ident(out, "schema");
-            tt_punct_alone(out, '.');
-            tt_ident(out, "decode");
+            out.blit(571, 4);
             {
-                let at = out.len();
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "std");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "ptr");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "NonNull");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "new_unchecked");
+                let at = out.buf.len();
+                out.blit(548, 12);
                 {
-                    let at = out.len();
-                    tt_ident(out, "temp");
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "as_mut_ptr");
-                    tt_group_empty(out, Delimiter::Parenthesis);
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "cast");
-                    tt_group_empty(out, Delimiter::Parenthesis);
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.blit(575, 7);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ',');
-                tt_ident(out, "parser");
-                tt_punct_alone(out, ',');
-                tt_ident(out, "None");
-                tt_punct_alone(out, ',');
-                tt_group(out, Delimiter::Parenthesis, at);
+                out.blit(641, 5);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
             {
-                let at = out.len();
+                let at = out.buf.len();
                 if !untagged {
-                    tt_ident(out, "return");
-                    tt_ident(out, "Err");
+                    out.blit(582, 2);
                     {
-                        let at = out.len();
-                        tt_ident(out, "_err");
-                        tt_group(out, Delimiter::Parenthesis, at);
+                        let at = out.buf.len();
+                        out.blit_ident(115);
+                        out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    tt_punct_alone(out, ';');
+                    out.blit_punct(13);
                 };
-                tt_group(out, Delimiter::Brace, at);
+                out.tt_group(Delimiter::Brace, at);
             };
-            tt_ident(out, "else");
+            out.blit_ident(84);
             {
-                let at = out.len();
-                tt_ident(out, "let");
-                tt_ident(out, "temp2");
-                tt_punct_alone(out, '=');
-                tt_ident(out, "temp");
-                tt_punct_alone(out, '.');
-                tt_ident(out, "assume_init");
-                tt_group_empty(out, Delimiter::Parenthesis);
-                tt_punct_alone(out, ';');
-                tt_ident(out, "dst");
-                tt_punct_alone(out, '.');
-                tt_ident(out, "cast");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_punct_alone(out, '<');
+                let at = out.buf.len();
+                out.blit(584, 14);
                 {
                     ctx.target_type(out)
                 };
-                tt_punct_alone(out, '>');
-                tt_group_empty(out, Delimiter::Parenthesis);
-                tt_punct_alone(out, '.');
-                tt_ident(out, "write");
+                out.blit(598, 4);
                 {
-                    let at = out.len();
-                    out.push(TokenTree::from(ctx.target.name.clone()));
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    out.push(TokenTree::from(variant.name.clone()));
+                    let at = out.buf.len();
+                    out.buf.push(TokenTree::from(ctx.target.name.clone()));
+                    out.blit(3, 2);
+                    out.buf.push(TokenTree::from(variant.name.clone()));
                     {
-                        let at = out.len();
+                        let at = out.buf.len();
                         for (i, field) in ordered_fields.iter().enumerate() {
-                            out.push(TokenTree::from(field.name.clone()));
-                            tt_punct_alone(out, ':');
-                            tt_ident(out, "temp2");
-                            tt_punct_alone(out, '.');
-                            out.push(Literal::usize_unsuffixed(i).into());
-                            tt_punct_alone(out, ',');
+                            out.buf.push(TokenTree::from(field.name.clone()));
+                            out.blit(602, 3);
+                            out.buf.push(Literal::usize_unsuffixed(i).into());
+                            out.blit_punct(0);
                         }
-                        tt_group(out, Delimiter::Brace, at);
+                        out.tt_group(Delimiter::Brace, at);
                     };
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ';');
+                out.blit_punct(13);
                 if untagged {
-                    tt_ident(out, "break");
-                    tt_punct_joint(out, '\'');
-                    tt_ident(out, "success");
+                    out.blit(611, 3);
                 };
-                tt_group(out, Delimiter::Brace, at);
+                out.tt_group(Delimiter::Brace, at);
             };
         }
     };
     Ok(())
 }
 fn enum_variant_from_json(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     variant: &EnumVariant,
     untagged: bool,
 ) -> Result<(), Error> {
-    let start = out.len();
+    let start = out.buf.len();
     match variant.kind {
         EnumKind::Tuple => {
             let [field] = variant.fields else {
@@ -2332,99 +1548,71 @@ fn enum_variant_from_json(
                 ));
             };
             {
-                tt_ident(out, "match");
-                tt_punct_alone(out, '<');
-                out.extend_from_slice(field.ty);
-                tt_ident(out, "as");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "jsony");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "FromJson");
-                tt_punct_alone(out, '<');
-                tt_punct_joint(out, '\'');
-                out.push(TokenTree::from(ctx.lifetime.clone()));
-                tt_punct_alone(out, '>');
-                tt_punct_alone(out, '>');
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "decode_json");
+                out.blit(646, 2);
+                out.buf.extend_from_slice(field.ty);
+                out.blit(648, 9);
+                out.buf.push(TokenTree::from(ctx.lifetime.clone()));
+                out.blit(657, 5);
                 {
-                    let at = out.len();
-                    tt_ident(out, "parser");
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.blit_ident(144);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
                 {
-                    let at = out.len();
-                    tt_ident(out, "Ok");
+                    let at = out.buf.len();
+                    out.blit_ident(134);
                     {
-                        let at = out.len();
-                        tt_ident(out, "value");
-                        tt_group(out, Delimiter::Parenthesis, at);
+                        let at = out.buf.len();
+                        out.blit_ident(126);
+                        out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    tt_punct_joint(out, '=');
-                    tt_punct_alone(out, '>');
+                    out.blit(454, 2);
                     {
-                        let at = out.len();
-                        tt_ident(out, "dst");
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "cast");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_punct_alone(out, '<');
+                        let at = out.buf.len();
+                        out.blit(592, 6);
                         {
                             ctx.target_type(out)
                         };
-                        tt_punct_alone(out, '>');
-                        tt_group_empty(out, Delimiter::Parenthesis);
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "write");
+                        out.blit(598, 4);
                         {
-                            let at = out.len();
-                            out.push(TokenTree::from(ctx.target.name.clone()));
-                            tt_punct_joint(out, ':');
-                            tt_punct_alone(out, ':');
-                            out.push(TokenTree::from(variant.name.clone()));
+                            let at = out.buf.len();
+                            out.buf.push(TokenTree::from(ctx.target.name.clone()));
+                            out.blit(3, 2);
+                            out.buf.push(TokenTree::from(variant.name.clone()));
                             {
-                                let at = out.len();
-                                tt_ident(out, "value");
-                                tt_group(out, Delimiter::Parenthesis, at);
+                                let at = out.buf.len();
+                                out.blit_ident(126);
+                                out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_punct_alone(out, ';');
+                        out.blit_punct(13);
                         if untagged {
-                            tt_ident(out, "break");
-                            tt_punct_joint(out, '\'');
-                            tt_ident(out, "success");
+                            out.blit(611, 3);
                         };
-                        tt_group(out, Delimiter::Brace, at);
+                        out.tt_group(Delimiter::Brace, at);
                     };
-                    tt_punct_alone(out, ',');
-                    tt_ident(out, "Err");
+                    out.blit(662, 2);
                     {
-                        let at = out.len();
-                        tt_ident(out, "_err");
-                        tt_group(out, Delimiter::Parenthesis, at);
+                        let at = out.buf.len();
+                        out.blit_ident(115);
+                        out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    tt_punct_joint(out, '=');
-                    tt_punct_alone(out, '>');
+                    out.blit(454, 2);
                     {
-                        let at = out.len();
+                        let at = out.buf.len();
                         if !untagged {
-                            tt_ident(out, "return");
-                            tt_ident(out, "Err");
+                            out.blit(582, 2);
                             {
-                                let at = out.len();
-                                tt_ident(out, "_err");
-                                tt_group(out, Delimiter::Parenthesis, at);
+                                let at = out.buf.len();
+                                out.blit_ident(115);
+                                out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            tt_punct_alone(out, ';');
+                            out.blit_punct(13);
                         };
-                        tt_group(out, Delimiter::Brace, at);
+                        out.tt_group(Delimiter::Brace, at);
                     };
-                    tt_group(out, Delimiter::Brace, at);
+                    out.tt_group(Delimiter::Brace, at);
                 };
             }
         }
@@ -2434,44 +1622,30 @@ fn enum_variant_from_json(
             }
         }
         EnumKind::None => {
-            tt_ident(out, "dst");
-            tt_punct_alone(out, '.');
-            tt_ident(out, "cast");
-            tt_punct_joint(out, ':');
-            tt_punct_alone(out, ':');
-            tt_punct_alone(out, '<');
+            out.blit(592, 6);
             {
                 ctx.target_type(out)
             };
-            tt_punct_alone(out, '>');
-            tt_group_empty(out, Delimiter::Parenthesis);
-            tt_punct_alone(out, '.');
-            tt_ident(out, "write");
+            out.blit(598, 4);
             {
-                let at = out.len();
-                out.push(TokenTree::from(ctx.target.name.clone()));
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                out.push(TokenTree::from(variant.name.clone()));
-                tt_group(out, Delimiter::Parenthesis, at);
+                let at = out.buf.len();
+                out.buf.push(TokenTree::from(ctx.target.name.clone()));
+                out.blit(3, 2);
+                out.buf.push(TokenTree::from(variant.name.clone()));
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_alone(out, ';');
+            out.blit_punct(13);
             if untagged {
-                tt_ident(out, "break");
-                tt_punct_joint(out, '\'');
-                tt_ident(out, "success");
+                out.blit(611, 3);
             };
         }
     };
-    let ts = TokenStream::from_iter(out.drain(start..));
-    out.push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
+    let ts = TokenStream::from_iter(out.buf.drain(start..));
+    out.buf
+        .push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
     Ok(())
 }
-fn enum_from_json(
-    out: &mut Vec<TokenTree>,
-    ctx: &Ctx,
-    variants: &[EnumVariant],
-) -> Result<(), Error> {
+fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
     if ctx.target.flattenable {
         return Err(Error::msg("Flattening enums not supported yet."));
     }
@@ -2480,75 +1654,45 @@ fn enum_from_json(
         Tag::Inline(literal) => Some(literal),
         Tag::Untagged => {
             let body = {
-                let len = out.len();
-                tt_ident(out, "let");
-                tt_ident(out, "initial_index");
-                tt_punct_alone(out, '=');
-                tt_ident(out, "parser");
-                tt_punct_alone(out, '.');
-                tt_ident(out, "index");
-                tt_punct_alone(out, ';');
-                tt_punct_joint(out, '\'');
-                tt_ident(out, "success");
-                tt_punct_alone(out, ':');
+                let len = out.buf.len();
+                out.blit(664, 10);
                 {
-                    let at = out.len();
+                    let at = out.buf.len();
                     for (i, variant) in variants.iter().enumerate() {
                         {
-                            let at = out.len();
+                            let at = out.buf.len();
                             if i != 0 {
-                                tt_ident(out, "parser");
-                                tt_punct_alone(out, '.');
-                                tt_ident(out, "index");
-                                tt_punct_alone(out, '=');
-                                tt_ident(out, "initial_index");
-                                tt_punct_alone(out, ';');
+                                out.blit(674, 6);
                             };
                             if let Err(err) = enum_variant_from_json(out, ctx, variant, true) {
                                 return Err(err);
                             };
-                            tt_group(out, Delimiter::Brace, at);
+                            out.tt_group(Delimiter::Brace, at);
                         };
                     }
-                    tt_ident(out, "return");
-                    tt_ident(out, "Err");
+                    out.blit(582, 2);
                     {
-                        let at = out.len();
-                        tt_punct_alone(out, '&');
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "jsony");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "json");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "DecodeError");
+                        let at = out.buf.len();
+                        out.blit(680, 10);
                         {
-                            let at = out.len();
-                            tt_ident(out, "message");
-                            tt_punct_alone(out, ':');
-                            out.push(
+                            let at = out.buf.len();
+                            out.blit(690, 2);
+                            out.buf.push(
                                 Literal::string("Untagged enum didn't match any variant").into(),
                             );
-                            tt_group(out, Delimiter::Brace, at);
+                            out.tt_group(Delimiter::Brace, at);
                         };
-                        tt_group(out, Delimiter::Parenthesis, at);
+                        out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    tt_group(out, Delimiter::Brace, at);
+                    out.tt_group(Delimiter::Brace, at);
                 };
-                tt_ident(out, "parser");
-                tt_punct_alone(out, '.');
-                tt_ident(out, "clear_error");
-                tt_group_empty(out, Delimiter::Parenthesis);
-                tt_punct_alone(out, ';');
-                tt_ident(out, "Ok");
+                out.blit(692, 6);
                 {
-                    let at = out.len();
-                    tt_group_empty(out, Delimiter::Parenthesis);
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.tt_group_empty(Delimiter::Parenthesis);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                TokenStream::from_iter(out.drain(len..))
+                TokenStream::from_iter(out.buf.drain(len..))
             };
             impl_from_json(out, ctx, body)?;
             return Ok(());
@@ -2564,137 +1708,111 @@ fn enum_from_json(
         }
     };
     let mut body = {
-        let len = out.len();
+        let len = out.buf.len();
         {
             if let Some(tag) = inline_tag {
                 {
-                    tt_ident(out, "let");
-                    tt_ident(out, "variant");
-                    tt_punct_alone(out, '=');
-                    tt_ident(out, "match");
-                    tt_ident(out, "parser");
-                    tt_punct_alone(out, '.');
+                    out.blit(698, 6);
                     {
                         if let Some(content) = &ctx.target.content {
                             {
-                                tt_ident(out, "tag_query_at_content_next_object");
+                                out.blit_ident(46);
                                 {
-                                    let at = out.len();
-                                    out.push(Literal::string(tag).into());
-                                    tt_punct_alone(out, ',');
-                                    out.push(Literal::string(content).into());
-                                    tt_group(out, Delimiter::Parenthesis, at);
+                                    let at = out.buf.len();
+                                    out.buf.push(Literal::string(tag).into());
+                                    out.blit_punct(0);
+                                    out.buf.push(Literal::string(content).into());
+                                    out.tt_group(Delimiter::Parenthesis, at);
                                 };
                             }
                         } else {
                             {
-                                tt_ident(out, "tag_query_next_object");
+                                out.blit_ident(47);
                                 {
-                                    let at = out.len();
-                                    out.push(Literal::string(tag).into());
-                                    tt_group(out, Delimiter::Parenthesis, at);
+                                    let at = out.buf.len();
+                                    out.buf.push(Literal::string(tag).into());
+                                    out.tt_group(Delimiter::Parenthesis, at);
                                 };
                             }
                         }
                     };
                     {
-                        let at = out.len();
-                        tt_ident(out, "Ok");
+                        let at = out.buf.len();
+                        out.blit_ident(134);
                         {
-                            let at = out.len();
-                            tt_ident(out, "value");
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            let at = out.buf.len();
+                            out.blit_ident(126);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_punct_joint(out, '=');
-                        tt_punct_alone(out, '>');
-                        tt_ident(out, "value");
-                        tt_punct_alone(out, ',');
-                        tt_ident(out, "Err");
+                        out.blit(704, 5);
                         {
-                            let at = out.len();
-                            tt_ident(out, "err");
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            let at = out.buf.len();
+                            out.blit_ident(129);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_punct_joint(out, '=');
-                        tt_punct_alone(out, '>');
-                        tt_ident(out, "return");
-                        tt_ident(out, "Err");
+                        out.blit(709, 4);
                         {
-                            let at = out.len();
-                            tt_ident(out, "err");
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            let at = out.buf.len();
+                            out.blit_ident(129);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_punct_alone(out, ',');
-                        tt_group(out, Delimiter::Brace, at);
+                        out.blit_punct(0);
+                        out.tt_group(Delimiter::Brace, at);
                     };
-                    tt_punct_alone(out, ';');
+                    out.blit_punct(13);
                 }
             } else {
                 {
-                    tt_ident(out, "let");
-                    tt_ident(out, "Ok");
+                    out.blit(713, 2);
                     {
-                        let at = out.len();
-                        tt_ident(out, "Some");
+                        let at = out.buf.len();
+                        out.blit_ident(97);
                         {
-                            let at = out.len();
-                            tt_ident(out, "variant");
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            let at = out.buf.len();
+                            out.blit_ident(123);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_group(out, Delimiter::Parenthesis, at);
+                        out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    tt_punct_alone(out, '=');
-                    tt_ident(out, "parser");
-                    tt_punct_alone(out, '.');
+                    out.blit(666, 3);
                     {
                         if mixed_strings_and_objects {
                             {
-                                tt_ident(out, "enter_seen_object");
+                                out.blit_ident(25);
                             }
                         } else {
                             {
-                                tt_ident(out, "enter_object");
+                                out.blit_ident(24);
                             }
                         }
                     };
-                    tt_group_empty(out, Delimiter::Parenthesis);
-                    tt_ident(out, "else");
+                    out.blit(715, 2);
                     {
-                        let at = out.len();
-                        tt_ident(out, "return");
-                        tt_ident(out, "Err");
+                        let at = out.buf.len();
+                        out.blit(582, 2);
                         {
-                            let at = out.len();
-                            tt_punct_alone(out, '&');
-                            tt_ident(out, "jsony");
-                            tt_punct_joint(out, ':');
-                            tt_punct_alone(out, ':');
-                            tt_ident(out, "json");
-                            tt_punct_joint(out, ':');
-                            tt_punct_alone(out, ':');
-                            tt_ident(out, "DecodeError");
+                            let at = out.buf.len();
+                            out.blit(717, 8);
                             {
-                                let at = out.len();
-                                tt_ident(out, "message");
-                                tt_punct_alone(out, ':');
-                                out.push(
+                                let at = out.buf.len();
+                                out.blit(690, 2);
+                                out.buf.push(
                                     Literal::string("Expected single field object for enum").into(),
                                 );
-                                tt_group(out, Delimiter::Brace, at);
+                                out.tt_group(Delimiter::Brace, at);
                             };
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_punct_alone(out, ';');
-                        tt_group(out, Delimiter::Brace, at);
+                        out.blit_punct(13);
+                        out.tt_group(Delimiter::Brace, at);
                     };
-                    tt_punct_alone(out, ';');
+                    out.blit_punct(13);
                 }
             }
         };
-        tt_ident(out, "match");
-        tt_ident(out, "variant");
+        out.blit(725, 2);
         {
-            let at = out.len();
+            let at = out.buf.len();
             {
                 for variant in variants {
                     if mixed_strings_and_objects {
@@ -2703,443 +1821,295 @@ fn enum_from_json(
                         }
                     }
                     {
-                        out.push(variant_key_literal(ctx, variant).into());
-                        tt_punct_joint(out, '=');
-                        tt_punct_alone(out, '>');
+                        out.buf.push(variant_key_literal(ctx, variant).into());
+                        out.blit(454, 2);
                         if let Err(err) = enum_variant_from_json(out, ctx, variant, false) {
                             return Err(err);
                         };
-                        tt_punct_alone(out, ',');
+                        out.blit_punct(0);
                     };
                 }
             };
-            tt_ident(out, "_");
-            tt_punct_joint(out, '=');
-            tt_punct_alone(out, '>');
+            out.blit(727, 3);
             {
-                let at = out.len();
-                tt_ident(out, "parser");
-                tt_punct_alone(out, '.');
-                tt_ident(out, "report_error");
+                let at = out.buf.len();
+                out.blit(730, 3);
                 {
-                    let at = out.len();
-                    tt_ident(out, "variant");
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "to_string");
-                    tt_group_empty(out, Delimiter::Parenthesis);
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.blit(733, 4);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ';');
-                tt_ident(out, "return");
-                tt_ident(out, "Err");
+                out.blit(737, 3);
                 {
-                    let at = out.len();
-                    tt_punct_alone(out, '&');
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "jsony");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "parser");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "UNKNOWN_VARIANT");
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.blit(740, 10);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ';');
-                tt_group(out, Delimiter::Brace, at);
+                out.blit_punct(13);
+                out.tt_group(Delimiter::Brace, at);
             };
-            tt_group(out, Delimiter::Brace, at);
+            out.tt_group(Delimiter::Brace, at);
         };
         {
             if let Some(_) = inline_tag {
                 if ctx.target.content.is_some() {
                     {
-                        tt_ident(out, "parser");
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "discard_remaining_object_fields");
-                        tt_group_empty(out, Delimiter::Parenthesis);
+                        out.blit(750, 4);
                     }
                 } else {
                     {
-                        tt_ident(out, "Ok");
+                        out.blit_ident(134);
                         {
-                            let at = out.len();
-                            tt_group_empty(out, Delimiter::Parenthesis);
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            let at = out.buf.len();
+                            out.tt_group_empty(Delimiter::Parenthesis);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
                     }
                 }
             } else {
                 {
-                    tt_ident(out, "let");
-                    tt_ident(out, "err");
-                    tt_punct_alone(out, '=');
-                    tt_ident(out, "match");
-                    tt_ident(out, "parser");
-                    tt_punct_alone(out, '.');
-                    tt_ident(out, "object_step");
-                    tt_group_empty(out, Delimiter::Parenthesis);
+                    out.blit(754, 8);
                     {
-                        let at = out.len();
-                        tt_ident(out, "Ok");
+                        let at = out.buf.len();
+                        out.blit_ident(134);
                         {
-                            let at = out.len();
-                            tt_ident(out, "None");
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            let at = out.buf.len();
+                            out.blit_ident(78);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_punct_joint(out, '=');
-                        tt_punct_alone(out, '>');
+                        out.blit(454, 2);
                         {
-                            let at = out.len();
-                            tt_ident(out, "return");
-                            tt_ident(out, "Ok");
+                            let at = out.buf.len();
+                            out.blit(762, 2);
                             {
-                                let at = out.len();
-                                tt_group_empty(out, Delimiter::Parenthesis);
-                                tt_group(out, Delimiter::Parenthesis, at);
+                                let at = out.buf.len();
+                                out.tt_group_empty(Delimiter::Parenthesis);
+                                out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            tt_group(out, Delimiter::Brace, at);
+                            out.tt_group(Delimiter::Brace, at);
                         };
-                        tt_punct_alone(out, ',');
-                        tt_ident(out, "Err");
+                        out.blit(662, 2);
                         {
-                            let at = out.len();
-                            tt_ident(out, "err");
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            let at = out.buf.len();
+                            out.blit_ident(129);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_punct_joint(out, '=');
-                        tt_punct_alone(out, '>');
+                        out.blit(454, 2);
                         {
-                            let at = out.len();
-                            tt_ident(out, "Err");
+                            let at = out.buf.len();
+                            out.blit_ident(140);
                             {
-                                let at = out.len();
-                                tt_ident(out, "err");
-                                tt_group(out, Delimiter::Parenthesis, at);
+                                let at = out.buf.len();
+                                out.blit_ident(129);
+                                out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            tt_group(out, Delimiter::Brace, at);
+                            out.tt_group(Delimiter::Brace, at);
                         };
-                        tt_punct_alone(out, ',');
-                        tt_ident(out, "Ok");
+                        out.blit(764, 2);
                         {
-                            let at = out.len();
-                            tt_ident(out, "Some");
+                            let at = out.buf.len();
+                            out.blit_ident(97);
                             {
-                                let at = out.len();
-                                tt_ident(out, "_");
-                                tt_group(out, Delimiter::Parenthesis, at);
+                                let at = out.buf.len();
+                                out.blit_ident(135);
+                                out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_punct_joint(out, '=');
-                        tt_punct_alone(out, '>');
+                        out.blit(454, 2);
                         {
-                            let at = out.len();
-                            tt_ident(out, "Err");
+                            let at = out.buf.len();
+                            out.blit_ident(140);
                             {
-                                let at = out.len();
-                                tt_punct_alone(out, '&');
-                                tt_ident(out, "jsony");
-                                tt_punct_joint(out, ':');
-                                tt_punct_alone(out, ':');
-                                tt_ident(out, "json");
-                                tt_punct_joint(out, ':');
-                                tt_punct_alone(out, ':');
-                                tt_ident(out, "DecodeError");
+                                let at = out.buf.len();
+                                out.blit(717, 8);
                                 {
-                                    let at = out.len();
-                                    tt_ident(out, "message");
-                                    tt_punct_alone(out, ':');
-                                    out.push(
+                                    let at = out.buf.len();
+                                    out.blit(690, 2);
+                                    out.buf.push(
                                         Literal::string("More the one field in enum tab object")
                                             .into(),
                                     );
-                                    tt_group(out, Delimiter::Brace, at);
+                                    out.tt_group(Delimiter::Brace, at);
                                 };
-                                tt_group(out, Delimiter::Parenthesis, at);
+                                out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            tt_group(out, Delimiter::Brace, at);
+                            out.tt_group(Delimiter::Brace, at);
                         };
-                        tt_punct_alone(out, ',');
-                        tt_group(out, Delimiter::Brace, at);
+                        out.blit_punct(0);
+                        out.tt_group(Delimiter::Brace, at);
                     };
-                    tt_punct_alone(out, ';');
-                    tt_ident(out, "std");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "ptr");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "drop_in_place");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_punct_alone(out, '<');
+                    out.blit(766, 11);
                     {
                         ctx.target_type(out)
                     };
-                    tt_punct_alone(out, '>');
+                    out.blit_punct(1);
                     {
-                        let at = out.len();
-                        tt_ident(out, "dst");
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "cast");
-                        tt_group_empty(out, Delimiter::Parenthesis);
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "as_mut");
-                        tt_group_empty(out, Delimiter::Parenthesis);
-                        tt_group(out, Delimiter::Parenthesis, at);
+                        let at = out.buf.len();
+                        out.blit(777, 7);
+                        out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    tt_punct_alone(out, ';');
-                    tt_ident(out, "return");
-                    tt_ident(out, "err");
-                    tt_punct_alone(out, ';');
+                    out.blit(784, 4);
                 }
             }
         };
-        TokenStream::from_iter(out.drain(len..))
+        TokenStream::from_iter(out.buf.drain(len..))
     };
     if mixed_strings_and_objects {
         body = {
-            let len = out.len();
-            tt_ident(out, "match");
-            tt_ident(out, "parser");
-            tt_punct_alone(out, '.');
-            tt_ident(out, "peek");
-            tt_group_empty(out, Delimiter::Parenthesis);
+            let len = out.buf.len();
+            out.blit(788, 5);
             {
-                let at = out.len();
-                tt_ident(out, "Ok");
+                let at = out.buf.len();
+                out.blit_ident(134);
                 {
-                    let at = out.len();
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "jsony");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "parser");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "Peek");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "Object");
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.blit(793, 12);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_joint(out, '=');
-                tt_punct_alone(out, '>');
-                out.push(TokenTree::Group(Group::new(Delimiter::Brace, body)));
-                tt_punct_alone(out, ',');
-                tt_ident(out, "Ok");
+                out.blit(454, 2);
+                out.buf
+                    .push(TokenTree::Group(Group::new(Delimiter::Brace, body)));
+                out.blit(764, 2);
                 {
-                    let at = out.len();
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "jsony");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "parser");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "Peek");
-                    tt_punct_joint(out, ':');
-                    tt_punct_alone(out, ':');
-                    tt_ident(out, "String");
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.blit(805, 12);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_joint(out, '=');
-                tt_punct_alone(out, '>');
-                tt_ident(out, "match");
-                tt_ident(out, "parser");
-                tt_punct_alone(out, '.');
-                tt_ident(out, "read_seen_string_unescaped");
-                tt_group_empty(out, Delimiter::Parenthesis);
+                out.blit(817, 7);
                 {
-                    let at = out.len();
-                    tt_ident(out, "Ok");
+                    let at = out.buf.len();
+                    out.blit_ident(134);
                     {
-                        let at = out.len();
-                        tt_ident(out, "variant");
-                        tt_group(out, Delimiter::Parenthesis, at);
+                        let at = out.buf.len();
+                        out.blit_ident(123);
+                        out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    tt_punct_joint(out, '=');
-                    tt_punct_alone(out, '>');
+                    out.blit(454, 2);
                     {
-                        let at = out.len();
-                        tt_ident(out, "let");
-                        tt_ident(out, "value");
-                        tt_punct_alone(out, '=');
-                        tt_ident(out, "match");
-                        tt_ident(out, "variant");
+                        let at = out.buf.len();
+                        out.blit(824, 5);
                         {
-                            let at = out.len();
+                            let at = out.buf.len();
                             {
                                 for variant in variants {
                                     if let EnumKind::None = variant.kind {
                                         {
-                                            out.push(variant_key_literal(ctx, variant).into());
-                                            tt_punct_joint(out, '=');
-                                            tt_punct_alone(out, '>');
-                                            out.push(TokenTree::from(ctx.target.name.clone()));
-                                            tt_punct_joint(out, ':');
-                                            tt_punct_alone(out, ':');
-                                            out.push(TokenTree::from(variant.name.clone()));
-                                            tt_punct_alone(out, ',');
+                                            out.buf.push(variant_key_literal(ctx, variant).into());
+                                            out.blit(454, 2);
+                                            out.buf.push(TokenTree::from(ctx.target.name.clone()));
+                                            out.blit(3, 2);
+                                            out.buf.push(TokenTree::from(variant.name.clone()));
+                                            out.blit_punct(0);
                                         };
                                     }
                                 }
                             };
-                            tt_ident(out, "_");
-                            tt_punct_joint(out, '=');
-                            tt_punct_alone(out, '>');
+                            out.blit(727, 3);
                             {
-                                let at = out.len();
-                                tt_ident(out, "parser");
-                                tt_punct_alone(out, '.');
-                                tt_ident(out, "report_error");
+                                let at = out.buf.len();
+                                out.blit(730, 3);
                                 {
-                                    let at = out.len();
-                                    tt_ident(out, "variant");
-                                    tt_punct_alone(out, '.');
-                                    tt_ident(out, "to_string");
-                                    tt_group_empty(out, Delimiter::Parenthesis);
-                                    tt_group(out, Delimiter::Parenthesis, at);
+                                    let at = out.buf.len();
+                                    out.blit(733, 4);
+                                    out.tt_group(Delimiter::Parenthesis, at);
                                 };
-                                tt_punct_alone(out, ';');
-                                tt_ident(out, "return");
-                                tt_ident(out, "Err");
+                                out.blit(737, 3);
                                 {
-                                    let at = out.len();
-                                    tt_punct_alone(out, '&');
-                                    tt_punct_joint(out, ':');
-                                    tt_punct_alone(out, ':');
-                                    tt_ident(out, "jsony");
-                                    tt_punct_joint(out, ':');
-                                    tt_punct_alone(out, ':');
-                                    tt_ident(out, "parser");
-                                    tt_punct_joint(out, ':');
-                                    tt_punct_alone(out, ':');
-                                    tt_ident(out, "UNKNOWN_VARIANT");
-                                    tt_group(out, Delimiter::Parenthesis, at);
+                                    let at = out.buf.len();
+                                    out.blit(740, 10);
+                                    out.tt_group(Delimiter::Parenthesis, at);
                                 };
-                                tt_punct_alone(out, ';');
-                                tt_group(out, Delimiter::Brace, at);
+                                out.blit_punct(13);
+                                out.tt_group(Delimiter::Brace, at);
                             };
-                            tt_group(out, Delimiter::Brace, at);
+                            out.tt_group(Delimiter::Brace, at);
                         };
-                        tt_punct_alone(out, ';');
-                        tt_ident(out, "dst");
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "cast");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_punct_alone(out, '<');
+                        out.blit(591, 7);
                         {
                             ctx.target_type(out)
                         };
-                        tt_punct_alone(out, '>');
-                        tt_group_empty(out, Delimiter::Parenthesis);
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "write");
+                        out.blit(598, 4);
                         {
-                            let at = out.len();
-                            tt_ident(out, "value");
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            let at = out.buf.len();
+                            out.blit_ident(126);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_punct_alone(out, ';');
-                        tt_ident(out, "return");
-                        tt_ident(out, "Ok");
+                        out.blit(829, 3);
                         {
-                            let at = out.len();
-                            tt_group_empty(out, Delimiter::Parenthesis);
-                            tt_group(out, Delimiter::Parenthesis, at);
+                            let at = out.buf.len();
+                            out.tt_group_empty(Delimiter::Parenthesis);
+                            out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        tt_punct_alone(out, ';');
-                        tt_group(out, Delimiter::Brace, at);
+                        out.blit_punct(13);
+                        out.tt_group(Delimiter::Brace, at);
                     };
-                    tt_ident(out, "Err");
+                    out.blit_ident(140);
                     {
-                        let at = out.len();
-                        tt_ident(out, "err");
-                        tt_group(out, Delimiter::Parenthesis, at);
+                        let at = out.buf.len();
+                        out.blit_ident(129);
+                        out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    tt_punct_joint(out, '=');
-                    tt_punct_alone(out, '>');
-                    tt_ident(out, "return");
-                    tt_ident(out, "Err");
+                    out.blit(709, 4);
                     {
-                        let at = out.len();
-                        tt_ident(out, "err");
-                        tt_group(out, Delimiter::Parenthesis, at);
+                        let at = out.buf.len();
+                        out.blit_ident(129);
+                        out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    tt_punct_alone(out, ',');
-                    tt_group(out, Delimiter::Brace, at);
+                    out.blit_punct(0);
+                    out.tt_group(Delimiter::Brace, at);
                 };
-                tt_punct_alone(out, ',');
-                tt_ident(out, "Ok");
+                out.blit(764, 2);
                 {
-                    let at = out.len();
-                    tt_ident(out, "_");
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.blit_ident(135);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_joint(out, '=');
-                tt_punct_alone(out, '>');
+                out.blit(454, 2);
                 {
-                    let at = out.len();
-                    tt_ident(out, "return");
-                    tt_ident(out, "Err");
+                    let at = out.buf.len();
+                    out.blit(582, 2);
                     {
-                        let at = out.len();
-                        tt_punct_alone(out, '&');
-                        tt_ident(out, "jsony");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "json");
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        tt_ident(out, "DecodeError");
+                        let at = out.buf.len();
+                        out.blit(717, 8);
                         {
-                            let at = out.len();
-                            tt_ident(out, "message");
-                            tt_punct_alone(out, ':');
-                            out.push(
+                            let at = out.buf.len();
+                            out.blit(690, 2);
+                            out.buf.push(
                                 Literal::string("Expected either an object or a string").into(),
                             );
-                            tt_punct_alone(out, ',');
-                            tt_group(out, Delimiter::Brace, at);
+                            out.blit_punct(0);
+                            out.tt_group(Delimiter::Brace, at);
                         };
-                        tt_group(out, Delimiter::Parenthesis, at);
+                        out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    tt_punct_alone(out, ';');
-                    tt_group(out, Delimiter::Brace, at);
+                    out.blit_punct(13);
+                    out.tt_group(Delimiter::Brace, at);
                 };
-                tt_ident(out, "Err");
+                out.blit_ident(140);
                 {
-                    let at = out.len();
-                    tt_ident(out, "err");
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.blit_ident(129);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_joint(out, '=');
-                tt_punct_alone(out, '>');
-                tt_ident(out, "return");
-                tt_ident(out, "Err");
+                out.blit(709, 4);
                 {
-                    let at = out.len();
-                    tt_ident(out, "err");
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.blit_ident(129);
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ',');
-                tt_group(out, Delimiter::Brace, at);
+                out.blit_punct(0);
+                out.tt_group(Delimiter::Brace, at);
             };
-            TokenStream::from_iter(out.drain(len..))
+            TokenStream::from_iter(out.buf.drain(len..))
         }
     }
     impl_from_json(out, ctx, body)?;
     Ok(())
 }
 fn handle_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenStream, Error> {
-    let mut output = Vec::<TokenTree>::new();
-    let ctx = Ctx::new(target)?;
+    let mut output = RustWriter::new();
+    let ctx = Ctx::new(&mut output, target)?;
     if target.from_json {
         struct_from_json(&mut output, &ctx, fields)?;
     }
@@ -3148,7 +2118,7 @@ fn handle_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenSt
     }
     if target.to_binary {
         let body = {
-            let len = output.len();
+            let len = output.buf.len();
             {
                 for field in fields {
                     binary_encode_field(
@@ -3156,50 +2126,48 @@ fn handle_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenSt
                         &ctx,
                         field,
                         &(|out| {
-                            tt_punct_alone(out, '&');
-                            tt_ident(out, "self");
-                            tt_punct_alone(out, '.');
-                            out.push(TokenTree::from(field.name.clone()));
+                            out.blit(363, 3);
+                            out.buf.push(TokenTree::from(field.name.clone()));
                         }),
                     )
                 }
             };
-            TokenStream::from_iter((&mut output).drain(len..))
+            TokenStream::from_iter((&mut output).buf.drain(len..))
         };
         impl_to_binary(&mut output, &ctx, body)?;
     }
     if target.from_binary {
         let body = {
-            let len = output.len();
-            output.push(TokenTree::from(target.name.clone()));
+            let len = output.buf.len();
+            output.buf.push(TokenTree::from(target.name.clone()));
             {
-                let at = output.len();
+                let at = output.buf.len();
                 {
                     for field in fields {
                         {
-                            output.push(TokenTree::from(field.name.clone()));
-                            tt_punct_alone(&mut output, ':');
+                            output.buf.push(TokenTree::from(field.name.clone()));
+                            output.blit_punct(9);
                             {
                                 binary_decode_field(&mut output, &ctx, field)
                             };
-                            tt_punct_alone(&mut output, ',');
+                            output.blit_punct(0);
                         }
                     }
                 };
-                tt_group(&mut output, Delimiter::Brace, at);
+                output.tt_group(Delimiter::Brace, at);
             };
-            TokenStream::from_iter((&mut output).drain(len..))
+            TokenStream::from_iter((&mut output).buf.drain(len..))
         };
         impl_from_binary(&mut output, &ctx, body)?;
     }
-    Ok(output.drain(..).collect())
+    Ok(output.buf.drain(..).collect())
 }
 fn handle_tuple_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenStream, Error> {
-    let mut output = Vec::<TokenTree>::new();
-    let ctx = Ctx::new(target)?;
+    let mut output = RustWriter::new();
+    let ctx = Ctx::new(&mut output, target)?;
     if target.to_binary {
         let body = {
-            let len = output.len();
+            let len = output.buf.len();
             {
                 for (i, field) in fields.iter().enumerate() {
                     binary_encode_field(
@@ -3207,90 +2175,80 @@ fn handle_tuple_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<T
                         &ctx,
                         field,
                         &(|out| {
-                            tt_punct_alone(out, '&');
-                            tt_ident(out, "self");
-                            tt_punct_alone(out, '.');
-                            out.push(TokenTree::from(Literal::usize_unsuffixed(i).clone()));
+                            out.blit(363, 3);
+                            out.buf
+                                .push(TokenTree::from(Literal::usize_unsuffixed(i).clone()));
                         }),
                     )
                 }
             };
-            TokenStream::from_iter((&mut output).drain(len..))
+            TokenStream::from_iter((&mut output).buf.drain(len..))
         };
         impl_to_binary(&mut output, &ctx, body)?;
     }
     if target.from_binary {
         let body = {
-            let len = output.len();
-            output.push(TokenTree::from(target.name.clone()));
+            let len = output.buf.len();
+            output.buf.push(TokenTree::from(target.name.clone()));
             {
-                let at = output.len();
+                let at = output.buf.len();
                 {
                     for field in fields {
                         {
                             {
                                 binary_decode_field(&mut output, &ctx, field)
                             };
-                            tt_punct_alone(&mut output, ',');
+                            output.blit_punct(0);
                         }
                     }
                 };
-                tt_group(&mut output, Delimiter::Parenthesis, at);
+                output.tt_group(Delimiter::Parenthesis, at);
             };
-            TokenStream::from_iter((&mut output).drain(len..))
+            TokenStream::from_iter((&mut output).buf.drain(len..))
         };
         impl_from_binary(&mut output, &ctx, body)?;
     }
-    Ok(output.drain(..).collect())
+    Ok(output.buf.drain(..).collect())
 }
-fn enum_to_binary(
-    out: &mut Vec<TokenTree>,
-    ctx: &Ctx,
-    variants: &[EnumVariant],
-) -> Result<(), Error> {
+fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
     let body = {
-        let len = out.len();
-        tt_ident(out, "match");
-        tt_ident(out, "self");
+        let len = out.buf.len();
+        out.blit(452, 2);
         {
-            let at = out.len();
+            let at = out.buf.len();
             {
                 for (i, variant) in variants.iter().enumerate() {
                     {
-                        out.push(TokenTree::from(ctx.target.name.clone()));
-                        tt_punct_joint(out, ':');
-                        tt_punct_alone(out, ':');
-                        out.push(TokenTree::from(variant.name.clone()));
+                        out.buf.push(TokenTree::from(ctx.target.name.clone()));
+                        out.blit(3, 2);
+                        out.buf.push(TokenTree::from(variant.name.clone()));
                     }
                     match variant.kind {
                         EnumKind::Tuple => {
                             {
-                                let at = out.len();
+                                let at = out.buf.len();
                                 {
                                     for (i, _) in variant.fields.iter().enumerate() {
                                         {
-                                            out.push(TokenTree::from(ctx.temp[i].clone()));
-                                            tt_punct_alone(out, ',');
+                                            out.buf.push(TokenTree::from(ctx.temp[i].clone()));
+                                            out.blit_punct(0);
                                         }
                                     }
                                 };
-                                tt_group(out, Delimiter::Parenthesis, at);
+                                out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            tt_punct_joint(out, '=');
-                            tt_punct_alone(out, '>');
+                            out.blit(454, 2);
                             {
-                                let at = out.len();
-                                tt_ident(out, "encoder");
-                                tt_punct_alone(out, '.');
-                                tt_ident(out, "push");
+                                let at = out.buf.len();
+                                out.blit(832, 3);
                                 {
-                                    let at = out.len();
-                                    out.push(TokenTree::from(
+                                    let at = out.buf.len();
+                                    out.buf.push(TokenTree::from(
                                         Literal::u8_unsuffixed(i as u8).clone(),
                                     ));
-                                    tt_group(out, Delimiter::Parenthesis, at);
+                                    out.tt_group(Delimiter::Parenthesis, at);
                                 };
-                                tt_punct_alone(out, ';');
+                                out.blit_punct(13);
                                 {
                                     for (i, field) in variant.fields.iter().enumerate() {
                                         binary_encode_field(
@@ -3298,42 +2256,39 @@ fn enum_to_binary(
                                             ctx,
                                             field,
                                             &(|out| {
-                                                out.push(TokenTree::from(ctx.temp[i].clone()));
+                                                out.buf.push(TokenTree::from(ctx.temp[i].clone()));
                                             }),
                                         )
                                     }
                                 };
-                                tt_group(out, Delimiter::Brace, at);
+                                out.tt_group(Delimiter::Brace, at);
                             };
                         }
                         EnumKind::Struct => {
                             {
-                                let at = out.len();
+                                let at = out.buf.len();
                                 {
                                     for field in variant.fields {
                                         {
-                                            out.push(TokenTree::from(field.name.clone()));
-                                            tt_punct_alone(out, ',');
+                                            out.buf.push(TokenTree::from(field.name.clone()));
+                                            out.blit_punct(0);
                                         }
                                     }
                                 };
-                                tt_group(out, Delimiter::Brace, at);
+                                out.tt_group(Delimiter::Brace, at);
                             };
-                            tt_punct_joint(out, '=');
-                            tt_punct_alone(out, '>');
+                            out.blit(454, 2);
                             {
-                                let at = out.len();
-                                tt_ident(out, "encoder");
-                                tt_punct_alone(out, '.');
-                                tt_ident(out, "push");
+                                let at = out.buf.len();
+                                out.blit(832, 3);
                                 {
-                                    let at = out.len();
-                                    out.push(TokenTree::from(
+                                    let at = out.buf.len();
+                                    out.buf.push(TokenTree::from(
                                         Literal::u8_unsuffixed(i as u8).clone(),
                                     ));
-                                    tt_group(out, Delimiter::Parenthesis, at);
+                                    out.tt_group(Delimiter::Parenthesis, at);
                                 };
-                                tt_punct_alone(out, ';');
+                                out.blit_punct(13);
                                 {
                                     for field in variant.fields {
                                         binary_encode_field(
@@ -3341,139 +2296,129 @@ fn enum_to_binary(
                                             ctx,
                                             field,
                                             &(|out| {
-                                                out.push(TokenTree::from(field.name.clone()));
+                                                out.buf.push(TokenTree::from(field.name.clone()));
                                             }),
                                         )
                                     }
                                 };
-                                tt_group(out, Delimiter::Brace, at);
+                                out.tt_group(Delimiter::Brace, at);
                             };
                         }
                         EnumKind::None => {
-                            tt_punct_joint(out, '=');
-                            tt_punct_alone(out, '>');
+                            out.blit(454, 2);
                             {
-                                let at = out.len();
-                                tt_ident(out, "encoder");
-                                tt_punct_alone(out, '.');
-                                tt_ident(out, "push");
+                                let at = out.buf.len();
+                                out.blit(832, 3);
                                 {
-                                    let at = out.len();
-                                    out.push(TokenTree::from(
+                                    let at = out.buf.len();
+                                    out.buf.push(TokenTree::from(
                                         Literal::u8_unsuffixed(i as u8).clone(),
                                     ));
-                                    tt_group(out, Delimiter::Parenthesis, at);
+                                    out.tt_group(Delimiter::Parenthesis, at);
                                 };
-                                tt_punct_alone(out, ';');
-                                tt_group(out, Delimiter::Brace, at);
+                                out.blit_punct(13);
+                                out.tt_group(Delimiter::Brace, at);
                             };
                         }
                     }
                 }
             };
-            tt_group(out, Delimiter::Brace, at);
+            out.tt_group(Delimiter::Brace, at);
         };
-        TokenStream::from_iter(out.drain(len..))
+        TokenStream::from_iter(out.buf.drain(len..))
     };
     impl_to_binary(out, ctx, body)
 }
 fn enum_from_binary(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     variants: &[EnumVariant],
 ) -> Result<(), Error> {
     let body = {
-        let len = out.len();
-        tt_ident(out, "match");
-        tt_ident(out, "decoder");
-        tt_punct_alone(out, '.');
-        tt_ident(out, "byte");
-        tt_group_empty(out, Delimiter::Parenthesis);
+        let len = out.buf.len();
+        out.blit(835, 5);
         {
-            let at = out.len();
+            let at = out.buf.len();
             {
                 for (i, variant) in variants.iter().enumerate() {
                     {
                         {
                             if i + 1 == variants.len() {
                                 {
-                                    tt_ident(out, "_");
+                                    out.blit_ident(135);
                                 }
                             } else {
                                 {
-                                    out.push(TokenTree::from(
+                                    out.buf.push(TokenTree::from(
                                         Literal::u8_unsuffixed(i as u8).clone(),
                                     ));
                                 }
                             }
                         };
-                        tt_punct_joint(out, '=');
-                        tt_punct_alone(out, '>');
+                        out.blit(454, 2);
                         {
                             match variant.kind {
                                 EnumKind::Tuple => {
-                                    out.push(TokenTree::from(ctx.target.name.clone()));
-                                    tt_punct_joint(out, ':');
-                                    tt_punct_alone(out, ':');
-                                    out.push(TokenTree::from(variant.name.clone()));
+                                    out.buf.push(TokenTree::from(ctx.target.name.clone()));
+                                    out.blit(3, 2);
+                                    out.buf.push(TokenTree::from(variant.name.clone()));
                                     {
-                                        let at = out.len();
+                                        let at = out.buf.len();
                                         {
                                             for field in variant.fields {
                                                 {
                                                     {
                                                         binary_decode_field(out, ctx, field)
                                                     };
-                                                    tt_punct_alone(out, ',');
+                                                    out.blit_punct(0);
                                                 }
                                             }
                                         };
-                                        tt_group(out, Delimiter::Parenthesis, at);
+                                        out.tt_group(Delimiter::Parenthesis, at);
                                     };
                                 }
                                 EnumKind::Struct => {
-                                    out.push(TokenTree::from(ctx.target.name.clone()));
-                                    tt_punct_joint(out, ':');
-                                    tt_punct_alone(out, ':');
-                                    out.push(TokenTree::from(variant.name.clone()));
+                                    out.buf.push(TokenTree::from(ctx.target.name.clone()));
+                                    out.blit(3, 2);
+                                    out.buf.push(TokenTree::from(variant.name.clone()));
                                     {
-                                        let at = out.len();
+                                        let at = out.buf.len();
                                         {
                                             for field in variant.fields {
                                                 {
-                                                    out.push(TokenTree::from(field.name.clone()));
-                                                    tt_punct_alone(out, ':');
+                                                    out.buf
+                                                        .push(TokenTree::from(field.name.clone()));
+                                                    out.blit_punct(9);
                                                     {
                                                         binary_decode_field(out, ctx, field)
                                                     };
-                                                    tt_punct_alone(out, ',');
+                                                    out.blit_punct(0);
                                                 }
                                             }
                                         };
-                                        tt_group(out, Delimiter::Brace, at);
+                                        out.tt_group(Delimiter::Brace, at);
                                     };
                                 }
                                 EnumKind::None => {
-                                    out.push(TokenTree::from(ctx.target.name.clone()));
-                                    tt_punct_joint(out, ':');
-                                    tt_punct_alone(out, ':');
-                                    out.push(TokenTree::from(variant.name.clone()));
+                                    out.buf.push(TokenTree::from(ctx.target.name.clone()));
+                                    out.blit(3, 2);
+                                    out.buf.push(TokenTree::from(variant.name.clone()));
                                 }
                             }
                         };
-                        tt_punct_alone(out, ',');
+                        out.blit_punct(0);
                     }
                 }
             };
-            tt_group(out, Delimiter::Brace, at);
+            out.tt_group(Delimiter::Brace, at);
         };
-        TokenStream::from_iter(out.drain(len..))
+        TokenStream::from_iter(out.buf.drain(len..))
     };
     impl_from_binary(out, ctx, body)
 }
 fn handle_enum(target: &DeriveTargetInner, variants: &[EnumVariant]) -> Result<TokenStream, Error> {
-    let mut output = Vec::<TokenTree>::new();
-    let mut ctx = Ctx::new(target)?;
+    let mut output = RustWriter::new();
+    let mut ctx = Ctx::new(&mut output, target)?;
     let mut max_tuples = 0;
     for var in variants {
         if match var.kind {
@@ -3496,7 +2441,7 @@ fn handle_enum(target: &DeriveTargetInner, variants: &[EnumVariant]) -> Result<T
     if target.from_binary {
         enum_from_binary(&mut output, &ctx, variants)?;
     }
-    Ok(output.drain(..).collect())
+    Ok(output.buf.drain(..).collect())
 }
 pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     let outer_tokens: Vec<TokenTree> = stream.into_iter().collect();
@@ -3563,7 +2508,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     }
 }
 pub fn derive(stream: TokenStream) -> TokenStream {
-    match inner_derive(stream) {
+    match inner_derive(stream.clone()) {
         Ok(e) => e,
         Err(err) => err.to_compiler_error(),
     }

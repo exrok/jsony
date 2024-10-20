@@ -4,11 +4,12 @@ mod case;
 mod codegen;
 mod lit;
 mod template;
+mod writer;
 // mod template2;
 #[allow(unused)]
 mod util;
 
-use std::{mem::MaybeUninit, str::FromStr};
+use std::str::FromStr;
 
 use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 pub(crate) fn default_call_tokens(span: Span) -> Vec<TokenTree> {
@@ -110,6 +111,7 @@ fn main() {
         template::object(tokens!());
         codegen::derive(tokens!());
     }
+
     util::print_pretty_and_copy(codegen::derive(tokens! {
         #[derive(Debug)]
         #[jsony(FromJson)]

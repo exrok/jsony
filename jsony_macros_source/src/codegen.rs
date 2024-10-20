@@ -4,6 +4,7 @@ use crate::ast::{
 };
 use crate::case::RenameRule;
 use crate::util::MemoryPool;
+use crate::writer::RustWriter;
 use crate::Error;
 use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
@@ -27,72 +28,54 @@ use StaticToken::Ident as StaticIdent;
 use StaticToken::Punct as StaticPunct;
 
 #[allow(unused)]
-fn tt_append(output: &mut Vec<TokenTree>, chr: &'static [StaticToken]) {
-    output.extend(chr.iter().map(|tok| match tok {
-        StaticIdent(value) => TokenTree::Ident(Ident::new(value, Span::call_site())),
-        StaticPunct(chr, spacing) => TokenTree::Punct(Punct::new(
-            *chr,
-            if *spacing {
-                Spacing::Joint
-            } else {
-                Spacing::Alone
-            },
-        )),
-    }));
-}
-
-fn tt_punct_alone(out: &mut Vec<TokenTree>, chr: char) {
-    out.push(TokenTree::Punct(Punct::new(chr, Spacing::Alone)));
-}
-fn tt_punct_joint(out: &mut Vec<TokenTree>, chr: char) {
-    out.push(TokenTree::Punct(Punct::new(chr, Spacing::Joint)));
-}
-fn tt_ident(out: &mut Vec<TokenTree>, ident: &str) {
-    out.push(TokenTree::Ident(Ident::new(ident, Span::call_site())));
-}
-fn tt_group_empty(out: &mut Vec<TokenTree>, delimiter: Delimiter) {
-    out.push(TokenTree::Group(Group::new(delimiter, TokenStream::new())));
-}
-fn tt_group(out: &mut Vec<TokenTree>, delimiter: Delimiter, from: usize) {
-    let group = TokenTree::Group(Group::new(
-        delimiter,
-        TokenStream::from_iter(out.drain(from..)),
-    ));
-    out.push(group);
+fn tt_append_blit(output: &mut RustWriter, chr: &str) {
+    output
+        .buf
+        .extend(chr.as_bytes().iter().map(|tok| match *tok {
+            1 => TokenTree::Ident(Ident::new("hello", Span::call_site())),
+            v => TokenTree::Punct(Punct::new(
+                ':',
+                if v & 0b1 == 0 {
+                    Spacing::Joint
+                } else {
+                    Spacing::Alone
+                },
+            )),
+        }));
 }
 
 #[rustfmt::skip]
 macro_rules! append_tok {
     ($ident:ident $d:tt) => {
-       tt_ident($d, stringify!($ident))
+       $d.tt_ident(stringify!($ident))
     };
     ({} $d: tt) => {
-        tt_group_empty($d, Delimiter::Brace);
+        $d.tt_group_empty(Delimiter::Brace)
     };
     (() $d: tt) => {
-        tt_group_empty($d, Delimiter::Parenthesis);
+        $d.tt_group_empty(Delimiter::Parenthesis)
     };
     ([] $d:tt) => {
-        tt_group_empty($d, Delimiter::Bracket);
+        $d.tt_group_empty(Delimiter::Bracket)
     };
     ({$($tt:tt)*} $d: tt) => {{
-        let at = $d.len(); $(append_tok!($tt $d);)* tt_group($d, Delimiter::Brace, at);
+        let at = $d.buf.len(); $(append_tok!($tt $d);)* $d.tt_group(Delimiter::Brace, at);
     }};
     (($($tt:tt)*) $d: tt) => {{
-        let at = $d.len(); $(append_tok!($tt $d);)* tt_group($d, Delimiter::Parenthesis, at);
+        let at = $d.buf.len(); $(append_tok!($tt $d);)* $d.tt_group(Delimiter::Parenthesis, at);
     }};
     ([[$($tt:tt)*]] $d:tt) => {{
-        let at = $d.len(); $(append_tok!($tt $d);)* tt_group($d, Delimiter::Bracket, at);
+        let at = $d.buf.len(); $(append_tok!($tt $d);)* $d.tt_group(Delimiter::Bracket, at);
     }};
-    (_ $d:tt) => { tt_ident($d, "_") };
+    (_ $d:tt) => { $d.tt_ident("_") };
     ([$ident:ident] $d:tt) => {
-        $d.push($($tt)*)
+        $d.buf.push($($tt)*)
     };
     ([?($($cond:tt)*) $($body:tt)*] $d:tt) => {
         if $($cond)* { $(append_tok!($body $d);)* }
     };
     ([@$($tt:tt)*] $d:tt) => {
-        $d.push($($tt)*)
+        $d.buf.push($($tt)*)
     };
     ([try $($tt:tt)*] $d:tt) => {
         if let Err(err) = $($tt)* { return Err(err); }
@@ -101,44 +84,44 @@ macro_rules! append_tok {
         for $($iter)* { $(append_tok!($body $d);)* }
     };
     ([#$($tt:tt)*] $d:tt) => {
-        $d.push(TokenTree::from($($tt)*.clone()))
+        $d.buf.push(TokenTree::from($($tt)*.clone()))
     };
     ([~$($tt:tt)*] $d:tt) => {
-        $d.extend_from_slice($($tt)*)
+        $d.buf.extend_from_slice($($tt)*)
     };
     ([$($rust:tt)*] $d:tt) => {{
          $($rust)*
     }};
-    (# $d:tt) => { tt_punct_joint($d, '\'') };
-    (: $d:tt) => { tt_punct_alone($d, ':') };
-    (~ $d:tt) => { tt_punct_joint($d, '-') };
-    (< $d:tt) => { tt_punct_alone($d, '<') };
-    (% $d:tt) => { tt_punct_joint($d, ':') };
-    (:: $d:tt) => { tt_punct_joint($d, ':'); tt_punct_alone($d, ':'); };
-    (-> $d:tt) => { tt_punct_joint($d, '-'); tt_punct_alone($d, '>'); };
-    (=> $d:tt) => { tt_punct_joint($d, '='); tt_punct_alone($d, '>'); };
-    (> $d:tt) => { tt_punct_alone($d, '>') };
-    (! $d:tt) => { tt_punct_alone($d, '!') };
-    (| $d:tt) => { tt_punct_alone($d, '|') };
-    (. $d:tt) => { tt_punct_alone($d, '.') };
-    (; $d:tt) => { tt_punct_alone($d, ';') };
-    (& $d:tt) => { tt_punct_alone($d, '&') };
-    (= $d:tt) => { tt_punct_alone($d, '=') };
-    (, $d:tt) => { tt_punct_alone($d, ',') };
-    (* $d:tt) => { tt_punct_alone($d, '*') };
+    (# $d:tt) => { $d.tt_punct_joint('\'') };
+    (: $d:tt) => { $d.tt_punct_alone(':') };
+    (~ $d:tt) => { $d.tt_punct_joint('-') };
+    (< $d:tt) => { $d.tt_punct_alone('<') };
+    (% $d:tt) => { $d.tt_punct_joint(':') };
+    (:: $d:tt) => {$d.tt_punct_joint(':'); $d.tt_punct_alone(':') };
+    (-> $d:tt) => {$d.tt_punct_joint('-'); $d.tt_punct_alone('>') };
+    (=> $d:tt) => {$d.tt_punct_joint('='); $d.tt_punct_alone('>') };
+    (> $d:tt) => { $d.tt_punct_alone('>') };
+    (! $d:tt) => { $d.tt_punct_alone('!') };
+    (| $d:tt) => { $d.tt_punct_alone('|') };
+    (. $d:tt) => { $d.tt_punct_alone('.') };
+    (; $d:tt) => { $d.tt_punct_alone(';') };
+    (& $d:tt) => { $d.tt_punct_alone('&') };
+    (= $d:tt) => { $d.tt_punct_alone('=') };
+    (, $d:tt) => { $d.tt_punct_alone(',') };
+    (* $d:tt) => { $d.tt_punct_alone('*') };
 }
 
 macro_rules! splat { ($d:tt; $($tt:tt)*) => { { $(append_tok!($tt $d);)* } } }
 
 macro_rules! token_stream { ($d:tt; $($tt:tt)*) => {{
-    let len = $d.len(); $(append_tok!($tt $d);)* TokenStream::from_iter($d.drain(len..))
+    let len = $d.buf.len(); $(append_tok!($tt $d);)* TokenStream::from_iter($d.buf.drain(len..))
 }}}
 
 struct GenericBoundFormating {
     lifetimes: bool,
     bounds: bool,
 }
-fn fmt_generics(buffer: &mut Vec<TokenTree>, generics: &[Generic], fmt: GenericBoundFormating) {
+fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBoundFormating) {
     let mut first = true;
     for generic in generics {
         if !fmt.lifetimes && matches!(generic.kind, GenericKind::Lifetime) {
@@ -158,10 +141,10 @@ fn fmt_generics(buffer: &mut Vec<TokenTree>, generics: &[Generic], fmt: GenericB
                 append_tok!(const buffer);
             }
         }
-        buffer.push(generic.ident.clone().into());
+        buffer.buf.push(generic.ident.clone().into());
         if fmt.bounds && !generic.bounds.is_empty() {
             append_tok!(: buffer);
-            buffer.extend(generic.bounds.iter().cloned());
+            buffer.buf.extend(generic.bounds.iter().cloned());
         }
     }
 }
@@ -180,7 +163,7 @@ const DEF: GenericBoundFormating = GenericBoundFormating {
 };
 
 fn bodyless_impl_from(
-    output: &mut Vec<TokenTree>,
+    output: &mut RustWriter,
     sub: Option<Ident>,
     trait_name: Ident,
     Ctx {
@@ -204,16 +187,12 @@ fn bodyless_impl_from(
     };
     Ok(())
 }
-fn impl_from_binary(
-    output: &mut Vec<TokenTree>,
-    ctx: &Ctx,
-    inner: TokenStream,
-) -> Result<(), Error> {
+fn impl_from_binary(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
     splat! {
         output;
         unsafe [try bodyless_impl_from(output, None, Ident::new("FromBinary", Span::call_site()), ctx)] {
             fn binary_decode(decoder: &mut [~&ctx.crate_path]::binary::Decoder<#[#ctx.lifetime]>) -> Self [
-                output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+                output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
     };
@@ -221,9 +200,9 @@ fn impl_from_binary(
 }
 
 fn impl_from_json_field_visitor(
-    output: &mut Vec<TokenTree>,
+    output: &mut RustWriter,
     ctx: &Ctx,
-    ty: &dyn Fn(&mut Vec<TokenTree>),
+    ty: &dyn Fn(&mut RustWriter),
     inner: TokenStream,
 ) -> Result<(), Error> {
     splat! {
@@ -240,20 +219,20 @@ fn impl_from_json_field_visitor(
                 dst: ::std::ptr::NonNull<()>,
                 parser: & [~&ctx.crate_path]::parser::Parser<#[#ctx.lifetime]>
             ) -> Self::Vistor [
-                output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+                output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
     };
     Ok(())
 }
 
-fn impl_from_json(output: &mut Vec<TokenTree>, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
+fn impl_from_json(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
     splat! {
         output;
         unsafe [try bodyless_impl_from(output, None, Ident::new("FromJson", Span::call_site()), ctx)] {
             unsafe fn emplace_from_json(dst: ::std::ptr::NonNull<()>, parser: &mut [~&ctx.crate_path]::parser::Parser<#[#ctx.lifetime]>)
             -> ::std::result::Result<(), &#static ::jsony::json::DecodeError> [
-                output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+                output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
     };
@@ -261,7 +240,7 @@ fn impl_from_json(output: &mut Vec<TokenTree>, ctx: &Ctx, inner: TokenStream) ->
 }
 
 fn impl_to_binary(
-    output: &mut Vec<TokenTree>,
+    output: &mut RustWriter,
     Ctx {
         target, crate_path, ..
     }: &Ctx,
@@ -280,7 +259,7 @@ fn impl_to_binary(
                 }
              ]] {
             fn binary_encode(&self, encoder: &mut Vec<u8>) [
-                output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+                output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
     };
@@ -288,7 +267,7 @@ fn impl_to_binary(
 }
 
 fn impl_to_json(
-    output: &mut Vec<TokenTree>,
+    output: &mut RustWriter,
     kind: &str,
     Ctx {
         target, crate_path, ..
@@ -309,7 +288,7 @@ fn impl_to_json(
              ]] {
             type Kind = [~&crate_path]::json::[@Ident::new(kind, Span::call_site()).into()];
             fn jsonify_into(&self, out: &mut jsony::TextWriter) -> Self::Kind [
-                output.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+                output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
     };
@@ -325,17 +304,20 @@ struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
-    pub fn dead_target_type(&self, out: &mut Vec<TokenTree>) {
+    pub fn dead_target_type(&self, out: &mut RustWriter) {
         splat!(out; [#self.target.name] [?(!self.target.generics.is_empty()) < [fmt_generics(
             out, &self.target.generics, DEAD_USE
         )]>])
     }
-    pub fn target_type(&self, out: &mut Vec<TokenTree>) {
+    pub fn target_type(&self, out: &mut RustWriter) {
         splat!(out; [#self.target.name] [?(!self.target.generics.is_empty()) < [fmt_generics(
             out, &self.target.generics, USE
         )]>])
     }
-    fn new(target: &'a DeriveTargetInner) -> Result<Ctx<'a>, Error> {
+    fn new(out: &mut RustWriter, target: &'a DeriveTargetInner) -> Result<Ctx<'a>, Error> {
+        // if !out.buf.is_empty() {
+        //     todo!();
+        // }
         let crate_path = if let Some(value) = &target.path_override {
             let content = value.to_string();
             // assumes normal string and no escapes probalby shouldn't
@@ -345,13 +327,12 @@ impl<'a> Ctx<'a> {
             //     .unwrap()
             //     .into_iter()
             //     .collect::<Vec<TokenTree>>()
-            let mut out = Vec::<TokenTree>::new();
-            splat!((&mut out);::jsony);
-            out
+            // let mut out = RustWriter::new();
+            splat!(out; ::jsony);
+            std::mem::take(&mut out.buf)
         } else {
-            let mut out = Vec::<TokenTree>::new();
-            splat!((&mut out);::jsony);
-            out
+            splat!(out; ::jsony);
+            std::mem::take(&mut out.buf)
         };
         let (lt, generics) = if let [Generic {
             kind: GenericKind::Lifetime,
@@ -387,10 +368,10 @@ fn var(num: usize) -> Ident {
 }
 
 fn binary_encode_field(
-    output: &mut Vec<TokenTree>,
+    output: &mut RustWriter,
     ctx: &Ctx,
     field: &Field,
-    place: &dyn Fn(&mut Vec<TokenTree>),
+    place: &dyn Fn(&mut RustWriter),
 ) {
     splat! {
         output;
@@ -400,7 +381,7 @@ fn binary_encode_field(
     };
 }
 
-fn binary_decode_field(out: &mut Vec<TokenTree>, ctx: &Ctx, field: &Field) {
+fn binary_decode_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
     splat! {
         out;
         <[~field.ty] as [ctx.FromBinary(out)]>::binary_decode(
@@ -410,17 +391,17 @@ fn binary_decode_field(out: &mut Vec<TokenTree>, ctx: &Ctx, field: &Field) {
 }
 impl Ctx<'_> {
     #[allow(non_snake_case)]
-    fn FromJson(&self, out: &mut Vec<TokenTree>) {
+    fn FromJson(&self, out: &mut RustWriter) {
         splat!(out;  [~&self.crate_path]::FromJson<#[#self.lifetime]>)
     }
 
     #[allow(non_snake_case)]
-    fn FromBinary(&self, out: &mut Vec<TokenTree>) {
+    fn FromBinary(&self, out: &mut RustWriter) {
         splat!(out;  [~&self.crate_path]::FromBinary<#[#self.lifetime]>)
     }
 }
 
-fn schema_field_decode(out: &mut Vec<TokenTree>, ctx: &Ctx, field: &Field) -> Result<(), Error> {
+fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) -> Result<(), Error> {
     splat! { out; [~&ctx.crate_path]::__internal::erase(<[~field.ty] as [ctx.FromJson(out)]>::emplace_from_json) }
     Ok(())
 }
@@ -498,7 +479,7 @@ fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) -> Result<(), 
 // }
 
 fn struct_schema(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     fields: &[&Field],
     temp_tuple: Option<&Ident>,
@@ -509,7 +490,7 @@ fn struct_schema(
         .iter()
         .any(|g| !matches!(g.kind, GenericKind::Lifetime))
     {
-        let x = out.len();
+        let x = out.buf.len();
         append_tok!(< out);
         fmt_generics(
             out,
@@ -520,7 +501,7 @@ fn struct_schema(
             },
         );
         append_tok!(> out);
-        TokenTree::Group(Group::new(Delimiter::None, out.drain(x..).collect()))
+        TokenTree::Group(Group::new(Delimiter::None, out.buf.drain(x..).collect()))
     } else {
         TokenTree::Group(Group::new(Delimiter::None, TokenStream::new()))
     };
@@ -581,7 +562,7 @@ fn struct_schema(
 }
 
 fn body_of_struct_from_json_with_flatten(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     flatten_field: &Field,
 ) -> TokenStream {
@@ -624,7 +605,7 @@ fn required_bitset(ordered: &[&Field]) -> u64 {
     ((1 << ordered.len()) - 1) ^ ((1 << defaults) - 1)
 }
 
-fn struct_to_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     let mut text = String::new();
     let mut first = true;
     let body = token_stream!(
@@ -642,7 +623,7 @@ fn struct_to_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Resu
                     return Err(err)
                 }
                 text.push(':');
-                out.push(TokenTree::Literal(Literal::string(&text)));
+                out.buf.push(TokenTree::Literal(Literal::string(&text)));
             ]);
             <[~field.ty] as ::jsony::ToJson>::jsonify_into(&self.[#field.name], out);
         }]
@@ -652,7 +633,7 @@ fn struct_to_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Resu
     impl_to_json(out, "ObjectValue", ctx, body)
 }
 
-fn struct_from_json(out: &mut Vec<TokenTree>, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     let mut flattening: Option<&Field> = None;
 
     for field in fields {
@@ -726,13 +707,9 @@ fn variant_key_literal(_ctx: &Ctx, variant: &EnumVariant) -> Literal {
     Literal::string(&buf)
 }
 
-fn enum_to_json(
-    out: &mut Vec<TokenTree>,
-    ctx: &Ctx,
-    variants: &[EnumVariant],
-) -> Result<(), Error> {
+fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
     let mut text = String::with_capacity(64);
-    let start = out.len();
+    let start = out.buf.len();
     let mut all_objects = true;
     if let Tag::Inline(tag_name) = &ctx.target.tag {
         splat!(out; out.start_json_object(););
@@ -788,7 +765,7 @@ fn enum_to_json(
         splat! { out; out.end_json_object(); };
     }
     splat! { out; Self::Kind {} };
-    let stream = out.drain(start..).collect();
+    let stream = out.buf.drain(start..).collect();
     //todo should sometimes be StringValue
     let kind = if all_objects {
         "ObjectValue"
@@ -798,7 +775,7 @@ fn enum_to_json(
     impl_to_json(out, kind, ctx, stream)
 }
 fn enum_variant_to_json_struct(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     variant: &EnumVariant,
     text: &mut String,
@@ -841,7 +818,7 @@ fn enum_variant_to_json_struct(
                     return Err(err)
                 }
                 text.push(':');
-                out.push(TokenTree::Literal(Literal::string(&text)));
+                out.buf.push(TokenTree::Literal(Literal::string(&text)));
                 text.clear();
             ]);
             <[~field.ty] as ::jsony::ToJson>::jsonify_into([#field.name], out);
@@ -871,13 +848,13 @@ fn enum_variant_to_json_struct(
 }
 
 fn enum_variant_to_json(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     variant: &EnumVariant,
     text: &mut String,
     all_objects: bool,
 ) -> Result<(), Error> {
-    let start = out.len();
+    let start = out.buf.len();
     match &ctx.target.tag {
         Tag::Inline(..) => {
             variant_name_json(ctx, variant, text)?;
@@ -945,12 +922,13 @@ fn enum_variant_to_json(
             _ => (),
         }
     }
-    let ts = out.drain(start..).collect();
-    out.push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
+    let ts = out.buf.drain(start..).collect();
+    out.buf
+        .push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
     Ok(())
 }
 fn enum_variant_from_json_struct(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     variant: &EnumVariant,
     untagged: bool,
@@ -1031,12 +1009,12 @@ fn enum_variant_from_json_struct(
     Ok(())
 }
 fn enum_variant_from_json(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     variant: &EnumVariant,
     untagged: bool,
 ) -> Result<(), Error> {
-    let start = out.len();
+    let start = out.buf.len();
     match variant.kind {
         EnumKind::Tuple => {
             let [field] = variant.fields else {
@@ -1068,16 +1046,13 @@ fn enum_variant_from_json(
             [?(untagged) break #success]
         },
     };
-    let ts = TokenStream::from_iter(out.drain(start..));
-    out.push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
+    let ts = TokenStream::from_iter(out.buf.drain(start..));
+    out.buf
+        .push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
     Ok(())
 }
 
-fn enum_from_json(
-    out: &mut Vec<TokenTree>,
-    ctx: &Ctx,
-    variants: &[EnumVariant],
-) -> Result<(), Error> {
+fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
     if ctx.target.flattenable {
         throw!("Flattening enums not supported yet.")
     }
@@ -1237,8 +1212,8 @@ fn enum_from_json(
 
 // bincode test
 fn handle_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenStream, Error> {
-    let mut output = Vec::<TokenTree>::new();
-    let ctx = Ctx::new(target)?;
+    let mut output = RustWriter::new();
+    let ctx = Ctx::new(&mut output, target)?;
     if target.from_json {
         struct_from_json(&mut output, &ctx, fields)?;
     }
@@ -1268,12 +1243,12 @@ fn handle_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenSt
         impl_from_binary(&mut output, &ctx, body)?;
     }
 
-    Ok(output.drain(..).collect())
+    Ok(output.buf.drain(..).collect())
 }
 
 fn handle_tuple_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenStream, Error> {
-    let mut output = Vec::<TokenTree>::new();
-    let ctx = Ctx::new(target)?;
+    let mut output = RustWriter::new();
+    let ctx = Ctx::new(&mut output, target)?;
 
     if target.to_binary {
         let body = token_stream! { (&mut output); [
@@ -1295,14 +1270,10 @@ fn handle_tuple_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<T
         impl_from_binary(&mut output, &ctx, body)?;
     }
 
-    Ok(output.drain(..).collect())
+    Ok(output.buf.drain(..).collect())
 }
 
-fn enum_to_binary(
-    out: &mut Vec<TokenTree>,
-    ctx: &Ctx,
-    variants: &[EnumVariant],
-) -> Result<(), Error> {
+fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
     let body = token_stream! { out;
         match self {[
             for (i, variant) in variants.iter().enumerate() {
@@ -1341,7 +1312,7 @@ fn enum_to_binary(
 }
 
 fn enum_from_binary(
-    out: &mut Vec<TokenTree>,
+    out: &mut RustWriter,
     ctx: &Ctx,
     variants: &[EnumVariant],
 ) -> Result<(), Error> {
@@ -1382,8 +1353,8 @@ fn enum_from_binary(
 }
 
 fn handle_enum(target: &DeriveTargetInner, variants: &[EnumVariant]) -> Result<TokenStream, Error> {
-    let mut output = Vec::<TokenTree>::new();
-    let mut ctx = Ctx::new(target)?;
+    let mut output = RustWriter::new();
+    let mut ctx = Ctx::new(&mut output, target)?;
     let mut max_tuples = 0;
     for var in variants {
         if matches!(var.kind, EnumKind::Tuple) {
@@ -1404,7 +1375,7 @@ fn handle_enum(target: &DeriveTargetInner, variants: &[EnumVariant]) -> Result<T
         enum_from_binary(&mut output, &ctx, variants)?;
     }
 
-    Ok(output.drain(..).collect())
+    Ok(output.buf.drain(..).collect())
 }
 pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     let outer_tokens: Vec<TokenTree> = stream.into_iter().collect();
@@ -1474,8 +1445,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
 }
 
 pub fn derive(stream: TokenStream) -> TokenStream {
-    match inner_derive(stream) {
-        // Todo might want to wrap this with stuff
+    match inner_derive(stream.clone()) {
         Ok(e) => e,
         Err(err) => err.to_compiler_error(),
     }

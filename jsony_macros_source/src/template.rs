@@ -1,3 +1,4 @@
+use crate::writer::RustWriter;
 use crate::{
     lit::{self, literal_inline},
     Flatten,
@@ -61,44 +62,38 @@ fn tt_append_blit(output: &mut Vec<TokenTree>, chr: &str) {
     }));
 }
 
-fn tt_punct_alone(out: &mut Vec<TokenTree>, chr: char) {
-    out.push(TokenTree::Punct(Punct::new(chr, Spacing::Alone)));
-}
-fn tt_punct_joint(out: &mut Vec<TokenTree>, chr: char) {
-    out.push(TokenTree::Punct(Punct::new(chr, Spacing::Joint)));
-}
-fn tt_ident(out: &mut Vec<TokenTree>, ident: &str) {
-    out.push(TokenTree::Ident(Ident::new(ident, Span::call_site())));
-}
-fn tt_group(out: &mut Vec<TokenTree>, delimiter: Delimiter, from: usize) {
-    let group = TokenTree::Group(Group::new(
-        delimiter,
-        TokenStream::from_iter(out.drain(from..)),
-    ));
-    out.push(group);
-}
-
 #[rustfmt::skip]
 macro_rules! append_tok {
-    ($ident:ident $d:tt) => { tt_ident($d, stringify!($ident)) };
+    ($ident:ident $d:tt) => {
+       $d.tt_ident(stringify!($ident))
+    };
+    ({} $d: tt) => {
+        $d.tt_group_empty(Delimiter::Brace)
+    };
+    (() $d: tt) => {
+        $d.tt_group_empty(Delimiter::Parenthesis)
+    };
+    ([] $d:tt) => {
+        $d.tt_group_empty(Delimiter::Bracket)
+    };
     ({$($tt:tt)*} $d: tt) => {{
-        let at = $d.len(); $(append_tok!($tt $d);)* tt_group($d, Delimiter::Brace, at);
+        let at = $d.buf.len(); $(append_tok!($tt $d);)* $d.tt_group(Delimiter::Brace, at);
     }};
     (($($tt:tt)*) $d: tt) => {{
-        let at = $d.len(); $(append_tok!($tt $d);)* tt_group($d, Delimiter::Parenthesis, at);
+        let at = $d.buf.len(); $(append_tok!($tt $d);)* $d.tt_group(Delimiter::Parenthesis, at);
     }};
     ([[$($tt:tt)*]] $d:tt) => {{
-        let at = $d.len(); $(append_tok!($tt $d);)* tt_group($d, Delimiter::Bracket, at);
+        let at = $d.buf.len(); $(append_tok!($tt $d);)* $d.tt_group(Delimiter::Bracket, at);
     }};
-    (_ $d:tt) => { tt_ident($d, "_") };
+    (_ $d:tt) => { $d.tt_ident("_") };
     ([$ident:ident] $d:tt) => {
-        $d.push($($tt)*)
+        $d.buf.push($($tt)*)
     };
     ([?($($cond:tt)*) $($body:tt)*] $d:tt) => {
         if $($cond)* { $(append_tok!($body $d);)* }
     };
     ([@$($tt:tt)*] $d:tt) => {
-        $d.push($($tt)*)
+        $d.buf.push($($tt)*)
     };
     ([try $($tt:tt)*] $d:tt) => {
         if let Err(err) = $($tt)* { return Err(err); }
@@ -107,36 +102,37 @@ macro_rules! append_tok {
         for $($iter)* { $(append_tok!($body $d);)* }
     };
     ([#$($tt:tt)*] $d:tt) => {
-        $d.push(TokenTree::from($($tt)*.clone()))
+        $d.buf.push(TokenTree::from($($tt)*.clone()))
     };
     ([~$($tt:tt)*] $d:tt) => {
-        $d.extend_from_slice($($tt)*)
+        $d.buf.extend_from_slice($($tt)*)
     };
     ([$($rust:tt)*] $d:tt) => {{
          $($rust)*
     }};
-    (# $d:tt) => { tt_punct_joint($d, '\'') };
-    (: $d:tt) => { tt_punct_alone($d, ':') };
-    (~ $d:tt) => { tt_punct_joint($d, '-') };
-    (< $d:tt) => { tt_punct_alone($d, '<') };
-    (% $d:tt) => { tt_punct_joint($d, ':') };
-    (:: $d:tt) => { tt_punct_joint($d, ':'); tt_punct_alone($d, ':'); };
-    (-> $d:tt) => { tt_punct_joint($d, '-'); tt_punct_alone($d, '>'); };
-    (=> $d:tt) => { tt_punct_joint($d, '='); tt_punct_alone($d, '>'); };
-    (> $d:tt) => { tt_punct_alone($d, '>') };
-    (! $d:tt) => { tt_punct_alone($d, '!') };
-    (. $d:tt) => { tt_punct_alone($d, '.') };
-    (; $d:tt) => { tt_punct_alone($d, ';') };
-    (& $d:tt) => { tt_punct_alone($d, '&') };
-    (= $d:tt) => { tt_punct_alone($d, '=') };
-    (, $d:tt) => { tt_punct_alone($d, ',') };
-    (* $d:tt) => { tt_punct_alone($d, '*') };
+    (# $d:tt) => { $d.tt_punct_joint('\'') };
+    (: $d:tt) => { $d.tt_punct_alone(':') };
+    (~ $d:tt) => { $d.tt_punct_joint('-') };
+    (< $d:tt) => { $d.tt_punct_alone('<') };
+    (% $d:tt) => { $d.tt_punct_joint(':') };
+    (:: $d:tt) => {$d.tt_punct_joint(':'); $d.tt_punct_alone(':') };
+    (-> $d:tt) => {$d.tt_punct_joint('-'); $d.tt_punct_alone('>') };
+    (=> $d:tt) => {$d.tt_punct_joint('='); $d.tt_punct_alone('>') };
+    (> $d:tt) => { $d.tt_punct_alone('>') };
+    (! $d:tt) => { $d.tt_punct_alone('!') };
+    (| $d:tt) => { $d.tt_punct_alone('|') };
+    (. $d:tt) => { $d.tt_punct_alone('.') };
+    (; $d:tt) => { $d.tt_punct_alone(';') };
+    (& $d:tt) => { $d.tt_punct_alone('&') };
+    (= $d:tt) => { $d.tt_punct_alone('=') };
+    (, $d:tt) => { $d.tt_punct_alone(',') };
+    (* $d:tt) => { $d.tt_punct_alone('*') };
 }
 
 macro_rules! splat { ($d:tt; $($tt:tt)*) => { { $(append_tok!($tt $d);)* } } }
 
 macro_rules! token_stream { ($d:tt; $($tt:tt)*) => {{
-    let len = $d.len(); $(append_tok!($tt $d);)* TokenStream::from_iter($d.drain(len..))
+    let len = $d.buf.len(); $(append_tok!($tt $d);)* TokenStream::from_iter($d.buf.drain(len..))
 }}}
 
 fn is_char(tt: &TokenTree, ch: char) -> bool {
@@ -151,7 +147,7 @@ fn is_char(tt: &TokenTree, ch: char) -> bool {
 use crate::Error;
 
 struct Codegen {
-    out: Vec<TokenTree>,
+    out: RustWriter,
     need_mut_builder: bool,
     builder: Ident,
     text: String,
@@ -287,7 +283,7 @@ impl Codegen {
                                 self.flush_text();
                                 attr = Attr::If {
                                     contents,
-                                    codegen_height: self.out.len(),
+                                    codegen_height: self.out.buf.len(),
                                 };
                             }
                         }
@@ -379,8 +375,8 @@ impl Codegen {
                         value_tokens.push(tok);
                     }
                     self.flush_text();
-                    self.out.extend(value_tokens.drain(..));
-                    splat!((&mut self.out); {
+                    self.out.buf.extend(value_tokens.drain(..));
+                    splat!((self.out); {
                         [
                             self.parse_object(input, false);
                             self.flush_text();
@@ -461,10 +457,10 @@ impl Codegen {
                 self.flush_text();
                 let body = TokenTree::Group(Group::new(
                     Delimiter::Brace,
-                    self.out.drain(codegen_height..).collect(),
+                    self.out.buf.drain(codegen_height..).collect(),
                 ));
-                self.out.extend(contents);
-                self.out.push(body);
+                self.out.buf.extend(contents);
+                self.out.buf.push(body);
             }
         }
     }
@@ -475,7 +471,8 @@ impl Codegen {
     }
     fn new(builder: Ident) -> Codegen {
         Codegen {
-            out: Vec::new(),
+            out: RustWriter::new(),
+
             need_mut_builder: false,
             builder,
             initial_capacity: 0,
@@ -530,29 +527,29 @@ impl Codegen {
             self.set_err(group.span(), "Expected Blocked for Match Patterns");
             return;
         };
-        let start = self.out.len();
+        let start = self.out.buf.len();
         let mut input = group.stream().into_iter();
         let mut peq = false;
         let mut value_tokens: Vec<TokenTree> = Vec::new();
         while let Some(tok) = input.next() {
             if !(peq && is_char(&tok, '>')) {
                 peq = is_char(&tok, '=');
-                self.out.push(tok);
+                self.out.buf.push(tok);
                 continue;
             }
             let span = tok.span();
-            self.out.push(tok);
+            self.out.buf.push(tok);
             munch_expr(&mut input, &mut value_tokens);
-            splat!((&mut self.out); {[
+            splat!((self.out); {[
                 self.insert_value(span, &mut value_tokens);
                 self.flush_text();
             ]});
         }
         // Why this line?
-        let mut matches = Group::new(Delimiter::Brace, self.out.drain(start..).collect());
+        let mut matches = Group::new(Delimiter::Brace, self.out.buf.drain(start..).collect());
         matches.set_span(group.span());
-        self.out.extend(values.drain(..));
-        splat!((&mut self.out); [@TokenTree::Group(matches)];);
+        self.out.buf.extend(values.drain(..));
+        splat!((self.out); [@TokenTree::Group(matches)];);
     }
 
     fn parse_inline_array(&mut self, span: Span, stream: TokenStream) -> bool {
@@ -573,15 +570,17 @@ impl Codegen {
                         self.text.push('[');
                     }
                     self.flush_text();
-                    self.out.extend(token_values.drain(..split + 1).take(split));
-                    splat!((&mut self.out); {[
+                    self.out
+                        .buf
+                        .extend(token_values.drain(..split + 1).take(split));
+                    splat!((self.out); {[
                         self.insert_value(span, &mut token_values);
                         self.text.push(',');
                         self.flush_text();
                     ]});
                     if f == Flatten::None {
                         self.flush_text();
-                        splat!((&mut self.out); [#self.builder].end_json_array(););
+                        splat!((self.out); [#self.builder].end_json_array(););
                     }
                     // todo ensure the was the end
                     return true;
@@ -654,10 +653,10 @@ impl Codegen {
     //         self.error(span, "Expected binding in inline");
     //         return;
     //     };
-    //     splat! { (&mut self.out); {
+    //     splat! { (self.out); {
     //         let [#ident] [self.out.extend(args)] = [match self.flatten {
     //             Flatten::None => {
-    //                 splat!{ (&mut self.out);
+    //                 splat!{ (self.out);
     //                     <_ as
     //                 }
     //             },
@@ -769,8 +768,8 @@ impl Codegen {
                             if is_char(next, '!') {
                                 if let Some(TokenTree::Group(_)) = values.get(2) {
                                     if values.len() == 3 {
-                                        self.out.extend(values.drain(..));
-                                        splat!((&mut self.out); ;);
+                                        self.out.buf.extend(values.drain(..));
+                                        splat!((self.out); ;);
                                         return;
                                     }
                                 }
@@ -862,7 +861,7 @@ impl Codegen {
             }
         }
         self.flush_text();
-        splat!((&mut self.out); [#self.builder].end_json_array(););
+        splat!((self.out); [#self.builder].end_json_array(););
     }
     fn begin_inline_object(&mut self) {
         self.text.push('{');
@@ -881,11 +880,11 @@ impl Codegen {
             }
         }
         self.flush_text();
-        splat!((&mut self.out); [#self.builder].end_json_object(););
+        splat!((self.out); [#self.builder].end_json_object(););
     }
     fn dyn_key(&mut self, _span: Span, expr: TokenStream) {
         self.flush_text();
-        splat! {(&mut self.out);
+        splat! {(self.out);
             let _: ::jsony::json::StringValue =
                 <_ as ::jsony::ToJson>::jsonify_into(&[@parend(expr)], [#self.builder]);
         };
@@ -908,7 +907,7 @@ impl Codegen {
         self.flush_text();
         match self.flatten {
             Flatten::None => {
-                splat! {(&mut self.out);
+                splat! {(self.out);
                     <_ as ::jsony::ToJson>::jsonify_into(
                         &[@expr],
                         [#self.builder]
@@ -916,7 +915,7 @@ impl Codegen {
                 }
             }
             Flatten::Object => {
-                splat! {(&mut self.out);
+                splat! {(self.out);
                     [#self.builder].join_parent_json_value_with_next();
                     let _: ::jsony::json::ObjectValue = <_ as ::jsony::ToJson>::jsonify_into(
                         &[@expr],
@@ -926,7 +925,7 @@ impl Codegen {
                 }
             }
             Flatten::Array => {
-                splat! {(&mut self.out);
+                splat! {(self.out);
                     [#self.builder].join_parent_json_value_with_next();
                     let _: ::jsony::json::ArrayValue = <_ as ::jsony::ToJson>::jsonify_into(
                         &[@expr],
@@ -942,9 +941,9 @@ impl Codegen {
         if let Some(writer) = self.writer.take() {
             // TODO handle self.out case
             self.flush_text();
-            let braced = braced(self.out.drain(..).collect());
+            let braced = braced(self.out.buf.drain(..).collect());
             return token_stream! {
-                (&mut self.out);
+                (self.out);
                 {
                     let mut object_writer: &mut ::jsony::json::ObjectWriter = [~&writer];
                     // TODO, detect if mut is needed or not
@@ -954,15 +953,15 @@ impl Codegen {
                 }
             };
         }
-        if self.out.is_empty() {
+        if self.out.buf.is_empty() {
             return token_stream!(
-                (&mut self.out);
+                (self.out);
                 String::from([@str_lit(&self.text)])
             );
         }
         self.flush_text();
         let capacity = (self.initial_capacity + 16) & (!0b1111);
-        let braced = braced(self.out.drain(..).collect());
+        let braced = braced(self.out.buf.drain(..).collect());
         let out = &mut self.out;
         token_stream! {
             out;
@@ -981,7 +980,7 @@ impl Codegen {
     }
     fn flush_error(&mut self) {
         if let Some(err) = self.error.take() {
-            self.out.extend(err.to_compiler_error());
+            self.out.buf.extend(err.to_compiler_error());
             // err.to_compiler_error()
             // let error = err.0.
             // let mut group = TokenTree::Group(Group::new(

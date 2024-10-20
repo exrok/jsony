@@ -1,3 +1,4 @@
+use crate::writer::RustWriter;
 use crate::{
     lit::{self, literal_inline},
     Flatten,
@@ -34,21 +35,19 @@ static ESCAPE: [u8; 256] = [
     __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __,
     __, __, __, __, __, __, __, __, __, __, __, __, __, __, __, __,
 ];
-fn tt_punct_alone(out: &mut Vec<TokenTree>, chr: char) {
-    out.push(TokenTree::Punct(Punct::new(chr, Spacing::Alone)));
-}
-fn tt_punct_joint(out: &mut Vec<TokenTree>, chr: char) {
-    out.push(TokenTree::Punct(Punct::new(chr, Spacing::Joint)));
-}
-fn tt_ident(out: &mut Vec<TokenTree>, ident: &str) {
-    out.push(TokenTree::Ident(Ident::new(ident, Span::call_site())));
-}
-fn tt_group(out: &mut Vec<TokenTree>, delimiter: Delimiter, from: usize) {
-    let group = TokenTree::Group(Group::new(
-        delimiter,
-        TokenStream::from_iter(out.drain(from..)),
-    ));
-    out.push(group);
+#[allow(unused)]
+fn tt_append_blit(output: &mut Vec<TokenTree>, chr: &str) {
+    output.extend(chr.as_bytes().iter().map(|tok| match *tok {
+        1 => TokenTree::Ident(Ident::new("hello", Span::call_site())),
+        v => TokenTree::Punct(Punct::new(
+            ':',
+            if v & 0b1 == 0 {
+                Spacing::Joint
+            } else {
+                Spacing::Alone
+            },
+        )),
+    }));
 }
 
 fn is_char(tt: &TokenTree, ch: char) -> bool {
@@ -61,7 +60,7 @@ fn is_char(tt: &TokenTree, ch: char) -> bool {
 }
 use crate::Error;
 struct Codegen {
-    out: Vec<TokenTree>,
+    out: RustWriter,
     need_mut_builder: bool,
     builder: Ident,
     text: String,
@@ -169,7 +168,7 @@ impl Codegen {
                                 self.flush_text();
                                 attr = Attr::If {
                                     contents,
-                                    codegen_height: self.out.len(),
+                                    codegen_height: self.out.buf.len(),
                                 };
                             }
                         }
@@ -286,15 +285,15 @@ impl Codegen {
                         value_tokens.push(tok);
                     }
                     self.flush_text();
-                    self.out.extend(value_tokens.drain(..));
+                    self.out.buf.extend(value_tokens.drain(..));
                     {
                         {
-                            let at = (&mut self.out).len();
+                            let at = (self.out).buf.len();
                             {
                                 self.parse_object(input, false);
                                 self.flush_text();
                             };
-                            tt_group(&mut self.out, Delimiter::Brace, at);
+                            (self.out).tt_group(Delimiter::Brace, at);
                         };
                     };
                     return;
@@ -377,10 +376,10 @@ impl Codegen {
                 self.flush_text();
                 let body = TokenTree::Group(Group::new(
                     Delimiter::Brace,
-                    self.out.drain(codegen_height..).collect(),
+                    self.out.buf.drain(codegen_height..).collect(),
                 ));
-                self.out.extend(contents);
-                self.out.push(body);
+                self.out.buf.extend(contents);
+                self.out.buf.push(body);
             }
         }
     }
@@ -390,7 +389,7 @@ impl Codegen {
     }
     fn new(builder: Ident) -> Codegen {
         Codegen {
-            out: Vec::new(),
+            out: RustWriter::new(),
             need_mut_builder: false,
             builder,
             initial_capacity: 0,
@@ -411,45 +410,32 @@ impl Codegen {
             match byte {
                 b':' => {
                     {
-                        out.push(TokenTree::from(self.builder.clone()));
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "push_colon");
-                        {
-                            let at = out.len();
-                            tt_group(out, Delimiter::Parenthesis, at);
-                        };
-                        tt_punct_alone(out, ';');
+                        out.buf.push(TokenTree::from(self.builder.clone()));
+                        out.blit(840, 4);
                     };
                 }
                 b',' => {
                     {
-                        out.push(TokenTree::from(self.builder.clone()));
-                        tt_punct_alone(out, '.');
-                        tt_ident(out, "push_comma");
-                        {
-                            let at = out.len();
-                            tt_group(out, Delimiter::Parenthesis, at);
-                        };
-                        tt_punct_alone(out, ';');
+                        out.buf.push(TokenTree::from(self.builder.clone()));
+                        out.blit(844, 4);
                     };
                 }
                 _ => {
                     {
-                        tt_ident(out, "unsafe");
+                        out.blit_ident(132);
                         {
-                            let at = out.len();
-                            out.push(TokenTree::from(self.builder.clone()));
-                            tt_punct_alone(out, '.');
-                            tt_ident(out, "push_unchecked_ascii");
+                            let at = out.buf.len();
+                            out.buf.push(TokenTree::from(self.builder.clone()));
+                            out.blit(848, 2);
                             {
-                                let at = out.len();
-                                out.push(TokenTree::Literal(Literal::byte_character(
+                                let at = out.buf.len();
+                                out.buf.push(TokenTree::Literal(Literal::byte_character(
                                     self.text.as_bytes()[0],
                                 )));
-                                tt_group(out, Delimiter::Parenthesis, at);
+                                out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            tt_punct_alone(out, ';');
-                            tt_group(out, Delimiter::Brace, at);
+                            out.blit_punct(13);
+                            out.tt_group(Delimiter::Brace, at);
                         };
                     };
                 }
@@ -457,15 +443,14 @@ impl Codegen {
         } else {
             let out = &mut self.out;
             {
-                out.push(TokenTree::from(self.builder.clone()));
-                tt_punct_alone(out, '.');
-                tt_ident(out, "push_str");
+                out.buf.push(TokenTree::from(self.builder.clone()));
+                out.blit(348, 2);
                 {
-                    let at = out.len();
-                    out.push(str_lit(&self.text));
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.buf.push(str_lit(&self.text));
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ';');
+                out.blit_punct(13);
             };
         }
         self.text.clear();
@@ -481,36 +466,36 @@ impl Codegen {
             self.set_err(group.span(), "Expected Blocked for Match Patterns");
             return;
         };
-        let start = self.out.len();
+        let start = self.out.buf.len();
         let mut input = group.stream().into_iter();
         let mut peq = false;
         let mut value_tokens: Vec<TokenTree> = Vec::new();
         while let Some(tok) = input.next() {
             if !(peq && is_char(&tok, '>')) {
                 peq = is_char(&tok, '=');
-                self.out.push(tok);
+                self.out.buf.push(tok);
                 continue;
             }
             let span = tok.span();
-            self.out.push(tok);
+            self.out.buf.push(tok);
             munch_expr(&mut input, &mut value_tokens);
             {
                 {
-                    let at = (&mut self.out).len();
+                    let at = (self.out).buf.len();
                     {
                         self.insert_value(span, &mut value_tokens);
                         self.flush_text();
                     };
-                    tt_group(&mut self.out, Delimiter::Brace, at);
+                    (self.out).tt_group(Delimiter::Brace, at);
                 };
             };
         }
-        let mut matches = Group::new(Delimiter::Brace, self.out.drain(start..).collect());
+        let mut matches = Group::new(Delimiter::Brace, self.out.buf.drain(start..).collect());
         matches.set_span(group.span());
-        self.out.extend(values.drain(..));
+        self.out.buf.extend(values.drain(..));
         {
-            (&mut self.out).push(TokenTree::Group(matches));
-            tt_punct_alone(&mut self.out, ';');
+            (self.out).buf.push(TokenTree::Group(matches));
+            (self.out).blit_punct(13);
         };
     }
     fn parse_inline_array(&mut self, span: Span, stream: TokenStream) -> bool {
@@ -527,29 +512,25 @@ impl Codegen {
                         self.text.push('[');
                     }
                     self.flush_text();
-                    self.out.extend(token_values.drain(..split + 1).take(split));
+                    self.out
+                        .buf
+                        .extend(token_values.drain(..split + 1).take(split));
                     {
                         {
-                            let at = (&mut self.out).len();
+                            let at = (self.out).buf.len();
                             {
                                 self.insert_value(span, &mut token_values);
                                 self.text.push(',');
                                 self.flush_text();
                             };
-                            tt_group(&mut self.out, Delimiter::Brace, at);
+                            (self.out).tt_group(Delimiter::Brace, at);
                         };
                     };
                     if f == Flatten::None {
                         self.flush_text();
                         {
-                            (&mut self.out).push(TokenTree::from(self.builder.clone()));
-                            tt_punct_alone(&mut self.out, '.');
-                            tt_ident(&mut self.out, "end_json_array");
-                            {
-                                let at = (&mut self.out).len();
-                                tt_group(&mut self.out, Delimiter::Parenthesis, at);
-                            };
-                            tt_punct_alone(&mut self.out, ';');
+                            (self.out).buf.push(TokenTree::from(self.builder.clone()));
+                            (self.out).blit(850, 4);
                         };
                     }
                     return true;
@@ -688,9 +669,9 @@ impl Codegen {
                             if is_char(next, '!') {
                                 if let Some(TokenTree::Group(_)) = values.get(2) {
                                     if values.len() == 3 {
-                                        self.out.extend(values.drain(..));
+                                        self.out.buf.extend(values.drain(..));
                                         {
-                                            tt_punct_alone(&mut self.out, ';');
+                                            (self.out).blit_punct(13);
                                         };
                                         return;
                                     }
@@ -732,93 +713,59 @@ impl Codegen {
                             let out = &mut self.out;
                             {
                                 {
-                                    let at = out.len();
-                                    tt_ident(out, "let");
-                                    tt_ident(out, "mut");
-                                    out.push(TokenTree::from(binding.clone()));
-                                    tt_punct_alone(out, '=');
+                                    let at = out.buf.len();
+                                    out.blit(299, 2);
+                                    out.buf.push(TokenTree::from(binding.clone()));
+                                    out.blit_punct(5);
                                     {
                                         match self.flatten {
                                             Flatten::None => {
-                                                tt_punct_joint(out, ':');
-                                                tt_punct_alone(out, ':');
-                                                tt_ident(out, "jsony");
-                                                tt_punct_joint(out, ':');
-                                                tt_punct_alone(out, ':');
-                                                tt_ident(out, "json");
-                                                tt_punct_joint(out, ':');
-                                                tt_punct_alone(out, ':');
-                                                tt_ident(out, "ValueWriter");
-                                                tt_punct_joint(out, ':');
-                                                tt_punct_alone(out, ':');
-                                                tt_ident(out, "new");
+                                                out.blit(854, 12);
                                                 {
-                                                    let at = out.len();
-                                                    out.push(TokenTree::from(self.builder.clone()));
-                                                    tt_group(out, Delimiter::Parenthesis, at);
+                                                    let at = out.buf.len();
+                                                    out.buf.push(TokenTree::from(
+                                                        self.builder.clone(),
+                                                    ));
+                                                    out.tt_group(Delimiter::Parenthesis, at);
                                                 };
                                             }
                                             Flatten::Object => {
                                                 self.need_mut_builder = true;
                                                 {
-                                                    tt_punct_joint(out, ':');
-                                                    tt_punct_alone(out, ':');
-                                                    tt_ident(out, "jsony");
-                                                    tt_punct_joint(out, ':');
-                                                    tt_punct_alone(out, ':');
-                                                    tt_ident(out, "json");
-                                                    tt_punct_joint(out, ':');
-                                                    tt_punct_alone(out, ':');
-                                                    tt_ident(out, "ObjectWriter");
-                                                    tt_punct_joint(out, ':');
-                                                    tt_punct_alone(out, ':');
-                                                    tt_ident(out, "non_terminating");
+                                                    out.blit(866, 12);
                                                     {
-                                                        let at = out.len();
-                                                        tt_punct_alone(out, '&');
-                                                        tt_ident(out, "mut");
-                                                        out.push(TokenTree::from(
+                                                        let at = out.buf.len();
+                                                        out.blit(13, 2);
+                                                        out.buf.push(TokenTree::from(
                                                             self.builder.clone(),
                                                         ));
-                                                        tt_group(out, Delimiter::Parenthesis, at);
+                                                        out.tt_group(Delimiter::Parenthesis, at);
                                                     };
                                                 };
                                             }
                                             Flatten::Array => {
                                                 self.need_mut_builder = true;
                                                 {
-                                                    tt_punct_joint(out, ':');
-                                                    tt_punct_alone(out, ':');
-                                                    tt_ident(out, "jsony");
-                                                    tt_punct_joint(out, ':');
-                                                    tt_punct_alone(out, ':');
-                                                    tt_ident(out, "json");
-                                                    tt_punct_joint(out, ':');
-                                                    tt_punct_alone(out, ':');
-                                                    tt_ident(out, "ArrayWriter");
-                                                    tt_punct_joint(out, ':');
-                                                    tt_punct_alone(out, ':');
-                                                    tt_ident(out, "non_terminating");
+                                                    out.blit(878, 12);
                                                     {
-                                                        let at = out.len();
-                                                        tt_punct_alone(out, '&');
-                                                        tt_ident(out, "mut");
-                                                        out.push(TokenTree::from(
+                                                        let at = out.buf.len();
+                                                        out.blit(13, 2);
+                                                        out.buf.push(TokenTree::from(
                                                             self.builder.clone(),
                                                         ));
-                                                        tt_group(out, Delimiter::Parenthesis, at);
+                                                        out.tt_group(Delimiter::Parenthesis, at);
                                                     };
                                                 };
                                             }
                                         }
                                     };
-                                    tt_punct_alone(out, ';');
-                                    out.push(TokenTree::Group(Group::new(
+                                    out.blit_punct(13);
+                                    out.buf.push(TokenTree::Group(Group::new(
                                         Delimiter::Brace,
                                         values.drain(3..).collect(),
                                     )));
-                                    tt_punct_alone(out, ';');
-                                    tt_group(out, Delimiter::Brace, at);
+                                    out.blit_punct(13);
+                                    out.tt_group(Delimiter::Brace, at);
                                 };
                             };
                             return;
@@ -857,14 +804,8 @@ impl Codegen {
         }
         self.flush_text();
         {
-            (&mut self.out).push(TokenTree::from(self.builder.clone()));
-            tt_punct_alone(&mut self.out, '.');
-            tt_ident(&mut self.out, "end_json_array");
-            {
-                let at = (&mut self.out).len();
-                tt_group(&mut self.out, Delimiter::Parenthesis, at);
-            };
-            tt_punct_alone(&mut self.out, ';');
+            (self.out).buf.push(TokenTree::from(self.builder.clone()));
+            (self.out).blit(850, 4);
         };
     }
     fn begin_inline_object(&mut self) {
@@ -885,54 +826,23 @@ impl Codegen {
         }
         self.flush_text();
         {
-            (&mut self.out).push(TokenTree::from(self.builder.clone()));
-            tt_punct_alone(&mut self.out, '.');
-            tt_ident(&mut self.out, "end_json_object");
-            {
-                let at = (&mut self.out).len();
-                tt_group(&mut self.out, Delimiter::Parenthesis, at);
-            };
-            tt_punct_alone(&mut self.out, ';');
+            (self.out).buf.push(TokenTree::from(self.builder.clone()));
+            (self.out).blit(457, 4);
         };
     }
     fn dyn_key(&mut self, _span: Span, expr: TokenStream) {
         self.flush_text();
         {
-            tt_ident(&mut self.out, "let");
-            tt_ident(&mut self.out, "_");
-            tt_punct_alone(&mut self.out, ':');
-            tt_punct_joint(&mut self.out, ':');
-            tt_punct_alone(&mut self.out, ':');
-            tt_ident(&mut self.out, "jsony");
-            tt_punct_joint(&mut self.out, ':');
-            tt_punct_alone(&mut self.out, ':');
-            tt_ident(&mut self.out, "json");
-            tt_punct_joint(&mut self.out, ':');
-            tt_punct_alone(&mut self.out, ':');
-            tt_ident(&mut self.out, "StringValue");
-            tt_punct_alone(&mut self.out, '=');
-            tt_punct_alone(&mut self.out, '<');
-            tt_ident(&mut self.out, "_");
-            tt_ident(&mut self.out, "as");
-            tt_punct_joint(&mut self.out, ':');
-            tt_punct_alone(&mut self.out, ':');
-            tt_ident(&mut self.out, "jsony");
-            tt_punct_joint(&mut self.out, ':');
-            tt_punct_alone(&mut self.out, ':');
-            tt_ident(&mut self.out, "ToJson");
-            tt_punct_alone(&mut self.out, '>');
-            tt_punct_joint(&mut self.out, ':');
-            tt_punct_alone(&mut self.out, ':');
-            tt_ident(&mut self.out, "jsonify_into");
+            (self.out).blit(890, 26);
             {
-                let at = (&mut self.out).len();
-                tt_punct_alone(&mut self.out, '&');
-                (&mut self.out).push(parend(expr));
-                tt_punct_alone(&mut self.out, ',');
-                (&mut self.out).push(TokenTree::from(self.builder.clone()));
-                tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                let at = (self.out).buf.len();
+                (self.out).blit_punct(4);
+                (self.out).buf.push(parend(expr));
+                (self.out).blit_punct(0);
+                (self.out).buf.push(TokenTree::from(self.builder.clone()));
+                (self.out).tt_group(Delimiter::Parenthesis, at);
             };
-            tt_punct_alone(&mut self.out, ';');
+            (self.out).blit_punct(13);
         };
         self.text.push_str(":");
     }
@@ -952,134 +862,46 @@ impl Codegen {
         self.flush_text();
         match self.flatten {
             Flatten::None => {
-                tt_punct_alone(&mut self.out, '<');
-                tt_ident(&mut self.out, "_");
-                tt_ident(&mut self.out, "as");
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "jsony");
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "ToJson");
-                tt_punct_alone(&mut self.out, '>');
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "jsonify_into");
+                (self.out).blit(903, 13);
                 {
-                    let at = (&mut self.out).len();
-                    tt_punct_alone(&mut self.out, '&');
-                    (&mut self.out).push(expr);
-                    tt_punct_alone(&mut self.out, ',');
-                    (&mut self.out).push(TokenTree::from(self.builder.clone()));
-                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                    let at = (self.out).buf.len();
+                    (self.out).blit_punct(4);
+                    (self.out).buf.push(expr);
+                    (self.out).blit_punct(0);
+                    (self.out).buf.push(TokenTree::from(self.builder.clone()));
+                    (self.out).tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(&mut self.out, ';');
+                (self.out).blit_punct(13);
             }
             Flatten::Object => {
-                (&mut self.out).push(TokenTree::from(self.builder.clone()));
-                tt_punct_alone(&mut self.out, '.');
-                tt_ident(&mut self.out, "join_parent_json_value_with_next");
+                (self.out).buf.push(TokenTree::from(self.builder.clone()));
+                (self.out).blit(916, 30);
                 {
-                    let at = (&mut self.out).len();
-                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                    let at = (self.out).buf.len();
+                    (self.out).blit_punct(4);
+                    (self.out).buf.push(expr);
+                    (self.out).blit_punct(0);
+                    (self.out).buf.push(TokenTree::from(self.builder.clone()));
+                    (self.out).tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(&mut self.out, ';');
-                tt_ident(&mut self.out, "let");
-                tt_ident(&mut self.out, "_");
-                tt_punct_alone(&mut self.out, ':');
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "jsony");
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "json");
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "ObjectValue");
-                tt_punct_alone(&mut self.out, '=');
-                tt_punct_alone(&mut self.out, '<');
-                tt_ident(&mut self.out, "_");
-                tt_ident(&mut self.out, "as");
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "jsony");
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "ToJson");
-                tt_punct_alone(&mut self.out, '>');
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "jsonify_into");
-                {
-                    let at = (&mut self.out).len();
-                    tt_punct_alone(&mut self.out, '&');
-                    (&mut self.out).push(expr);
-                    tt_punct_alone(&mut self.out, ',');
-                    (&mut self.out).push(TokenTree::from(self.builder.clone()));
-                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
-                };
-                tt_punct_alone(&mut self.out, ';');
-                (&mut self.out).push(TokenTree::from(self.builder.clone()));
-                tt_punct_alone(&mut self.out, '.');
-                tt_ident(&mut self.out, "join_object_with_next_value");
-                {
-                    let at = (&mut self.out).len();
-                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
-                };
-                tt_punct_alone(&mut self.out, ';');
+                (self.out).blit_punct(13);
+                (self.out).buf.push(TokenTree::from(self.builder.clone()));
+                (self.out).blit(946, 4);
             }
             Flatten::Array => {
-                (&mut self.out).push(TokenTree::from(self.builder.clone()));
-                tt_punct_alone(&mut self.out, '.');
-                tt_ident(&mut self.out, "join_parent_json_value_with_next");
+                (self.out).buf.push(TokenTree::from(self.builder.clone()));
+                (self.out).blit(950, 30);
                 {
-                    let at = (&mut self.out).len();
-                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                    let at = (self.out).buf.len();
+                    (self.out).blit_punct(4);
+                    (self.out).buf.push(expr);
+                    (self.out).blit_punct(0);
+                    (self.out).buf.push(TokenTree::from(self.builder.clone()));
+                    (self.out).tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(&mut self.out, ';');
-                tt_ident(&mut self.out, "let");
-                tt_ident(&mut self.out, "_");
-                tt_punct_alone(&mut self.out, ':');
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "jsony");
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "json");
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "ArrayValue");
-                tt_punct_alone(&mut self.out, '=');
-                tt_punct_alone(&mut self.out, '<');
-                tt_ident(&mut self.out, "_");
-                tt_ident(&mut self.out, "as");
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "jsony");
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "ToJson");
-                tt_punct_alone(&mut self.out, '>');
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "jsonify_into");
-                {
-                    let at = (&mut self.out).len();
-                    tt_punct_alone(&mut self.out, '&');
-                    (&mut self.out).push(expr);
-                    tt_punct_alone(&mut self.out, ',');
-                    (&mut self.out).push(TokenTree::from(self.builder.clone()));
-                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
-                };
-                tt_punct_alone(&mut self.out, ';');
-                (&mut self.out).push(TokenTree::from(self.builder.clone()));
-                tt_punct_alone(&mut self.out, '.');
-                tt_ident(&mut self.out, "join_array_with_next_value");
-                {
-                    let at = (&mut self.out).len();
-                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
-                };
-                tt_punct_alone(&mut self.out, ';');
+                (self.out).blit_punct(13);
+                (self.out).buf.push(TokenTree::from(self.builder.clone()));
+                (self.out).blit(980, 4);
             }
         }
     }
@@ -1087,127 +909,72 @@ impl Codegen {
         self.flush_error();
         if let Some(writer) = self.writer.take() {
             self.flush_text();
-            let braced = braced(self.out.drain(..).collect());
+            let braced = braced(self.out.buf.drain(..).collect());
             return {
-                let len = (&mut self.out).len();
+                let len = (self.out).buf.len();
                 {
-                    let at = (&mut self.out).len();
-                    tt_ident(&mut self.out, "let");
-                    tt_ident(&mut self.out, "mut");
-                    tt_ident(&mut self.out, "object_writer");
-                    tt_punct_alone(&mut self.out, ':');
-                    tt_punct_alone(&mut self.out, '&');
-                    tt_ident(&mut self.out, "mut");
-                    tt_punct_joint(&mut self.out, ':');
-                    tt_punct_alone(&mut self.out, ':');
-                    tt_ident(&mut self.out, "jsony");
-                    tt_punct_joint(&mut self.out, ':');
-                    tt_punct_alone(&mut self.out, ':');
-                    tt_ident(&mut self.out, "json");
-                    tt_punct_joint(&mut self.out, ':');
-                    tt_punct_alone(&mut self.out, ':');
-                    tt_ident(&mut self.out, "ObjectWriter");
-                    tt_punct_alone(&mut self.out, '=');
-                    (&mut self.out).extend_from_slice(&writer);
-                    tt_punct_alone(&mut self.out, ';');
-                    tt_ident(&mut self.out, "let");
+                    let at = (self.out).buf.len();
+                    (self.out).blit(984, 16);
+                    (self.out).buf.extend_from_slice(&writer);
+                    (self.out).blit(468, 2);
                     if self.need_mut_builder {
-                        tt_ident(&mut self.out, "mut");
+                        (self.out).blit_ident(142);
                     };
-                    tt_ident(&mut self.out, "builder");
-                    tt_punct_alone(&mut self.out, '=');
-                    tt_ident(&mut self.out, "object_writer");
-                    tt_punct_alone(&mut self.out, '.');
-                    tt_ident(&mut self.out, "inner_writer");
-                    {
-                        let at = (&mut self.out).len();
-                        tt_group(&mut self.out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(&mut self.out, ';');
-                    tt_ident(&mut self.out, "builder");
-                    tt_punct_alone(&mut self.out, '.');
-                    tt_ident(&mut self.out, "smart_object_comma");
-                    {
-                        let at = (&mut self.out).len();
-                        tt_group(&mut self.out, Delimiter::Parenthesis, at);
-                    };
-                    tt_punct_alone(&mut self.out, ';');
-                    (&mut self.out).push(braced);
-                    tt_group(&mut self.out, Delimiter::Brace, at);
+                    (self.out).blit(1000, 12);
+                    (self.out).buf.push(braced);
+                    (self.out).tt_group(Delimiter::Brace, at);
                 };
-                TokenStream::from_iter((&mut self.out).drain(len..))
+                TokenStream::from_iter((self.out).buf.drain(len..))
             };
         }
-        if self.out.is_empty() {
+        if self.out.buf.is_empty() {
             return {
-                let len = (&mut self.out).len();
-                tt_ident(&mut self.out, "String");
-                tt_punct_joint(&mut self.out, ':');
-                tt_punct_alone(&mut self.out, ':');
-                tt_ident(&mut self.out, "from");
+                let len = (self.out).buf.len();
+                (self.out).blit(1012, 4);
                 {
-                    let at = (&mut self.out).len();
-                    (&mut self.out).push(str_lit(&self.text));
-                    tt_group(&mut self.out, Delimiter::Parenthesis, at);
+                    let at = (self.out).buf.len();
+                    (self.out).buf.push(str_lit(&self.text));
+                    (self.out).tt_group(Delimiter::Parenthesis, at);
                 };
-                TokenStream::from_iter((&mut self.out).drain(len..))
+                TokenStream::from_iter((self.out).buf.drain(len..))
             };
         }
         self.flush_text();
         let capacity = (self.initial_capacity + 16) & (!0b1111);
-        let braced = braced(self.out.drain(..).collect());
+        let braced = braced(self.out.buf.drain(..).collect());
         let out = &mut self.out;
         {
-            let len = out.len();
+            let len = out.buf.len();
             {
-                let at = out.len();
-                tt_ident(out, "let");
-                tt_ident(out, "mut");
-                tt_ident(out, "_builder");
-                tt_punct_alone(out, '=');
-                tt_ident(out, "jsony");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "TextWriter");
-                tt_punct_joint(out, ':');
-                tt_punct_alone(out, ':');
-                tt_ident(out, "with_capacity");
+                let at = out.buf.len();
+                out.blit(1016, 11);
                 {
-                    let at = out.len();
-                    out.push(TokenTree::from(Literal::usize_unsuffixed(capacity).clone()));
-                    tt_group(out, Delimiter::Parenthesis, at);
+                    let at = out.buf.len();
+                    out.buf
+                        .push(TokenTree::from(Literal::usize_unsuffixed(capacity).clone()));
+                    out.tt_group(Delimiter::Parenthesis, at);
                 };
-                tt_punct_alone(out, ';');
+                out.blit_punct(13);
                 {
-                    let at = out.len();
-                    tt_ident(out, "let");
+                    let at = out.buf.len();
+                    out.blit_ident(143);
                     if self.need_mut_builder {
-                        tt_ident(out, "mut");
+                        out.blit_ident(142);
                     };
-                    out.push(TokenTree::from(self.builder.clone()));
-                    tt_punct_alone(out, '=');
-                    tt_punct_alone(out, '&');
-                    tt_ident(out, "mut");
-                    tt_ident(out, "_builder");
-                    tt_punct_alone(out, ';');
-                    out.push(braced);
-                    tt_group(out, Delimiter::Brace, at);
+                    out.buf.push(TokenTree::from(self.builder.clone()));
+                    out.blit(1027, 5);
+                    out.buf.push(braced);
+                    out.tt_group(Delimiter::Brace, at);
                 };
-                tt_ident(out, "_builder");
-                tt_punct_alone(out, '.');
-                tt_ident(out, "into_string");
-                {
-                    let at = out.len();
-                    tt_group(out, Delimiter::Parenthesis, at);
-                };
-                tt_group(out, Delimiter::Brace, at);
+                out.blit(1032, 4);
+                out.tt_group(Delimiter::Brace, at);
             };
-            TokenStream::from_iter(out.drain(len..))
+            TokenStream::from_iter(out.buf.drain(len..))
         }
     }
     fn flush_error(&mut self) {
         if let Some(err) = self.error.take() {
-            self.out.extend(err.to_compiler_error());
+            self.out.buf.extend(err.to_compiler_error());
         }
     }
 }
