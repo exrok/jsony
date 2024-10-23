@@ -795,7 +795,7 @@ macro_rules! into_json_itoa {
         $(
             impl ToJson for $ty {
                 type Kind = AnyValue;
-                fn jsonify_into(&self, output: &mut TextWriter) -> AnyValue {
+                fn jsony_to_json_into(&self, output: &mut TextWriter) -> AnyValue {
                     let mut buffer = itoa::Buffer::new();
                     output.push_str(buffer.format(*self));
                     AnyValue
@@ -809,7 +809,7 @@ into_json_itoa![u8 i8 u16 i16 u32 i32 u64 i64 u128 i128 usize isize];
 
 impl ToJson for f32 {
     type Kind = AnyValue;
-    fn jsonify_into(&self, x: &mut TextWriter) -> AnyValue {
+    fn jsony_to_json_into(&self, x: &mut TextWriter) -> AnyValue {
         if !self.is_finite() {
             x.push_str("null");
             return AnyValue;
@@ -820,7 +820,7 @@ impl ToJson for f32 {
 }
 impl ToJson for f64 {
     type Kind = AnyValue;
-    fn jsonify_into(&self, x: &mut TextWriter) -> AnyValue {
+    fn jsony_to_json_into(&self, x: &mut TextWriter) -> AnyValue {
         if !self.is_finite() {
             x.push_str("null");
             return AnyValue;
@@ -904,7 +904,7 @@ impl CharEscape {
 
 impl ToJson for str {
     type Kind = StringValue;
-    fn jsonify_into(&self, output: &mut TextWriter) -> StringValue {
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> StringValue {
         output.start_json_string();
         let bytes = self.as_bytes();
         let mut start = 0;
@@ -966,9 +966,9 @@ impl ToJson for str {
 
 impl<T: ToJson> ToJson for Option<T> {
     type Kind = AnyValue;
-    fn jsonify_into(&self, output: &mut TextWriter) -> AnyValue {
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> AnyValue {
         if let Some(value) = self {
-            value.jsonify_into(output);
+            value.jsony_to_json_into(output);
         } else {
             output.push_str("null");
         }
@@ -978,24 +978,24 @@ impl<T: ToJson> ToJson for Option<T> {
 
 impl<T: ToJson, const N: usize> ToJson for [T; N] {
     type Kind = ArrayValue;
-    fn jsonify_into(&self, array: &mut TextWriter) -> ArrayValue {
-        self.as_slice().jsonify_into(array)
+    fn jsony_to_json_into(&self, array: &mut TextWriter) -> ArrayValue {
+        self.as_slice().jsony_to_json_into(array)
     }
 }
 
 impl<T: ToJson> ToJson for Vec<T> {
     type Kind = ArrayValue;
-    fn jsonify_into(&self, array: &mut TextWriter) -> ArrayValue {
-        self.as_slice().jsonify_into(array)
+    fn jsony_to_json_into(&self, array: &mut TextWriter) -> ArrayValue {
+        self.as_slice().jsony_to_json_into(array)
     }
 }
 
 impl<T: ToJson> ToJson for [T] {
     type Kind = ArrayValue;
-    fn jsonify_into(&self, output: &mut TextWriter) -> ArrayValue {
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> ArrayValue {
         output.start_json_array();
         for value in self {
-            value.jsonify_into(output);
+            value.jsony_to_json_into(output);
             output.push_comma();
         }
         output.end_json_array()
@@ -1005,54 +1005,54 @@ impl<T: ToJson> ToJson for [T] {
 impl<'a, T: ToJson + Clone> ToJson for Cow<'a, T> {
     type Kind = T::Kind;
 
-    fn jsonify_into(&self, output: &mut TextWriter) -> T::Kind {
-        <T as ToJson>::jsonify_into(self, output)
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> T::Kind {
+        <T as ToJson>::jsony_to_json_into(self, output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for Rc<T> {
     type Kind = T::Kind;
 
-    fn jsonify_into(&self, output: &mut TextWriter) -> T::Kind {
-        <T as ToJson>::jsonify_into(self, output)
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> T::Kind {
+        <T as ToJson>::jsony_to_json_into(self, output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for Box<T> {
     type Kind = T::Kind;
 
-    fn jsonify_into(&self, output: &mut TextWriter) -> T::Kind {
-        <T as ToJson>::jsonify_into(self, output)
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> T::Kind {
+        <T as ToJson>::jsony_to_json_into(self, output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for Arc<T> {
     type Kind = T::Kind;
 
-    fn jsonify_into(&self, output: &mut TextWriter) -> T::Kind {
-        <T as ToJson>::jsonify_into(self, output)
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> T::Kind {
+        <T as ToJson>::jsony_to_json_into(self, output)
     }
 }
 
 impl ToJson for String {
     type Kind = StringValue;
 
-    fn jsonify_into(&self, output: &mut TextWriter) -> StringValue {
-        self.as_str().jsonify_into(output)
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> StringValue {
+        self.as_str().jsony_to_json_into(output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for &T {
     type Kind = T::Kind;
 
-    fn jsonify_into(&self, output: &mut TextWriter) -> T::Kind {
-        <T as ToJson>::jsonify_into(*self, output)
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> T::Kind {
+        <T as ToJson>::jsony_to_json_into(*self, output)
     }
 }
 
 impl<V: ToJson, S> ToJson for HashSet<V, S> {
     type Kind = ArrayValue;
 
-    fn jsonify_into(&self, output: &mut TextWriter) -> ArrayValue {
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> ArrayValue {
         output.start_json_array();
         for value in self {
-            value.jsonify_into(output);
+            value.jsony_to_json_into(output);
             output.push_comma();
         }
         output.end_json_array()
@@ -1061,12 +1061,12 @@ impl<V: ToJson, S> ToJson for HashSet<V, S> {
 impl<K: ToJson<Kind = StringValue>, V: ToJson, S> ToJson for HashMap<K, V, S> {
     type Kind = ObjectValue;
 
-    fn jsonify_into(&self, output: &mut TextWriter) -> ObjectValue {
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> ObjectValue {
         output.start_json_object();
         for (_key, value) in self {
-            value.jsonify_into(output);
+            value.jsony_to_json_into(output);
             output.push_colon();
-            value.jsonify_into(output);
+            value.jsony_to_json_into(output);
             output.push_comma();
         }
         output.end_json_object()
@@ -1075,7 +1075,7 @@ impl<K: ToJson<Kind = StringValue>, V: ToJson, S> ToJson for HashMap<K, V, S> {
 
 impl ToJson for bool {
     type Kind = AnyValue;
-    fn jsonify_into(&self, output: &mut TextWriter) -> AnyValue {
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> AnyValue {
         if *self {
             output.push_str("true");
         } else {
@@ -1124,7 +1124,7 @@ impl<'a, 'b> ArrayWriter<'a, 'b> {
         a: &(impl ToJson<Kind = Kind> + ?Sized),
     ) -> ValueExtender<'k, 'b, Kind> {
         self.writer.smart_array_comma();
-        a.jsonify_into(self.writer);
+        a.jsony_to_json_into(self.writer);
         ValueExtender {
             writer: self.writer,
             phantom: PhantomData,
@@ -1133,7 +1133,7 @@ impl<'a, 'b> ArrayWriter<'a, 'b> {
     pub fn extend(&mut self, a: &dyn ToJson<Kind = ArrayValue>) {
         self.writer.smart_array_comma();
         self.writer.join_parent_json_value_with_next();
-        a.jsonify_into(self.writer);
+        a.jsony_to_json_into(self.writer);
         self.writer.join_array_with_next_value();
         self.writer.joining = false;
     }
@@ -1161,13 +1161,13 @@ impl<'a, 'b> ObjectWriter<'a, 'b> {
     pub fn extend(&mut self, a: &dyn ToJson<Kind = ObjectValue>) {
         self.writer.smart_object_comma();
         self.writer.join_parent_json_value_with_next();
-        a.jsonify_into(self.writer);
+        a.jsony_to_json_into(self.writer);
         self.writer.join_object_with_next_value();
         self.writer.joining = false;
     }
     pub fn dyn_key<'q>(&'q mut self, a: &dyn ToJson<Kind = StringValue>) -> ValueWriter<'q, 'b> {
         self.writer.smart_object_comma();
-        a.jsonify_into(self.writer);
+        a.jsony_to_json_into(self.writer);
         self.writer.push_colon();
         ValueWriter {
             writer: self.writer,
@@ -1175,7 +1175,7 @@ impl<'a, 'b> ObjectWriter<'a, 'b> {
     }
     pub fn key<'q>(&'q mut self, a: &str) -> ValueWriter<'q, 'b> {
         self.writer.smart_object_comma();
-        a.jsonify_into(self.writer);
+        a.jsony_to_json_into(self.writer);
         self.writer.push_colon();
         ValueWriter {
             writer: self.writer,
@@ -1200,21 +1200,21 @@ impl<'a, 'b> Drop for ValueWriter<'a, 'b> {
 impl<'a, 'b> ValueExtender<'a, 'b, ObjectValue> {
     pub fn extend(&mut self, value: &dyn ToJson<Kind = ObjectValue>) {
         self.writer.join_object_with_next_value();
-        value.jsonify_into(self.writer);
+        value.jsony_to_json_into(self.writer);
     }
 }
 
 impl<'a, 'b> ValueExtender<'a, 'b, ArrayValue> {
     pub fn extend(&mut self, value: &dyn ToJson<Kind = ArrayValue>) {
         self.writer.join_array_with_next_value();
-        value.jsonify_into(self.writer);
+        value.jsony_to_json_into(self.writer);
     }
 }
 
 impl<'a, 'b> ValueExtender<'a, 'b, StringValue> {
     pub fn extend(&mut self, value: &dyn ToJson<Kind = StringValue>) {
         self.writer.join_string_with_next_value();
-        value.jsonify_into(self.writer);
+        value.jsony_to_json_into(self.writer);
     }
 }
 
@@ -1230,7 +1230,7 @@ impl<'a, 'b> ValueWriter<'a, 'b> {
         a: &(impl ToJson<Kind = Kind> + ?Sized),
     ) -> ValueExtender<'a, 'b, Kind> {
         let writer = self.into_inner();
-        a.jsonify_into(writer);
+        a.jsony_to_json_into(writer);
         ValueExtender {
             writer,
             phantom: PhantomData,

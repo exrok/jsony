@@ -87,7 +87,7 @@ pub trait ToJson {
     type Kind: JsonValueKind;
     /// The Kind is returned to allow for trivial assertions of kind
     /// inside of the templating macros that also produce good error messages.
-    fn jsonify_into(&self, output: &mut TextWriter) -> Self::Kind;
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> Self::Kind;
 }
 
 /// Lazy JSON parser
@@ -123,13 +123,13 @@ pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, &'static Decod
 
 pub fn to_json<T: ?Sized + ToJson>(value: &T) -> String {
     let mut buf = TextWriter::new();
-    value.jsonify_into(&mut buf);
+    value.jsony_to_json_into(&mut buf);
     buf.into_string()
 }
 
 pub fn to_json_into<'a, T: ToJson, O: TextSink<'a>>(value: &T, output: O) -> O::Output {
     let mut buffer = O::buffer(output);
-    value.jsonify_into(&mut buffer);
+    value.jsony_to_json_into(&mut buffer);
     O::finish(buffer)
 }
 

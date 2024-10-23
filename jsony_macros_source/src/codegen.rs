@@ -301,7 +301,7 @@ fn impl_to_json(
                     },
                 }
             ];
-            fn jsonify_into(&self, out: &mut jsony::TextWriter) -> Self::Kind [
+            fn jsony_to_json_into(&self, out: &mut jsony::TextWriter) -> Self::Kind [
                 output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
@@ -661,7 +661,7 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
         }
         [field] => {
             splat!(out;
-                <[~field.ty] as ::jsony::ToJson>::jsonify_into(&self.[#Literal::usize_unsuffixed(0)], out)
+                <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into(&self.[#Literal::usize_unsuffixed(0)], out)
             );
             ToJsonKind::Forward(field)
         }
@@ -676,7 +676,7 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
                     } else {
                         splat!(out; out.push_comma());
                     }]
-                    <[~field.ty] as ::jsony::ToJson>::jsonify_into(&self.[#Literal::usize_unsuffixed(i)], out);
+                    <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into(&self.[#Literal::usize_unsuffixed(i)], out);
                 }]
                 out.end_json_array()
             );
@@ -707,7 +707,7 @@ fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(
                 text.push(':');
                 out.buf.push(TokenTree::Literal(Literal::string(&text)));
             ]);
-            <[~field.ty] as ::jsony::ToJson>::jsonify_into(&self.[#field.name], out);
+            <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into(&self.[#field.name], out);
         }]
         out.end_json_object()
     );
@@ -903,7 +903,7 @@ fn enum_variant_to_json_struct(
                 out.buf.push(TokenTree::Literal(Literal::string(&text)));
                 text.clear();
             ]);
-            <[~field.ty] as ::jsony::ToJson>::jsonify_into([#field.name], out);
+            <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into([#field.name], out);
         }]
         [
         match ctx.target.tag {
@@ -970,7 +970,7 @@ fn enum_variant_to_json(
             };
             splat! {
                 out;
-                <[~field.ty] as ::jsony::ToJson>::jsonify_into([#ctx.temp[0]], out);
+                <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into([#ctx.temp[0]], out);
             }
         }
         EnumKind::Struct => {

@@ -645,51 +645,6 @@ impl Codegen {
         }
     }
 
-    /// This was for function calls
-    // fn inline_into_json(&mut self, span: Span, args: TokenStream, body: TokenStream) {
-    //     self.flush_text();
-    //     let mut args = args.into_iter();
-    //     let Some(ident) = args.next() else {
-    //         self.error(span, "Expected binding in inline");
-    //         return;
-    //     };
-    //     splat! { (self.out); {
-    //         let [#ident] [self.out.extend(args)] = [match self.flatten {
-    //             Flatten::None => {
-    //                 splat!{ (self.out);
-    //                     <_ as
-    //                 }
-    //             },
-    //             Flatten::Object => todo!(),
-    //             Flatten::Array => todo!(),
-    //         }]
-    //     } };
-    //     let mut x = TokenStream::from_iter(toks![let {ident.clone()}]);
-    //     x.extend(args);
-    //     match self.flatten {
-    //         Flatten::None => {
-    //             x.extend(toks![
-    //                 = <_ as jsony%:OutputBuffer>%:from_builder(&mut {self.builder()});
-    //                 {braced(body)}
-    //                 <_ as OutputBuffer>%:terminate({ident})
-    //             ]);
-    //         }
-    //         Flatten::Object => {
-    //             x.extend(toks![
-    //                 = jsony%:ObjectBuf%:from_builder_raw(&mut {self.builder()});
-    //                 {braced(body)}
-    //             ]);
-    //         }
-    //         Flatten::Array => {
-    //             x.extend(toks![
-    //                 = jsony%:ArrayBuf%:from_builder_raw(&mut {self.builder()});
-    //                 {braced(body)}
-    //             ]);
-    //         }
-    //     }
-    //     self.out.extend([braced(x)]);
-    // }
-
     fn insert_value(&mut self, span: Span, values: &mut Vec<TokenTree>) {
         let [first, ..] = &**values else {
             self.set_err(span, "Expected value after colon");
@@ -886,7 +841,7 @@ impl Codegen {
         self.flush_text();
         splat! {(self.out);
             let _: ::jsony::json::StringValue =
-                <_ as ::jsony::ToJson>::jsonify_into(&[@parend(expr)], [#self.builder]);
+                [@parend(expr)].jsony_to_json_into([#self.builder]);
         };
         self.text.push_str(":");
     }
@@ -908,17 +863,13 @@ impl Codegen {
         match self.flatten {
             Flatten::None => {
                 splat! {(self.out);
-                    <_ as ::jsony::ToJson>::jsonify_into(
-                        &[@expr],
-                        [#self.builder]
-                    );
+                    [@expr].jsony_to_json_into([#self.builder]);
                 }
             }
             Flatten::Object => {
                 splat! {(self.out);
                     [#self.builder].join_parent_json_value_with_next();
-                    let _: ::jsony::json::ObjectValue = <_ as ::jsony::ToJson>::jsonify_into(
-                        &[@expr],
+                    let _: ::jsony::json::ObjectValue = [@expr].jsony_to_json_into(
                         [#self.builder]
                     );
                     [#self.builder].join_object_with_next_value();
@@ -927,8 +878,7 @@ impl Codegen {
             Flatten::Array => {
                 splat! {(self.out);
                     [#self.builder].join_parent_json_value_with_next();
-                    let _: ::jsony::json::ArrayValue = <_ as ::jsony::ToJson>::jsonify_into(
-                        &[@expr],
+                    let _: ::jsony::json::ArrayValue = [@expr].jsony_to_json_into(
                         [#self.builder]
                     );
                     [#self.builder].join_array_with_next_value();
@@ -945,6 +895,7 @@ impl Codegen {
             return token_stream! {
                 (self.out);
                 {
+                    use ::jsony::ToJson;
                     let mut object_writer: &mut ::jsony::json::ObjectWriter = [~&writer];
                     // TODO, detect if mut is needed or not
                     let [?(self.need_mut_builder) mut] builder = object_writer.inner_writer();
@@ -966,6 +917,7 @@ impl Codegen {
         token_stream! {
             out;
             {
+                use ::jsony::ToJson;
                 let mut _builder = jsony::TextWriter::with_capacity(
                     [#Literal::usize_unsuffixed(capacity)]
                 );
