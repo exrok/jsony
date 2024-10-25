@@ -11,6 +11,8 @@ pub mod strings;
 pub mod text;
 mod text_writer;
 pub use byte_writer::BytesWriter;
+use parser::JsonParentContext;
+use parser::MISSING_REQUIRED_FIELDS;
 use text::FromTextSequence;
 use text::TextSequenceFieldNames;
 pub use text_writer::TextWriter;
@@ -95,17 +97,104 @@ pub fn drill(input: &str) -> &lazy_parser::Value {
     lazy_parser::Value::new(input)
 }
 
+struct JsonErrorInner {
+    error: &'static DecodeError,
+    context: Option<String>,
+    parent_context: JsonParentContext,
+    index: usize,
+    surrounding: [u8; 24],
+}
+impl JsonErrorInner {
+    fn near_by_input(&self) -> &[u8] {
+        &self.surrounding[0..self.surrounding[23] as usize]
+    }
+}
+
+pub struct JsonError {
+    inner: Box<JsonErrorInner>,
+}
+
+impl JsonError {
+    pub fn index(&self) -> usize {
+        self.inner.index
+    }
+    pub fn decoding_error(&self) -> &'static DecodeError {
+        self.inner.error
+    }
+    fn extract(error: &'static DecodeError, parser: &mut Parser) -> JsonError {
+        fn surrounding(at: usize, text: &[u8]) -> [u8; 24] {
+            let mut s: [u8; 24] = [0; 24];
+            let end = (at + 12).min(text.len());
+            let start = end.saturating_sub(23);
+            let ctx = &text[start..end];
+            s[23] = ctx.len() as u8;
+            s[0..ctx.len()].copy_from_slice(ctx);
+            s
+        }
+        JsonError {
+            inner: Box::new(JsonErrorInner {
+                error,
+                context: parser.ctx.error.take().map(|x| x.to_string()),
+                parent_context: parser.parent_context,
+                index: parser.index,
+                surrounding: surrounding(parser.index, parser.ctx.data),
+            }),
+        }
+    }
+}
+impl std::error::Error for JsonError {}
+
+impl std::fmt::Debug for JsonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <JsonError as std::fmt::Display>::fmt(self, f)
+    }
+}
+
+impl std::fmt::Display for JsonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.inner.error.message)?;
+        if let Some(context) = &self.inner.context {
+            f.write_str(": ")?;
+            f.write_str(&context)?;
+        }
+
+        match &self.inner.parent_context {
+            JsonParentContext::ObjectKey(key) => {
+                write!(f, " @ key {:?}", key)?;
+            }
+            JsonParentContext::Schema { schema, mask } => {
+                if std::ptr::eq(self.inner.error, &MISSING_REQUIRED_FIELDS) {
+                    write!(f, ": ")?;
+                    let mut first = true;
+                    for (index, field) in schema.fields.iter().enumerate() {
+                        if mask & (1 << index) != 0 {
+                            if !first {
+                                f.write_str(", ")?;
+                            }
+                            first = false;
+                            write!(f, "{:?}", field.name)?;
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+            _ => (),
+        }
+        write!(f, " near `{}`", self.inner.near_by_input().escape_ascii())
+    }
+}
+
 #[inline]
-pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, &'static DecodeError> {
+pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, JsonError> {
     unsafe fn inner_from_json<'a>(
         value: NonNull<()>,
         func: unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>,
         json: &'a [u8],
-    ) -> Result<(), &'static DecodeError> {
+    ) -> Result<(), JsonError> {
         let mut parser = Parser::new(json);
         match unsafe { func(value, &mut parser) } {
             Ok(()) => Ok(()),
-            Err(err) => Err(err),
+            Err(err) => Err(JsonError::extract(err, &mut parser)),
         }
     }
     let mut value = std::mem::MaybeUninit::<T>::uninit();

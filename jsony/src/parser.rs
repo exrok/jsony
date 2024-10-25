@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::ops::Range;
 
+use crate::__internal::ObjectSchemaInner;
 use crate::json::DecodeError;
 use crate::lazy_parser::index_of_string_end2;
 use crate::text::Ctx;
@@ -57,10 +58,21 @@ static TRUE_REST: [u8; 3] = [b'r', b'u', b'e'];
 static FALSE_REST: [u8; 4] = [b'a', b'l', b's', b'e'];
 static NULL_REST: [u8; 3] = [b'u', b'l', b'l'];
 
+#[derive(Clone, Copy)]
+pub(crate) enum JsonParentContext {
+    None,
+    ObjectKey(&'static str),
+    Schema {
+        schema: &'static ObjectSchemaInner,
+        mask: u64,
+    },
+}
+
 #[derive(Clone)]
 pub struct Parser<'j> {
     pub ctx: Ctx<'j>,
     pub index: usize,
+    pub(crate) parent_context: JsonParentContext,
     pub remaining_depth: i32,
 }
 
@@ -136,6 +148,10 @@ pub static RECURSION_LIMIT_EXCEEDED: DecodeError = DecodeError {
     message: "Recursion limit exceeded",
 };
 
+pub static MISSING_REQUIRED_FIELDS: DecodeError = DecodeError {
+    message: "Missing required fields",
+};
+
 fn extract_numeric_literal(
     bytes: &[u8],
     mut index: usize,
@@ -191,15 +207,35 @@ fn extract_raw_string(
     }
 }
 
+pub struct RetrySnapshot {
+    index: usize,
+    recursion_depth: i32,
+}
+
 const DEFAULT_DEPTH_LIMIT: i32 = 128;
 /// consume_X, assumes we already know following thing must be type X
 /// because we peeked and so the prefix. If you call `consume_X` with
 /// peeking your code is likely buggy.
 impl<'j> Parser<'j> {
+    pub fn snapshot(&self) -> RetrySnapshot {
+        RetrySnapshot {
+            index: self.index,
+            recursion_depth: self.remaining_depth,
+        }
+    }
+
+    pub fn restore_for_retry(&mut self, snapshot: &RetrySnapshot) {
+        self.index = snapshot.index;
+        self.remaining_depth = snapshot.recursion_depth;
+        self.parent_context = JsonParentContext::None;
+        self.ctx.error = None;
+    }
+
     pub fn new(data: &'j [u8]) -> Self {
         Self {
             ctx: Ctx::new(data),
             index: 0,
+            parent_context: JsonParentContext::None,
             remaining_depth: DEFAULT_DEPTH_LIMIT,
         }
     }
@@ -377,6 +413,7 @@ impl<'j> Parser<'j> {
     pub fn index_into_next_object(&self, key: &str) -> JsonResult<Option<Parser<'j>>> {
         match crate::lazy_parser::object_index(&self.ctx.data[self.index..], key.as_bytes()) {
             Ok(value) => Ok(Some(Parser {
+                parent_context: JsonParentContext::None,
                 ctx: Ctx::new(self.ctx.data),
                 index: self.index + (self.ctx.data.len() - value.len()),
                 remaining_depth: self.remaining_depth,

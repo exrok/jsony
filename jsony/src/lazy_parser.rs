@@ -17,7 +17,7 @@
 
 use memchr::memchr;
 
-use crate::{from_json, json::DecodeError, FromJson};
+use crate::{from_json, FromJson, JsonError};
 // use serde::de::Error;
 
 #[inline(always)]
@@ -235,7 +235,7 @@ impl ErrorCode {
 }
 
 impl Value {
-    pub fn parse<'a, T: FromJson<'a>>(&'a self) -> Result<T, &'static DecodeError> {
+    pub fn parse<'a, T: FromJson<'a>>(&'a self) -> Result<T, JsonError> {
         if self.is_error() {
             todo!();
         }

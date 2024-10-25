@@ -1145,15 +1145,11 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
         Tag::Untagged => {
             let body = token_stream! {
                 out;
-                let initial_index = parser.index;
-                let initial_remaining_depth = parser.remaining_depth;
+                let snapshot = parser.snapshot();
                 #success: {
                     [for ((i, variant) in variants.iter().enumerate()) {
                         {
-                            [?(i != 0)
-                                parser.index = initial_index;
-                                parser.remaining_depth = initial_remaining_depth;
-                            ]
+                            [?(i != 0) parser.restore_for_retry(&snapshot); ]
                             [try enum_variant_from_json(out, ctx, variant, true)]
                         }
                     }]
@@ -1161,7 +1157,6 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                         message: [@Literal::string("Untagged enum didn't match any variant").into()]
                     })
                 }
-                parser.clear_error();
                 Ok(())
             };
             impl_from_json(out, ctx, body)?;

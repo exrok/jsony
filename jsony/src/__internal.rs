@@ -49,11 +49,19 @@ unsafe impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
             if field.name == field_name {
                 let mask = 1 << i;
                 if self.bitset & mask != 0 {
-                    return Err(&DecodeError {
-                        message: "Duplicate field",
-                    });
+                    if let JsonParentContext::None = parser.parent_context {
+                        parser.parent_context = JsonParentContext::ObjectKey(field.name);
+                    }
+                    return Err(&DUPLICATE_FIELD);
                 } else {
-                    unsafe { (field.decode)(self.destination.byte_add(field.offset), parser) }?;
+                    if let Err(err) =
+                        unsafe { (field.decode)(self.destination.byte_add(field.offset), parser) }
+                    {
+                        if let JsonParentContext::None = parser.parent_context {
+                            parser.parent_context = JsonParentContext::ObjectKey(field.name);
+                        }
+                        return Err(err);
+                    }
                     self.bitset |= mask;
                 }
                 return Ok(());
@@ -65,7 +73,7 @@ unsafe impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
 
 use crate::{
     json::FieldVistor,
-    parser::{Parser, DUPLICATE_FIELD},
+    parser::{JsonParentContext, Parser, DUPLICATE_FIELD, MISSING_REQUIRED_FIELDS},
 };
 
 type DecodeFn<'a> = unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>;
@@ -126,13 +134,21 @@ impl<'a> ObjectSchema<'a> {
                                     continue;
                                 }
                                 if bitset & mask != 0 {
-                                    parser.report_static_error(&field.name);
+                                    if let JsonParentContext::None = parser.parent_context {
+                                        parser.parent_context =
+                                            JsonParentContext::ObjectKey(field.name);
+                                    }
+
                                     break 'with_next_key &DUPLICATE_FIELD;
                                 }
                                 //todo porpotogate error
                                 if let Err(err) =
                                     (field.decode)(dest.byte_add(field.offset), parser)
                                 {
+                                    if let JsonParentContext::None = parser.parent_context {
+                                        parser.parent_context =
+                                            JsonParentContext::ObjectKey(field.name);
+                                    }
                                     break 'with_next_key err;
                                 }
                                 bitset |= mask;
@@ -174,9 +190,11 @@ impl<'a> ObjectSchema<'a> {
             };
             let default = (1u64 << self.inner.defaults.len()) - 1;
             if (bitset | default) & all != all {
-                break 'with_next_key &DecodeError {
-                    message: "Missing required fields",
+                parser.parent_context = JsonParentContext::Schema {
+                    schema: self.inner,
+                    mask: all & !(bitset | default),
                 };
+                break 'with_next_key &MISSING_REQUIRED_FIELDS;
             }
             if let Some(visitor) = &mut unsued {
                 if let Err(err) = visitor.complete() {

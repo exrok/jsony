@@ -411,22 +411,22 @@ impl Codegen {
                 b':' => {
                     {
                         out.buf.push(TokenTree::from(self.builder.clone()));
-                        out.blit(878, 4);
+                        out.blit(859, 4);
                     };
                 }
                 b',' => {
                     {
                         out.buf.push(TokenTree::from(self.builder.clone()));
-                        out.blit(882, 4);
+                        out.blit(863, 4);
                     };
                 }
                 _ => {
                     {
-                        out.blit_ident(137);
+                        out.blit_ident(134);
                         {
                             let at = out.buf.len();
                             out.buf.push(TokenTree::from(self.builder.clone()));
-                            out.blit(886, 2);
+                            out.blit(867, 2);
                             {
                                 let at = out.buf.len();
                                 out.buf.push(TokenTree::Literal(Literal::byte_character(
@@ -530,7 +530,7 @@ impl Codegen {
                         self.flush_text();
                         {
                             (self.out).buf.push(TokenTree::from(self.builder.clone()));
-                            (self.out).blit(888, 4);
+                            (self.out).blit(869, 4);
                         };
                     }
                     return true;
@@ -715,11 +715,11 @@ impl Codegen {
                                     let at = out.buf.len();
                                     out.blit(306, 2);
                                     out.buf.push(TokenTree::from(binding.clone()));
-                                    out.blit_punct(4);
+                                    out.blit_punct(5);
                                     {
                                         match self.flatten {
                                             Flatten::None => {
-                                                out.blit(892, 12);
+                                                out.blit(873, 12);
                                                 {
                                                     let at = out.buf.len();
                                                     out.buf.push(TokenTree::from(
@@ -731,7 +731,7 @@ impl Codegen {
                                             Flatten::Object => {
                                                 self.need_mut_builder = true;
                                                 {
-                                                    out.blit(904, 12);
+                                                    out.blit(885, 12);
                                                     {
                                                         let at = out.buf.len();
                                                         out.blit(13, 2);
@@ -745,7 +745,7 @@ impl Codegen {
                                             Flatten::Array => {
                                                 self.need_mut_builder = true;
                                                 {
-                                                    out.blit(916, 12);
+                                                    out.blit(897, 12);
                                                     {
                                                         let at = out.buf.len();
                                                         out.blit(13, 2);
@@ -804,7 +804,7 @@ impl Codegen {
         self.flush_text();
         {
             (self.out).buf.push(TokenTree::from(self.builder.clone()));
-            (self.out).blit(888, 4);
+            (self.out).blit(869, 4);
         };
     }
     fn begin_inline_object(&mut self) {
@@ -832,9 +832,9 @@ impl Codegen {
     fn dyn_key(&mut self, _span: Span, expr: TokenStream) {
         self.flush_text();
         {
-            (self.out).blit(928, 13);
+            (self.out).blit(909, 13);
             (self.out).buf.push(parend(expr));
-            (self.out).blit(941, 2);
+            (self.out).blit(922, 2);
             {
                 let at = (self.out).buf.len();
                 (self.out).buf.push(TokenTree::from(self.builder.clone()));
@@ -861,7 +861,7 @@ impl Codegen {
         match self.flatten {
             Flatten::None => {
                 (self.out).buf.push(expr);
-                (self.out).blit(941, 2);
+                (self.out).blit(922, 2);
                 {
                     let at = (self.out).buf.len();
                     (self.out).buf.push(TokenTree::from(self.builder.clone()));
@@ -871,9 +871,9 @@ impl Codegen {
             }
             Flatten::Object => {
                 (self.out).buf.push(TokenTree::from(self.builder.clone()));
-                (self.out).blit(943, 17);
+                (self.out).blit(924, 17);
                 (self.out).buf.push(expr);
-                (self.out).blit(941, 2);
+                (self.out).blit(922, 2);
                 {
                     let at = (self.out).buf.len();
                     (self.out).buf.push(TokenTree::from(self.builder.clone()));
@@ -881,13 +881,13 @@ impl Codegen {
                 };
                 (self.out).blit_punct(0);
                 (self.out).buf.push(TokenTree::from(self.builder.clone()));
-                (self.out).blit(960, 4);
+                (self.out).blit(941, 4);
             }
             Flatten::Array => {
                 (self.out).buf.push(TokenTree::from(self.builder.clone()));
-                (self.out).blit(964, 17);
+                (self.out).blit(945, 17);
                 (self.out).buf.push(expr);
-                (self.out).blit(941, 2);
+                (self.out).blit(922, 2);
                 {
                     let at = (self.out).buf.len();
                     (self.out).buf.push(TokenTree::from(self.builder.clone()));
@@ -895,7 +895,7 @@ impl Codegen {
                 };
                 (self.out).blit_punct(0);
                 (self.out).buf.push(TokenTree::from(self.builder.clone()));
-                (self.out).blit(981, 4);
+                (self.out).blit(962, 4);
             }
         }
     }
@@ -908,13 +908,13 @@ impl Codegen {
                 let len = (self.out).buf.len();
                 {
                     let at = (self.out).buf.len();
-                    (self.out).blit(985, 24);
+                    (self.out).blit(966, 24);
                     (self.out).buf.extend_from_slice(&writer);
                     (self.out).blit(502, 2);
                     if self.need_mut_builder {
-                        (self.out).blit_ident(145);
+                        (self.out).blit_ident(142);
                     };
-                    (self.out).blit(1009, 12);
+                    (self.out).blit(990, 12);
                     (self.out).buf.push(braced);
                     (self.out).tt_group(Delimiter::Brace, at);
                 };
@@ -924,7 +924,7 @@ impl Codegen {
         if self.out.buf.is_empty() {
             return {
                 let len = (self.out).buf.len();
-                (self.out).blit(1021, 4);
+                (self.out).blit(1002, 4);
                 {
                     let at = (self.out).buf.len();
                     (self.out).buf.push(str_lit(&self.text));
@@ -941,7 +941,7 @@ impl Codegen {
             let len = out.buf.len();
             {
                 let at = out.buf.len();
-                out.blit(1025, 19);
+                out.blit(1006, 19);
                 {
                     let at = out.buf.len();
                     out.buf
@@ -951,16 +951,16 @@ impl Codegen {
                 out.blit_punct(0);
                 {
                     let at = out.buf.len();
-                    out.blit_ident(146);
+                    out.blit_ident(143);
                     if self.need_mut_builder {
-                        out.blit_ident(145);
+                        out.blit_ident(142);
                     };
                     out.buf.push(TokenTree::from(self.builder.clone()));
-                    out.blit(1044, 5);
+                    out.blit(1025, 5);
                     out.buf.push(braced);
                     out.tt_group(Delimiter::Brace, at);
                 };
-                out.blit(1049, 4);
+                out.blit(1030, 4);
                 out.tt_group(Delimiter::Brace, at);
             };
             out.split_off_stream(len)

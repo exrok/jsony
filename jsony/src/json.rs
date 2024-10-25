@@ -107,6 +107,7 @@ pub unsafe trait FromJsonFieldVisitor<'a> {
 pub struct DecodeError {
     pub message: &'static str,
 }
+
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.message)
