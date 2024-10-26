@@ -113,8 +113,11 @@ fn main() {
     }
 
     util::print_pretty_and_copy(codegen::derive(tokens! {
-        #[jsony(ToJson, FromJson)]
-        #[repr(transparent)]
-        struct Untagged(u32)
+    enum Simple {
+        Alpha(u32),
+        Beta { a: String, b: Vec<u8> },
+        Delta,
+        Zeta,
+    }
     }));
 }

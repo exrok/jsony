@@ -39,17 +39,17 @@ pub fn escape_to_cow(input: &str) -> Result<Cow<'_, str>, &'static DecodeError> 
             scratch.extend_from_slice(&bytes[start..]);
             return Ok(Cow::Owned(unsafe { String::from_utf8_unchecked(scratch) }));
         };
-        index = index2;
+        index = index2 + start;
     }
 }
 
-fn parse_escape(
+pub(crate) fn parse_escape(
     mut index: usize,
     read: &[u8],
     validate: bool,
     scratch: &mut Vec<u8>,
 ) -> Result<usize, ()> {
-    let Some(ch) = read.first() else {
+    let Some(ch) = read.get(index) else {
         return Err(());
     };
     index += 1;
@@ -64,8 +64,9 @@ fn parse_escape(
         b'r' => scratch.push(b'\r'),
         b't' => scratch.push(b'\t'),
         b'u' => return parse_unicode_escape(index, read, validate, scratch),
-        // _ => return error(read, ErrorCode::InvalidEscape),
-        _ => return Err(()),
+        _ => {
+            return Err(());
+        }
     }
 
     Ok(index)
@@ -85,7 +86,9 @@ fn parse_unicode_escape(
             match decode_four_hex_digits(a, b, c, d) {
                 Some(val) => val,
                 // None => error(self, ErrorCode::InvalidEscape),
-                None => return Err(()),
+                None => {
+                    return Err(());
+                }
             }
         }
         _ => {
@@ -118,34 +121,6 @@ fn parse_unicode_escape(
         return Err(());
     }
     index += 2;
-    // if tri!(peek_or_eof(read)) == b'\\' {
-    //     read.discard();
-    // } else {
-    //     return Err(());
-    //     // return if validate {
-    //     //     read.discard();
-    //     //     return Err(());
-    //     // } else {
-    //     //     push_wtf8_codepoint(n1 as u32, scratch);
-    //     //     Ok(index)
-    //     // };
-    // }
-
-    // if tri!(peek_or_eof(read)) == b'u' {
-    //     read.discard();
-    // } else {
-    //     return if validate {
-    //         read.discard();
-    //         error(read, ErrorCode::UnexpectedEndOfHexEscape)
-    //     } else {
-    //         push_wtf8_codepoint(n1 as u32, scratch);
-    //         // The \ prior to this byte started an escape sequence, so we
-    //         // need to parse that now. This recursive call does not blow the
-    //         // stack on malicious input because the escape is not \u, so it
-    //         // will be handled by one of the easy nonrecursive cases.
-    //         parse_escape(read, validate, scratch)
-    //     };
-    // }
 
     let n2 = match read[index..] {
         [a, b, c, d, ..] => {
@@ -293,5 +268,21 @@ pub(crate) fn decode_two_hex_digits(a: u8, b: u8) -> Option<u8> {
         Some(codepoint as u8)
     } else {
         None
+    }
+}
+#[cfg(test)]
+mod test {
+    use super::*;
+    #[test]
+    fn escapes() {
+        assert_eq!(
+            decode_four_hex_digits(b'0', b'0', b'7', b'9').unwrap(),
+            b'y' as u16
+        );
+        assert_eq!(
+            decode_four_hex_digits(b'0', b'0', b'7', b'9').unwrap(),
+            b'y' as u16
+        );
+        assert_eq!(escape_to_string("ke\\u0079").unwrap(), "key");
     }
 }

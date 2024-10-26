@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use jsony::{from_json, Jsony};
 
 macro_rules! obj {
@@ -170,4 +172,20 @@ fn recursion_limits() {
 
     let foo = recurse(63, "{\"key\": [", "0", "]}");
     from_json::<Vec<Untagged>>(&format!("[{foo},{foo},{foo}]")).unwrap();
+}
+
+#[test]
+fn escapes() {
+    #[derive(Jsony, Debug, PartialEq, Eq)]
+    struct Object<'a> {
+        key: Cow<'a, str>,
+    }
+    fn obj(key: &str) -> Object<'_> {
+        Object { key: key.into() }
+    }
+    assert_eq!(
+        from_json::<Object>(r#"{ "ke\u0079": "" }"#).unwrap(),
+        obj(""),
+        "Should decoded needless escaped text"
+    );
 }

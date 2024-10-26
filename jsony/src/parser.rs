@@ -4,7 +4,6 @@ use std::ops::Range;
 
 use crate::__internal::ObjectSchemaInner;
 use crate::json::DecodeError;
-use crate::lazy_parser::index_of_string_end2;
 use crate::text::Ctx;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -74,6 +73,7 @@ pub struct Parser<'j> {
     pub index: usize,
     pub(crate) parent_context: JsonParentContext,
     pub remaining_depth: i32,
+    pub scratch: Vec<u8>,
 }
 
 impl<'j> fmt::Debug for Parser<'j> {
@@ -186,27 +186,6 @@ fn is_escape(ch: u8) -> bool {
     ch == b'"' || ch == b'\\' || ch < 0x20
 }
 
-fn extract_raw_string(
-    bytes: &[u8],
-    mut index: usize,
-) -> Result<(&str, usize), &'static DecodeError> {
-    while let Some(next) = bytes.get(index) {
-        match next {
-            b' ' | b'\r' | b'\t' | b'\n' => index += 1,
-            b'"' => break,
-            _ => return Err(&EXPECTED_STRING),
-        }
-    }
-    index += 1;
-    if let Some(ste) = index_of_string_end2(&bytes[index..]) {
-        let end = index + ste;
-        let output = unsafe { std::str::from_utf8_unchecked(&bytes[index..end]) };
-        Ok((output, end + 1))
-    } else {
-        Err(&EOF_WHILE_PARSING_STRING)
-    }
-}
-
 pub struct RetrySnapshot {
     index: usize,
     recursion_depth: i32,
@@ -237,6 +216,7 @@ impl<'j> Parser<'j> {
             index: 0,
             parent_context: JsonParentContext::None,
             remaining_depth: DEFAULT_DEPTH_LIMIT,
+            scratch: Vec::new(),
         }
     }
     pub fn report_static_error(&mut self, error: &'j str) {
@@ -417,6 +397,7 @@ impl<'j> Parser<'j> {
                 ctx: Ctx::new(self.ctx.data),
                 index: self.index + (self.ctx.data.len() - value.len()),
                 remaining_depth: self.remaining_depth,
+                scratch: Vec::new(),
             })),
             Err(_) => Err(&TODO_ERROR),
         }
@@ -480,7 +461,7 @@ impl<'j> Parser<'j> {
         &mut self,
         tag: &str,
         content: &str,
-    ) -> JsonResult<&'j str> {
+    ) -> JsonResult<&str> {
         if self.peek()? != Peek::Object {
             return Err(&EOF_WHILE_PARSING_OBJECT);
         }
@@ -597,14 +578,14 @@ impl<'j> Parser<'j> {
             }
         }
     }
-    pub fn enter_object(&mut self) -> JsonResult<Option<&'j str>> {
+    pub fn enter_object(&mut self) -> JsonResult<Option<&str>> {
         if self.peek()? != Peek::Object {
             return Err(&EOF_WHILE_PARSING_OBJECT);
         }
         self.enter_seen_object()
     }
 
-    pub fn enter_seen_object(&mut self) -> JsonResult<Option<&'j str>> {
+    pub fn enter_seen_object(&mut self) -> JsonResult<Option<&str>> {
         debug_assert_eq!(self.ctx.data[self.index], b'{');
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
@@ -614,7 +595,8 @@ impl<'j> Parser<'j> {
                     if self.remaining_depth < 0 {
                         return Err(&RECURSION_LIMIT_EXCEEDED);
                     }
-                    self.read_seen_unescaped_object_key().map(Some)
+                    // self.read_seen_unescaped_object_key().map(Some)
+                    self.read_seen_object_key().map(Some)
                 }
                 b'}' => {
                     self.index += 1;
@@ -651,13 +633,13 @@ impl<'j> Parser<'j> {
         }
     }
 
-    pub fn object_step(&mut self) -> JsonResult<Option<&'j str>> {
+    pub fn object_step(&mut self) -> JsonResult<Option<&str>> {
         if let Some(next) = self.eat_whitespace() {
             match next {
                 b',' => {
                     self.index += 1;
                     match self.eat_whitespace() {
-                        Some(b'"') => self.read_seen_unescaped_object_key().map(Some),
+                        Some(b'"') => self.read_seen_object_key().map(Some),
                         Some(b'}') => Err(&TRAILING_COMMA),
                         Some(_) => Err(&KEY_MUST_BE_A_STRING),
                         None => Err(&EOF_WHILE_PARSING_VALUE),
@@ -804,14 +786,67 @@ impl<'j> Parser<'j> {
         }
     }
 
-    pub fn take_string(&mut self) -> JsonResult<&'j str> {
-        //todo opt
-        self.eat_whitespace();
-        let (output, index) = extract_raw_string(self.ctx.data, self.index)?;
-        self.index = index;
-        Ok(output)
+    pub fn take_string(&mut self) -> JsonResult<&str> {
+        if self.peek()? != Peek::Object {
+            return Err(&EOF_WHILE_PARSING_STRING);
+        }
+        self.read_seen_string()
     }
 
+    pub fn read_seen_string(&mut self) -> JsonResult<&str> {
+        debug_assert_eq!(self.ctx.data[self.index], b'"');
+        self.index += 1;
+        let mut start = self.index;
+        self.scratch.clear();
+        loop {
+            self.skip_to_escape();
+            // match unsafe { self.ctx.data.get_unchecked(self.indexl } {
+            match self.ctx.data[self.index] {
+                b'"' => {
+                    if self.scratch.is_empty() {
+                        let output = unsafe {
+                            std::str::from_utf8_unchecked(&self.ctx.data[start..self.index])
+                        };
+                        self.index += 1;
+                        return Ok(output);
+                    } else {
+                        self.scratch
+                            .extend_from_slice(&self.ctx.data[start..self.index]);
+                        self.index += 1;
+                        println!("scratchy: {}", self.scratch.escape_ascii());
+                        return Ok(unsafe { std::str::from_utf8_unchecked(&self.scratch) });
+                    }
+                }
+                b'\\' => {
+                    self.scratch
+                        .extend_from_slice(&self.ctx.data[start..self.index]);
+                    self.index += 1;
+                    match crate::strings::parse_escape(
+                        self.index,
+                        &self.ctx.data,
+                        true,
+                        &mut self.scratch,
+                    ) {
+                        Ok(index) => {
+                            self.index = index;
+                            start = index;
+                        }
+                        Err(()) => {
+                            return Err(&DecodeError {
+                                message: "Invalid escape",
+                            })
+                        }
+                    }
+                    continue;
+                }
+                _ => {
+                    return Err(&DecodeError {
+                        message: "Control character detected in json",
+                    })
+                }
+            }
+        }
+    }
     pub fn read_seen_string_unescaped(&mut self) -> JsonResult<&'j str> {
         debug_assert_eq!(self.ctx.data[self.index], b'"');
         self.index += 1;
@@ -852,15 +887,26 @@ impl<'j> Parser<'j> {
         Ok(output)
     }
 
-    /// private method to get an object key, then consume the colon which should follow
-    fn read_seen_unescaped_object_key(&mut self) -> JsonResult<&'j str> {
+    pub(crate) unsafe fn unfreeze_with_context<'a>(
+        &'a mut self,
+        frozen: *const str,
+    ) -> (&'a str, &'a mut Ctx<'j>) {
+        (&*frozen, &mut self.ctx)
+    }
+    pub(crate) unsafe fn unfreeze<'a>(&'a mut self, frozen: *const str) -> &'a str {
+        &*frozen
+    }
+
+    fn read_seen_object_key(&mut self) -> JsonResult<&'j str> {
         debug_assert_eq!(self.ctx.data[self.index], b'"');
-        let key = self.read_seen_string_unescaped()?;
+        let key = self.read_seen_string()? as *const str;
 
         if let Some(next) = self.eat_whitespace() {
             if next == b':' {
                 self.index += 1;
-                Ok(key)
+
+                // todo split buffer and parser such that this hack is unneeded
+                Ok(unsafe { &*key })
             } else {
                 Err(&EXPECTED_COLON)
             }

@@ -14,7 +14,11 @@ use std::{
 use crate::parser::{Parser, Peek};
 
 pub unsafe trait FieldVistor<'a> {
-    fn visit(&mut self, field: &str, parser: &mut Parser<'a>) -> Result<(), &'static DecodeError>;
+    unsafe fn visit(
+        &mut self,
+        field: *const str,
+        parser: &mut Parser<'a>,
+    ) -> Result<(), &'static DecodeError>;
     fn complete(&mut self) -> Result<(), &'static DecodeError>;
     /// # Safety
     /// must only call once.
@@ -25,7 +29,7 @@ pub unsafe trait FieldVistor<'a> {
 pub struct FuncFieldVisitor<'a> {
     visit: unsafe fn(
         ptr: NonNull<()>,
-        field: &str,
+        field: *const str,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError>,
     drop: unsafe fn(ptr: NonNull<()>),
@@ -33,7 +37,11 @@ pub struct FuncFieldVisitor<'a> {
 }
 
 unsafe impl<'a> FieldVistor<'a> for FuncFieldVisitor<'a> {
-    fn visit(&mut self, field: &str, parser: &mut Parser<'a>) -> Result<(), &'static DecodeError> {
+    unsafe fn visit(
+        &mut self,
+        field: *const str,
+        parser: &mut Parser<'a>,
+    ) -> Result<(), &'static DecodeError> {
         unsafe { (self.visit)(self.ptr, field, parser) }
     }
     fn complete(&mut self) -> Result<(), &'static DecodeError> {
@@ -57,7 +65,8 @@ where
         FuncFieldVisitor {
             visit: |ptr, field, parser| {
                 let map = &mut *ptr.cast::<Self>().as_ptr();
-                let key = K::from_text(&mut parser.ctx, field)?;
+                let (field, ctx) = unsafe { parser.unfreeze_with_context(field) };
+                let key = K::from_text(ctx, field)?;
                 let value = T::decode_json(parser)?;
                 map.insert(key, value);
                 Ok(())
@@ -84,7 +93,8 @@ where
         FuncFieldVisitor {
             visit: |ptr, field, parser| {
                 let map = &mut *ptr.cast::<Self>().as_ptr();
-                let key = K::from_text(&mut parser.ctx, field)?;
+                let (field, ctx) = unsafe { parser.unfreeze_with_context(field) };
+                let key = K::from_text(ctx, field)?;
                 let value = T::decode_json(parser)?;
                 map.push((key, value));
                 Ok(())

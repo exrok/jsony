@@ -21,7 +21,7 @@ impl<'a> Ctx<'a> {
             self.error = Some(Cow::Borrowed(err));
         }
     }
-    fn try_extend_lifetime(&self, text: &str) -> Option<&'a str> {
+    pub fn try_extend_lifetime(&self, text: &str) -> Option<&'a str> {
         if self.data.as_ptr_range().contains(&text.as_ptr()) {
             Some(unsafe { &*(text as *const str) })
         } else {

@@ -40,11 +40,12 @@ unsafe impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
             }
         }
     }
-    fn visit(
+    unsafe fn visit(
         &mut self,
-        field_name: &str,
+        field_name: *const str,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
+        let field_name = unsafe { parser.unfreeze(field_name) };
         for (i, field) in self.schema.fields().iter().enumerate() {
             if field.name == field_name {
                 let mask = 1 << i;
@@ -152,16 +153,6 @@ impl<'a> ObjectSchema<'a> {
                                     break 'with_next_key err;
                                 }
                                 bitset |= mask;
-                                //todo should maybe should remove this
-                                // if unsued.is_none() && bitset & all == all {
-                                //     // todo handle error opimtize
-                                //     while let Ok(Some(_)) = parser.object_step() {
-                                //         if let Err(err) = parser.skip_value() {
-                                //             break 'with_next_key err;
-                                //         }
-                                //     }
-                                //     return Ok(());
-                                // }
                                 break 'next;
                             }
                             if let Some(ref mut unsued_processor) = unsued {

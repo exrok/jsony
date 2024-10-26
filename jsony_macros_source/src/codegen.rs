@@ -1225,7 +1225,8 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
             }]
 
             _ => {
-                parser.report_error(variant.to_string());
+                let variant = variant.to_string();
+                parser.report_error(variant);
                 return Err(&::jsony::parser::UNKNOWN_VARIANT);
             }
         }
