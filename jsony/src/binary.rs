@@ -1,3 +1,32 @@
+//! Binary encoding module for jsony.
+//!
+//! The Jasoni binary encoding format is a simple and straightforward format designed for efficiency.
+//! Each field is serialized in order based on the definitions in derives.
+//!
+//! # Encoding Rules
+//!
+//! | Type | Encoding |
+//! |------|----------|
+//! | Basic integer types | Serialized directly in little-endian format |
+//! | Collections (strings, maps, arrays) | Length followed by each component |
+//! | Length encoding | For values < 255: single byte <br> For values >= 255: 0xFF byte followed by U64 in little-endian |
+//!
+//! # Implementation Details
+//!
+//! - Optimized for compile-time efficiency
+//! - Decoding and encoding do not use `Result` for error handling
+//! - Errors are stored in the decoder and checked at the end
+//! - No support for optional values currently
+//! - Struct derives result in straightforward, error-handling-free decoding
+//!
+//! # Optimization
+//!
+//! Binary encoding types can be marked as "plain old data" to enable direct memory copying,
+//! which is particularly beneficial for arrays of scalars.
+//!
+//! This implementation differs from other crates in its focus on compile-time efficiency
+//! and straightforward error handling approach.
+
 use super::{FromBinary, ToBinary};
 use crate::BytesWriter;
 use std::{
@@ -6,14 +35,6 @@ use std::{
     hash::{BuildHasher, Hash},
     ptr::NonNull,
 };
-
-pub struct Decoder<'a> {
-    start: NonNull<u8>,
-    end: NonNull<u8>,
-    eof: bool,
-    error: Option<Cow<'static, str>>,
-    _marker: std::marker::PhantomData<&'a ()>,
-}
 
 pub struct FromBinaryError {
     message: Cow<'static, str>,
@@ -60,35 +81,60 @@ impl<'a> Decoder<'a> {
     }
 }
 
+/// A binary decoder for reading encoded data.
+///
+/// This struct allows reading bytes from the provided input according to the binary encoding format
+/// specified in the `binary` module. It also keeps track of any errors encountered during parsing.
+///
+/// # Error Handling
+///
+/// When the end of file (EOF) is reached, an error is stored, and subsequent reads will return:
+/// - `0` for individual bytes
+/// - Zero-filled arrays
+/// - Empty slices
+///
+/// # Examples
+///
+/// ```
+/// // Example usage of Decoder
+/// ```
+pub struct Decoder<'a> {
+    start: NonNull<u8>,
+    end: NonNull<u8>,
+    eof: bool,
+    error: Option<Cow<'static, str>>,
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
 impl<'a> Decoder<'a> {
+    /// Reports a static error message.
+    ///
+    /// If no error has been set yet, this method stores the provided error message
+    /// and resets the internal pointer to the start of the input.
     pub fn report_static_error(&mut self, error: &'static str) {
         if self.error.is_none() {
             self.error = Some(Cow::Borrowed(error));
             self.end = self.start;
         }
     }
+    /// Reports a formatted error message.
+    ///
+    /// If no error has been set yet, this method stores the provided formatted error message
+    /// and resets the internal pointer to the start of the input.
     pub fn report_error(&mut self, error: std::fmt::Arguments) {
         if self.error.is_none() {
             self.error = Some(Cow::Owned(error.to_string()));
             self.end = self.start;
         }
     }
-    fn byte_slice(&mut self, n: usize) -> &'a [u8] {
-        unsafe {
-            let nstart = self.start.add(n);
-            if nstart.as_ptr() > self.end.as_ptr() {
-                self.eof = true;
-                return &[];
-            }
-            let ptr = std::slice::from_raw_parts(self.start.as_ptr(), n);
-            self.start = nstart;
-            ptr
-        }
-    }
+    /// Reads a fixed-size byte array from the input.
+    ///
+    /// Returns a reference to the read array, or a zero-filled array if EOF is reached.
     pub fn byte_array<const N: usize>(&mut self) -> &'a [u8; N] {
         unsafe {
             let nstart = self.start.add(N);
             if nstart > self.end {
+                self.eof = true;
                 return &[0; N];
             }
             let ptr = self.start.as_ptr() as *const [u8; N];
@@ -96,6 +142,10 @@ impl<'a> Decoder<'a> {
             &*ptr
         }
     }
+
+    /// Reads a single byte from the input.
+    ///
+    /// Returns the read byte, or 0 if EOF is reached.
     pub fn byte(&mut self) -> u8 {
         unsafe {
             if self.start.as_ptr() >= self.end.as_ptr() {
@@ -107,6 +157,10 @@ impl<'a> Decoder<'a> {
             value
         }
     }
+
+    /// Reads a length value from the input.
+    ///
+    /// Returns the decoded length as a `usize`, or 0 if EOF is reached.
     pub fn read_length(&mut self) -> usize {
         unsafe {
             if self.start.as_ptr() >= self.end.as_ptr() {
@@ -122,7 +176,40 @@ impl<'a> Decoder<'a> {
             }
         }
     }
+
+    /// Reads a slice of bytes from the input.
+    ///
+    /// Returns a reference to the read slice, or an empty slice if EOF is reached.
+    fn byte_slice(&mut self, n: usize) -> &'a [u8] {
+        unsafe {
+            let nstart = self.start.add(n);
+            if nstart.as_ptr() > self.end.as_ptr() {
+                self.eof = true;
+                return &[];
+            }
+            let ptr = std::slice::from_raw_parts(self.start.as_ptr(), n);
+            self.start = nstart;
+            ptr
+        }
+    }
 }
+
+/// Writes a length value to the given `BytesWriter` using Jsony's standard binary format.
+///
+/// # Implementation Details
+///
+/// - For lengths less than 255, the value is stored as a single byte.
+/// - For lengths 255 or greater:
+///   1. A byte containing 255 is emitted.
+///   2. The length is then written as a u64 in little-endian format.
+///
+/// This encoding scheme optimizes for common (smaller) lengths while still supporting larger values.
+/// The overhead of storing longer lengths is minimal compared to the size of the content they measure.
+///
+/// # Arguments
+///
+/// * `encoder` - The `BytesWriter` to write the length to.
+/// * `len` - The length value to encode.
 pub fn write_length(encoder: &mut BytesWriter, len: usize) {
     if len >= 255 {
         encoder.push(255);
@@ -176,6 +263,7 @@ unsafe impl ToBinary for u8 {
         encoder.push(*self)
     }
 }
+
 unsafe impl<'a> FromBinary<'a> for u8 {
     const POD: bool = true;
     fn binary_decode(decoder: &mut Decoder<'a>) -> Self {

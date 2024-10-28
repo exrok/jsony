@@ -113,11 +113,17 @@ fn main() {
     }
 
     util::print_pretty_and_copy(codegen::derive(tokens! {
-    enum Simple {
-        Alpha(u32),
-        Beta { a: String, b: Vec<u8> },
-        Delta,
-        Zeta,
+    #[jsony(FromJson, tag = "kind")]
+    enum Status<'a> {
+        Online,
+        Error {
+            #[jsony(default = i64::MAX)]
+            code: i64,
+            message: Cow<'a, str>,
+            #[jsony(flatten)]
+            properties: Vec<(String, JsonItem<'a>)>,
+        },
+        Offline,
     }
-    }));
+        }));
 }

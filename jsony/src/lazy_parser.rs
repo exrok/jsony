@@ -17,7 +17,7 @@
 
 use memchr::memchr;
 
-use crate::{from_json, FromJson, JsonError};
+use crate::{from_json_with_config, FromJson, JsonError, JsonParserConfig};
 // use serde::de::Error;
 
 #[inline(always)]
@@ -239,7 +239,16 @@ impl Value {
         if self.is_error() {
             todo!();
         }
-        from_json::<'a, T>(&self.raw)
+        from_json_with_config::<'a, T>(
+            &self.raw,
+            JsonParserConfig {
+                recursion_limit: 128,
+                allow_trailing_commas: false,
+                allow_comments: false,
+                allow_unquoted_keys: false,
+                allow_trailing_data: true,
+            },
+        )
     }
     pub fn error_code(&self) -> Option<ErrorCode> {
         if !self.is_error() {

@@ -1039,11 +1039,20 @@ fn enum_variant_from_json_struct(
             };
             let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
             let mut temp_flatten = ::std::mem::MaybeUninit::<[~flatten_field.ty]>::uninit();
+            // todo should handle unneed mut
             let mut flatten_visitor =
                 <[~flatten_field.ty] as ::jsony::json::FromJsonFieldVisitor>::new_field_visitor(
                     ::std::ptr::NonNull::new_unchecked(temp_flatten.as_mut_ptr().cast()),
                     parser,
                 );
+            [?(let Tag::Inline(tag_name) = &ctx.target.tag)
+                [?(ctx.target.content.is_none())
+                    let mut flatten_visitor = jsony::__internal::SkipFieldVisitor{
+                        skipped_field: [@Literal::string(tag_name).into()],
+                        visitor: flatten_visitor
+                    };
+                ]
+            ]
             if let Err(_err) = schema.decode(
                 ::std::ptr::NonNull::new_unchecked(temp.as_mut_ptr().cast()),
                 parser,

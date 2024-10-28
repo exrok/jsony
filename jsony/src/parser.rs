@@ -780,14 +780,35 @@ impl<'j> Parser<'j> {
     #[cold]
     #[inline(never)]
     fn skip_to_escape_slow(&mut self) {
-        println!("slow",);
         while self.index < self.ctx.data.len() && !is_escape(self.ctx.data[self.index]) {
             self.index += 1;
         }
     }
 
+    pub fn take_cow_string(&mut self) -> JsonResult<Cow<'j, str>> {
+        if self.peek()? != Peek::String {
+            return Err(&EOF_WHILE_PARSING_STRING);
+        }
+        let value: *const str = self.read_seen_string()?;
+        let (value, ctx) = unsafe { self.unfreeze_with_context(value) };
+        if let Some(borrowed) = ctx.try_extend_lifetime(value) {
+            Ok(Cow::Borrowed(borrowed))
+        } else {
+            let owned = value.to_string();
+            Ok(Cow::Owned(owned))
+        }
+    }
+
+    /// Reads and returns the next string value from the JSON input.
+    ///
+    /// This function advances the parser's cursor to the next non-whitespace character,
+    /// expecting it to be the start of a string. If a string is found, it is parsed
+    /// and returned. The parser's cursor ends immediately after the parsed string.
+    ///
+    /// Depending on the presence of escapes the string maybe reference to underlying
+    /// input or buffer.
     pub fn take_string(&mut self) -> JsonResult<&str> {
-        if self.peek()? != Peek::Object {
+        if self.peek()? != Peek::String {
             return Err(&EOF_WHILE_PARSING_STRING);
         }
         self.read_seen_string()
@@ -800,6 +821,9 @@ impl<'j> Parser<'j> {
         self.scratch.clear();
         loop {
             self.skip_to_escape();
+            if self.index == self.ctx.data.len() {
+                return Err(&EOF_WHILE_PARSING_STRING);
+            }
             // match unsafe { self.ctx.data.get_unchecked(self.indexl } {
             match self.ctx.data[self.index] {
                 b'"' => {
@@ -813,7 +837,6 @@ impl<'j> Parser<'j> {
                         self.scratch
                             .extend_from_slice(&self.ctx.data[start..self.index]);
                         self.index += 1;
-                        println!("scratchy: {}", self.scratch.escape_ascii());
                         return Ok(unsafe { std::str::from_utf8_unchecked(&self.scratch) });
                     }
                 }
@@ -853,6 +876,9 @@ impl<'j> Parser<'j> {
         let start = self.index;
         loop {
             self.skip_to_escape();
+            if self.index == self.ctx.data.len() {
+                return Err(&EOF_WHILE_PARSING_STRING);
+            }
             // match unsafe { self.ctx.data.get_unchecked(self.indexl } {
             match self.ctx.data[self.index] {
                 b'"' => {

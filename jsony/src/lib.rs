@@ -25,34 +25,117 @@ use parser::Parser;
 pub use jsony_macros::{array, object, Jsony};
 pub use text_writer::TextSink;
 
-/// If `POD` is `false` then this trait is safe to implement
-/// `POD` = true implies that `Self` is valid for all bit
-/// patterns and has no padding.
+/// A trait for parsing a value from a compact binary representation.
+///
+/// # Safety
+///
+/// This trait is safe to implement if you only override `binary_decode` and leave
+/// other methods as default. However, setting `POD = true` requires additional
+/// safety considerations.
+///
+/// # Usage
+///
+/// Given a decoder, `binary_decode` will attempt to decode `Self` from the prefix
+/// of the decoder. This method always returns a value, even in case of an error.
+/// When an error occurs, a default value is returned. This approach is primarily
+/// an optimization but can also be used to extract partial values when parsing
+/// as a whole has failed.
+///
+/// # Error Handling
+///
+/// Errors are stored in the decoder rather than being returned directly by
+/// `binary_decode`.
+///
+/// # Plain Old Data (POD)
+///
+/// Setting `POD = true` indicates that this type can be directly memory-copied
+/// from the input and maintains the same representation as if it was encoded
+/// field-by-field in the binary decoder.
+///
+/// ## Requirements for `POD = true`:
+/// - Every bit must be valid for the type and layout.
+/// - There must be no padding between fields.
+/// - Fields must be laid out in the same order as they are encoded and decoded
+///   by `binary_decode`.
 pub unsafe trait FromBinary<'a>: Sized {
+    /// Indicates whether this type is Plain Old Data (POD).
     const POD: bool = false;
 
+    /// Decodes `Self` from the given decoder.
     fn binary_decode(decoder: &mut Decoder<'a>) -> Self;
 
+    /// Hidden method for endian transformation.
+    ///
+    /// This method is only defined for non-little-endian targets.
     #[doc(hidden)]
     #[cfg(not(target_endian = "little"))]
     fn endian_transform(&mut self) {}
 }
 
+/// A trait for converting a value to a compact binary representation.
+///
+/// This trait is used to append the binary encoding of a type to the end of a provided encoder.
+/// For more details on the specific binary implementation, see the `binary` module.
+///
+/// # Safety
+///
+/// If you use the default implementation (i.e., `POD = false`), this trait is always safe to implement.
+/// When `POD` is set to `true`, it indicates that this type can be directly memory-copied
+/// to the output, maintaining the same representation as if it were encoded field-by-field.
+///
+/// ## Constraints for `POD = true`:
+///
+/// 1. Every bit pattern must be valid for the type and layout.
+/// 2. There must be no padding between fields.
+/// 3. Fields must be laid out in the same order as they would be encoded and decoded via the `binary_encode` function.
+///
+/// # Notes
+///
+/// - The `binary_encode` function should always write a value, even in error cases.
+///   There is no error return;
 pub unsafe trait ToBinary {
+    /// Indicates whether the type is Plain Old Data (POD).
+    ///
+    /// When `true`, the type can be safely memory-copied.
+    /// Default is `false`.
     const POD: bool = false;
+
+    /// Encodes the type into its binary representation.
+    ///
+    /// This function should append the binary encoding of `self` to the provided `encoder`.
     fn binary_encode(&self, encoder: &mut BytesWriter);
 
+    /// Hidden method for endian transformation.
+    ///
+    /// This method is only available on non-little-endian targets.
     #[doc(hidden)]
     #[cfg(not(target_endian = "little"))]
     fn endian_transform(&mut self) {}
 }
 
+/// A trait for types that can be parsed from JSON.
+///
+/// Either `emplace_for_json` or `decode_json` should be implemented.
+///
+/// # Safety
+///
+/// This trait is unsafe to implement. Implementors must ensure that the
+/// `emplace_from_json` method properly initializes the memory at `dest`
+/// when it returns `Ok(())`.
 pub unsafe trait FromJson<'a>: Sized + 'a {
-    /// Safety to Call:
-    /// - dest: must be an aligned pointer to self which is valid for writes.
+    /// Parses a JSON value and writes it directly to the given memory location.
+    /// If Ok(()) is returned `dest` is guaranteed to be initialized
+    ///
     /// # Safety
-    /// to implemented:
-    /// - If `Ok(())` is returned then `dest` must be initilized to a valid Self
+    ///
+    /// If this method returns `Ok(())`, it must have properly initialized the
+    /// memory at `dest` with a valid instance of `Self`. There is no such
+    /// constraint if an error is returned.
+    ///
+    /// # Arguments
+    ///
+    /// * `dest` - A pointer to the memory where the parsed value should be written.
+    /// * `parser` - The JSON parser to read from.
     #[inline]
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -67,7 +150,19 @@ pub unsafe trait FromJson<'a>: Sized + 'a {
         }
     }
 
-    // Allows users to relatively safety
+    /// Decodes a JSON value from the parser.
+    ///
+    /// This method reads JSON data from the current position of the parser,
+    /// ignoring anything after the parsed value. It may add error context
+    /// to the parser on failure.
+    ///
+    /// # Arguments
+    ///
+    /// * `parser` - The JSON parser to read from.
+    ///
+    /// # Returns
+    ///
+    /// The parsed value if successful, or an error if parsing failed.
     #[inline]
     fn decode_json(parser: &mut Parser<'a>) -> Result<Self, &'static DecodeError> {
         let mut value = std::mem::MaybeUninit::<Self>::uninit();
@@ -85,10 +180,15 @@ mod __private {
     pub trait Sealed {}
 }
 
+/// A trait for converting a value into JSON.
 pub trait ToJson {
+    /// Represents the kind of JSON value that will be produced.
+    ///
+    /// This can be a string, object, array, or any value that could be
+    /// one of those or a scalar (e.g., number).
     type Kind: JsonValueKind;
-    /// The Kind is returned to allow for trivial assertions of kind
-    /// inside of the templating macros that also produce good error messages.
+
+    /// Converts `self` to JSON and appends it to the given `TextWriter`.
     fn jsony_to_json_into(&self, output: &mut TextWriter) -> Self::Kind;
 }
 
@@ -104,6 +204,7 @@ struct JsonErrorInner {
     index: usize,
     surrounding: [u8; 24],
 }
+
 impl JsonErrorInner {
     fn near_by_input(&self) -> &[u8] {
         &self.surrounding[0..self.surrounding[23] as usize]
@@ -120,6 +221,19 @@ impl JsonError {
     }
     pub fn decoding_error(&self) -> &'static DecodeError {
         self.inner.error
+    }
+    fn trailing() -> JsonError {
+        JsonError {
+            inner: Box::new(JsonErrorInner {
+                error: &DecodeError {
+                    message: "Trailing characters",
+                },
+                context: None,
+                parent_context: JsonParentContext::None,
+                index: 0,
+                surrounding: [0; 24],
+            }),
+        }
     }
     fn extract(error: &'static DecodeError, parser: &mut Parser) -> JsonError {
         fn surrounding(at: usize, text: &[u8]) -> [u8; 24] {
@@ -184,16 +298,97 @@ impl std::fmt::Display for JsonError {
     }
 }
 
+/// Configuration options for the JSON parser.
+#[derive(Clone, Copy)]
+#[repr(align(8))]
+pub struct JsonParserConfig {
+    /// Maximum depth of nested structures (objects and arrays) allowed during parsing.
+    /// Each non-empty object or array counts as one depth layer. Default is 128.
+    pub recursion_limit: i32,
+
+    /// When enabled, allows trailing commas in arrays and objects.
+    /// A trailing comma can appear before the closing brace or bracket.
+    pub allow_trailing_commas: bool,
+
+    /// When enabled, allows C-style single-line comments in the JSON.
+    /// Comments start with two forward slashes (//) and continue to the end of the line.
+    pub allow_comments: bool,
+
+    /// When enabled, allows unquoted strings for object keys.
+    /// Unquoted keys must be comprised of characters matching the following [A-Za-z0-9_]
+    /// and cannot start with a number.
+    pub allow_unquoted_keys: bool,
+
+    /// When enabled, allows extra data to appear after the outermost JSON structure.
+    /// This is primarily relevant when using the `from_json` function rather than
+    /// interacting with the parser directly.
+    pub allow_trailing_data: bool,
+}
+
+impl Default for JsonParserConfig {
+    fn default() -> Self {
+        Self {
+            recursion_limit: 128,
+            allow_trailing_commas: Default::default(),
+            allow_comments: Default::default(),
+            allow_unquoted_keys: Default::default(),
+            allow_trailing_data: Default::default(),
+        }
+    }
+}
+
+/// Parses a value implementing `FromJson` from a JSON string.
+/// # Example
+///
+/// ```rust
+/// todo!()
+/// ```
+/// # Errors
+///
+/// This function can fail if:
+/// - The input string is not valid JSON.
+/// - The JSON structure doesn't match the expected type `T`.
+/// - The values in the JSON don't meet the constraints of type `T`.
+///
+/// # Notes
+///
+/// - This function uses strict JSON parsing by default, without any extensions.
+/// - Unquoted strings, comments, and trailing commas will cause parsing to fail.
+/// - There is a default recursion limit for parsing.
+///
+/// For more flexible parsing options, see `from_json_with_config`.
 #[inline]
 pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, JsonError> {
+    from_json_with_config(
+        json,
+        JsonParserConfig {
+            recursion_limit: 128,
+            allow_trailing_commas: false,
+            allow_comments: false,
+            allow_unquoted_keys: false,
+            allow_trailing_data: false,
+        },
+    )
+}
+
+#[inline]
+pub fn from_json_with_config<'a, T: FromJson<'a>>(
+    json: &'a str,
+    config: JsonParserConfig,
+) -> Result<T, JsonError> {
     unsafe fn inner_from_json<'a>(
         value: NonNull<()>,
         func: unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>,
         json: &'a [u8],
-    ) -> Result<(), JsonError> {
+        config: JsonParserConfig,
+    ) -> Result<bool, JsonError> {
         let mut parser = Parser::new(json);
+        parser.remaining_depth = config.recursion_limit;
         match unsafe { func(value, &mut parser) } {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                let _ = parser.peek();
+                Ok(parser.ctx.data.len() == parser.index || config.allow_trailing_data)
+            }
             Err(err) => Err(JsonError::extract(err, &mut parser)),
         }
     }
@@ -203,13 +398,45 @@ pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, JsonError> {
             NonNull::new_unchecked(value.as_mut_ptr()).cast(),
             T::emplace_from_json,
             json.as_bytes(),
+            config,
         )
     } {
-        Ok(()) => Ok(unsafe { value.assume_init() }),
+        Ok(true) => Ok(unsafe { value.assume_init() }),
+        Ok(false) => {
+            unsafe {
+                value.assume_init_drop();
+            }
+            return Err(JsonError::trailing());
+        }
         Err(err) => Err(err),
     }
 }
 
+/// Converts the given value into a JSON string representation.
+///
+/// This function takes a reference to any type `T` that implements the `ToJson` trait
+/// and converts it into a JSON-formatted string.
+///
+/// # Examples
+///
+/// ```
+/// use jsony::{Jsony, to_json};
+///
+/// #[derive(Jsony)]
+/// #[jsony(ToJson)]
+/// struct Person {
+///     name: String,
+///     age: u32,
+/// }
+///
+/// let person = Person {
+///     name: "Alice".to_string(),
+///     age: 30,
+/// };
+///
+/// let json_string = to_json(&person);
+/// assert_eq!(json_string, r#"{"name":"Alice","age":30}"#);
+/// ```
 pub fn to_json<T: ?Sized + ToJson>(value: &T) -> String {
     let mut buf = TextWriter::new();
     value.jsony_to_json_into(&mut buf);

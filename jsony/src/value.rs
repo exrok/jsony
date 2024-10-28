@@ -19,7 +19,6 @@ const HASH_MAP_THRESHHOLD: usize = 8;
 use crate::{
     json::{decode_object_sequence, DecodeError},
     parser::Peek,
-    strings::escape_to_cow,
     FromJson,
 };
 
@@ -156,7 +155,7 @@ unsafe impl<'a> FromJson<'a> for JsonKey<'a> {
     fn decode_json(
         parser: &mut crate::parser::Parser<'a>,
     ) -> Result<Self, &'static crate::json::DecodeError> {
-        let slice = escape_to_cow(parser.read_string_unescaped()?)?;
+        let slice = parser.take_cow_string()?;
         if let Some(cow) = JsonKey::try_from_cow(slice) {
             Ok(cow)
         } else {
@@ -182,10 +181,10 @@ impl<'a> JsonKey<'a> {
         if string.capacity() > u32::MAX as usize {
             string.shrink_to_fit();
         }
+        let mut string = std::mem::ManuallyDrop::new(string);
         let capacity = string.capacity() as u32;
         let length = len as u32;
         let ptr = string.as_mut_ptr();
-        std::mem::forget(string);
         Some(JsonKey {
             capacity,
             length,
@@ -293,7 +292,7 @@ impl<'a> Drop for JsonItem<'a> {
             }
             Kind::Map => unsafe {
                 Vec::from_raw_parts(
-                    self.ptr.as_ptr() as *mut (&'a str, JsonItem<'a>),
+                    self.ptr.as_ptr() as *mut (JsonKey<'a>, JsonItem<'a>),
                     self.length as usize & 0x1FFF_FFFF,
                     self.capacity as usize,
                 );
@@ -348,10 +347,94 @@ unsafe impl<'a> FromJson<'a> for JsonItem<'a> {
             //assume number
             _ => {
                 let slice = parser.consume_numeric_literal()?;
+                if !is_json_number(slice.as_bytes()) {
+                    return Err(&DecodeError {
+                        message: "Invalid number",
+                    });
+                }
                 Ok(JsonItem::new(slice.as_bytes(), Number))
             }
         }
     }
+}
+
+fn is_json_number(value: &[u8]) -> bool {
+    let mut i = 0;
+
+    // Check for optional leading '-'
+    if let Some(&b'-') = value.get(i) {
+        i += 1;
+    }
+
+    // Check for integer part
+    match value.get(i) {
+        Some(b'0') => {
+            i += 1;
+            // If '0' is followed by another digit, it's invalid
+            if let Some(&digit) = value.get(i) {
+                if digit.is_ascii_digit() {
+                    return false;
+                }
+            }
+        }
+        Some(b'1'..=b'9') => {
+            i += 1;
+            while let Some(&digit) = value.get(i) {
+                if !digit.is_ascii_digit() {
+                    break;
+                }
+                i += 1;
+            }
+        }
+        _ => return false, // No valid integer part found
+    }
+
+    // Check for optional fractional part
+    if let Some(&b'.') = value.get(i) {
+        i += 1;
+        // Fractional part must have at least one digit
+        match value.get(i) {
+            Some(digit) if digit.is_ascii_digit() => {
+                i += 1;
+                while let Some(&digit) = value.get(i) {
+                    if !digit.is_ascii_digit() {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            _ => return false, // Invalid or missing fractional part
+        }
+    }
+
+    // Check for optional exponent part
+    if let Some(&e) = value.get(i) {
+        if e == b'e' || e == b'E' {
+            i += 1;
+            // Optional sign in exponent
+            if let Some(&sign) = value.get(i) {
+                if sign == b'+' || sign == b'-' {
+                    i += 1;
+                }
+            }
+            // Exponent part must have at least one digit
+            match value.get(i) {
+                Some(digit) if digit.is_ascii_digit() => {
+                    i += 1;
+                    while let Some(&digit) = value.get(i) {
+                        if !digit.is_ascii_digit() {
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+                _ => return false, // Invalid or missing exponent part
+            }
+        }
+    }
+
+    // Ensure we've consumed the entire slice
+    i == value.len()
 }
 
 impl<'a> JsonItem<'a> {
@@ -360,6 +443,7 @@ impl<'a> JsonItem<'a> {
     }
 
     pub(crate) fn new_string(raw_key: JsonKey<'a>) -> Self {
+        let raw_key = std::mem::ManuallyDrop::new(raw_key);
         JsonItem {
             capacity: raw_key.capacity,
             length: raw_key.length | Kind::String.swizzeled(),

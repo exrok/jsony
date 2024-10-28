@@ -23,6 +23,33 @@ pub const unsafe fn erase<'a>(
     unsafe { std::mem::transmute(input) }
 }
 
+#[doc(hidden)]
+pub struct SkipFieldVisitor<F> {
+    pub skipped_field: &'static str,
+    pub visitor: F,
+}
+
+unsafe impl<'a, F: FieldVistor<'a>> FieldVistor<'a> for SkipFieldVisitor<F> {
+    fn complete(&mut self) -> Result<(), &'static DecodeError> {
+        self.visitor.complete()
+    }
+    unsafe fn destroy(&mut self) {
+        self.visitor.destroy()
+    }
+    unsafe fn visit(
+        &mut self,
+        field_name: *const str,
+        parser: &mut Parser<'a>,
+    ) -> Result<(), &'static DecodeError> {
+        let field_name = unsafe { parser.unfreeze(field_name) };
+        if field_name == self.skipped_field {
+            parser.skip_value()
+        } else {
+            self.visitor.visit(field_name, parser)
+        }
+    }
+}
+
 unsafe impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
     fn complete(&mut self) -> Result<(), &'static DecodeError> {
         if self.bitset & self.required != self.required {

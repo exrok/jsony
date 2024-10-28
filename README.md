@@ -1,31 +1,68 @@
 # Jsony
 
-An experimental fast-compiling serialization and deserialization library for JSON-like formats, very much a work in progress.
+An **experimental** fast compiling serialization and deserialization rust libary for JSON like formats.
 
-In the coming weeks, I hope to make significant improvements to the following:
-- Soundness (less unsafe code, fuzzing, and extensive Miri tests)
-- Missing features:
-   - Support for most Serde attributes
-   - Derive `IntoJson`
-- Fix bugs
-- Finalize API for "0.1"
-- Documentation
+[![Crates.io](https://img.shields.io/crates/v/jsony?style=flat-square)](https://crates.io/crates/jsony)
+[![Crates.io](https://img.shields.io/docsrs/jsony?style=flat-square)](https://docs.rs/jsony/latest/jsony/)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
-## Weird things about the codebase if you're reading it
+**WARNING:** Jsony is currently only a prototype, makes extensive use of unsafe and lacks extensive testing.
+It is not recommended to be used for external facing systems at this time.
 
-`jsony_macros` is generated from `jsony_macros_source` via `macro_preprocessor` with the following command:
-```sh
-cd ./macro_preprocessor
-cargo run -- ../jsony_macros_source ../jsony_macros
+## Features
+
+- Fast compile times <!-- Todo put link to benchmarks -->
+- Competitive runtime performance
+- Featureful derive macros for implementing To/From for various data formats
+- Data formats
+  - JSON (optional extension: trailing commas, comments, unquoted keys)
+  - Custom Binary Encoding
+  - x-www-form-urlencoded
+- Lazy JSON parser for efficiently extracting small fragments.
+- JSON templating macros
+
+## Example
+
+```rust
+use jsony::Jsony;
+
+#[derive(Jsony, Debug)]
+#[jsony(FromJson, tag = "kind")]
+enum Status<'a> {
+    Online,
+    Error {
+        #[jsony(default = i64::MAX)]
+        code: i64,
+        message: Cow<'a, str>,
+        #[jsony(flatten)]
+        properties: Vec<(String, JsonItem<'a>)>,
+    },
+    Offline,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let input: String = jsony::object! {
+        kind: "Error",
+        message: "System Failure",
+        data: [1, 2, 3],
+        value: {
+          previous: {
+            kind: "Offline",
+          }
+        }
+    };
+
+    let previous: Status = jsony::drill(&input)["value"]["previous"].parse()?;
+    assert!(matches!(previous, Status::Offline));
+
+    let status: Status = jsony::from_json(&input)?;
+    println!("{:#?}", status);
+
+    Ok(())
+}
 ```
-Why? For a couple of reasons:
-- As a micro-optimization to reduce compile time by expanding all macros
-- While working on `jsony_macros_source`, you don't have to worry about rust-analyzer constantly recompiling proc-macros
 
+## Acknowledgements
 
-
-
-
-
-
-
+The derive feature set is largely based of `serde` and `serde_with`. <br>
+The json parser is heavily inspire by `jiter` and `serde_json`.

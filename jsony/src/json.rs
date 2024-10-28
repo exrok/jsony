@@ -316,7 +316,6 @@ unsafe impl<'de, T: FromJson<'de>> FromJson<'de> for Vec<T> {
                     NonNull::new_unchecked(array.as_mut_ptr()).add(len).cast(),
                     parser,
                 ) {
-                    println!("Where we at: {:?}", parser);
                     return Err(err);
                 } else {
                     array.set_len(len + 1);

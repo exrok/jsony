@@ -130,6 +130,39 @@ fn enum_default_tagging() {
 }
 
 #[test]
+fn flattening_in_enum() {
+    #[derive(Jsony, Debug, PartialEq)]
+    #[jsony(FromJson, tag = "kind")]
+    enum Status<'a> {
+        Online,
+        Error {
+            #[jsony(default = i64::MAX)]
+            code: i64,
+            message: Cow<'a, str>,
+            #[jsony(flatten)]
+            properties: Vec<(String, bool)>,
+        },
+        Offline,
+    }
+
+    let static_text: String = jsony::object! {
+        kind: "Error",
+        message: "System Failure",
+        data: true,
+        value: false
+    };
+    let status: Status = jsony::from_json(&static_text).unwrap();
+    assert_eq!(
+        status,
+        Status::Error {
+            code: i64::MAX,
+            message: "System Failure".into(),
+            properties: vec![("data".to_string(), true), ("value".to_string(), false),],
+        }
+    );
+}
+
+#[test]
 fn recursion_limits() {
     #[derive(Jsony, Debug)]
     struct NestedObject {
