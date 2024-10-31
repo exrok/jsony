@@ -43,6 +43,7 @@ enum Status<'a> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input: String = jsony::object! {
         kind: "Error",
+        code: 300,
         message: "System Failure",
         data: [1, 2, 3],
         value: {
