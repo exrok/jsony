@@ -2,9 +2,25 @@ use std::{borrow::Cow, mem::MaybeUninit};
 
 use crate::{
     byte_writer::BytesWriter,
-    json::{ArrayValue, ObjectValue, StringValue},
+    json::{AlwaysArray, AlwaysObject, AlwaysString},
 };
 
+/// A UTF-8 wrapper around a [BytesWriter].
+///
+/// Conceptionally, a TextWriter is somewhere between a `String` and a `dyn std::fmt::Write`.
+///
+/// Like `dyn std::fmt::Write`, `TextWriter` can be backed by many types like:
+/// - `Vec<u8>`
+/// - `&mut [MaybeUninit<u8>]`
+/// - `String`
+/// - `dyn std::io::Write`
+///
+/// However, common operations avoid dynamic dispatch most of the time by restricting
+/// dispatch to out of capacity situations where either the underlying buffer needs to be
+/// resized or flushed.
+///
+/// Additionally, many helper methods are provided for common operations for the text formats
+/// supported by jsony.
 #[repr(C)]
 pub struct TextWriter<'a> {
     #[doc(hidden)]
@@ -12,49 +28,62 @@ pub struct TextWriter<'a> {
     buffer: BytesWriter<'a>,
 }
 
-pub trait TextSink<'a> {
+/// Conversion into a `TextWriter` with content extraction.
+///
+/// This is primaryily used in [crate::to_json_into].
+pub trait IntoTextWriter<'a> {
     type Output;
-    fn buffer(self) -> TextWriter<'a>;
-    fn finish(buffer: TextWriter<'a>) -> Self::Output;
+
+    /// Convert Self into TextWriter, preserving the contents.
+    fn into_text_writer(self) -> TextWriter<'a>;
+
+    /// Should return Output corrsponding to added context since the
+    /// creation from `into_text_writer()`.
+    ///
+    /// If `finish_writing` is called on an instance of TextWriter
+    /// not create via [IntoTextWriter::into_text_writer] of the same type then this
+    /// method may panic.
+    fn finish_writing(buffer: TextWriter<'a>) -> Self::Output;
 }
 
-impl<'a> TextSink<'a> for &'a mut String {
+impl<'a> IntoTextWriter<'a> for &'a mut String {
     type Output = &'a str;
-    fn buffer(self) -> TextWriter<'a> {
+    fn into_text_writer(self) -> TextWriter<'a> {
         // Safety: TextWriter will only appened valid utf-8
         TextWriter::with_buffer(BytesWriter::from(unsafe { self.as_mut_vec() }))
     }
-    fn finish(buffer: TextWriter<'a>) -> &'a str {
+    fn finish_writing(buffer: TextWriter<'a>) -> &'a str {
         buffer.into_backed_str()
     }
 }
 
-impl<'a> TextSink<'a> for &'a mut Vec<u8> {
+impl<'a> IntoTextWriter<'a> for &'a mut Vec<u8> {
     type Output = &'a str;
-    fn buffer(self) -> TextWriter<'a> {
+    fn into_text_writer(self) -> TextWriter<'a> {
         TextWriter::with_buffer(BytesWriter::from(self))
     }
-    fn finish(buffer: TextWriter<'a>) -> &'a str {
+    fn finish_writing(buffer: TextWriter<'a>) -> &'a str {
         buffer.into_backed_str()
     }
 }
 
-type DynWrite<'a> = &'a mut (dyn std::io::Write + Send);
-impl<'a> TextSink<'a> for DynWrite<'a> {
+pub type DynWrite<'a> = &'a mut (dyn std::io::Write + Send);
+impl<'a> IntoTextWriter<'a> for DynWrite<'a> {
     type Output = Result<usize, std::io::Error>;
-    fn buffer(self) -> TextWriter<'a> {
+    fn into_text_writer(self) -> TextWriter<'a> {
         TextWriter::with_buffer(BytesWriter::new_writer(self))
     }
-    fn finish(buffer: TextWriter<'a>) -> Result<usize, std::io::Error> {
+    fn finish_writing(buffer: TextWriter<'a>) -> Result<usize, std::io::Error> {
         buffer.buffer.into_write_finish()
     }
 }
-impl<'a> TextSink<'a> for &'a mut [MaybeUninit<u8>] {
+
+impl<'a> IntoTextWriter<'a> for &'a mut [MaybeUninit<u8>] {
     type Output = Cow<'a, str>;
-    fn buffer(self) -> TextWriter<'a> {
+    fn into_text_writer(self) -> TextWriter<'a> {
         TextWriter::with_buffer(BytesWriter::from(self))
     }
-    fn finish(buffer: TextWriter<'a>) -> Cow<'a, str> {
+    fn finish_writing(buffer: TextWriter<'a>) -> Cow<'a, str> {
         buffer.into_borrowed_cow()
     }
 }
@@ -97,23 +126,23 @@ impl<'a> TextWriter<'a> {
     pub fn push_colon(&mut self) {
         self.buffer.push(b':');
     }
-    pub fn smart_array_comma(&mut self) -> ArrayValue {
+    pub fn smart_array_comma(&mut self) -> AlwaysArray {
         if let Some(ch) = self.buffer.last() {
             if *ch != b'[' && *ch != b',' {
                 self.buffer.push(b',');
             }
         }
-        ArrayValue
+        AlwaysArray
     }
-    pub fn smart_object_comma(&mut self) -> ArrayValue {
+    pub fn smart_object_comma(&mut self) -> AlwaysArray {
         if let Some(ch) = self.buffer.last() {
             if *ch != b'{' && *ch != b',' {
                 self.buffer.push(b',');
             }
         }
-        ArrayValue
+        AlwaysArray
     }
-    pub fn end_json_array(&mut self) -> ArrayValue {
+    pub fn end_json_array(&mut self) -> AlwaysArray {
         if let Some(ch) = self.buffer.last() {
             if *ch == b',' {
                 *ch = b']'
@@ -121,9 +150,9 @@ impl<'a> TextWriter<'a> {
                 self.buffer.push(b']');
             }
         }
-        ArrayValue
+        AlwaysArray
     }
-    pub fn end_json_object(&mut self) -> ObjectValue {
+    pub fn end_json_object(&mut self) -> AlwaysObject {
         if let Some(ch) = self.buffer.last() {
             if *ch == b',' {
                 *ch = b'}'
@@ -131,11 +160,11 @@ impl<'a> TextWriter<'a> {
                 self.buffer.push(b'}');
             }
         }
-        ObjectValue
+        AlwaysObject
     }
-    pub fn end_json_string(&mut self) -> StringValue {
+    pub fn end_json_string(&mut self) -> AlwaysString {
         self.buffer.push(b'"');
-        StringValue
+        AlwaysString
     }
     pub fn join_parent_json_value_with_next(&mut self) {
         debug_assert!(!self.joining);

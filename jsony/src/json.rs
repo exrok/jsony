@@ -785,20 +785,24 @@ unsafe impl<'de, T: FromJson<'de>, const N: usize> FromJson<'de> for [T; N] {
     }
 }
 
-pub struct ArrayValue;
-pub struct ObjectValue;
-pub struct StringValue;
+/// [ToJson::Kind] Marker type indicating an array is always generated
+pub struct AlwaysArray;
+/// [ToJson::Kind] Marker type indicating an object is always generated
+pub struct AlwaysObject;
+/// [ToJson::Kind] Marker type indicating a string is always generated
+pub struct AlwaysString;
+/// [ToJson::Kind] Marker type indicating any type may be generated
 pub struct AnyValue;
 
 pub trait JsonValueKind: crate::__private::Sealed {}
-impl crate::__private::Sealed for ArrayValue {}
-impl JsonValueKind for ArrayValue {}
+impl crate::__private::Sealed for AlwaysArray {}
+impl JsonValueKind for AlwaysArray {}
 impl crate::__private::Sealed for AnyValue {}
 impl JsonValueKind for AnyValue {}
-impl crate::__private::Sealed for StringValue {}
-impl JsonValueKind for StringValue {}
-impl crate::__private::Sealed for ObjectValue {}
-impl JsonValueKind for ObjectValue {}
+impl crate::__private::Sealed for AlwaysString {}
+impl JsonValueKind for AlwaysString {}
+impl crate::__private::Sealed for AlwaysObject {}
+impl JsonValueKind for AlwaysObject {}
 
 macro_rules! into_json_itoa {
     ($($ty:ty)*) => {
@@ -913,8 +917,8 @@ impl CharEscape {
 }
 
 impl ToJson for str {
-    type Kind = StringValue;
-    fn jsony_to_json_into(&self, output: &mut TextWriter) -> StringValue {
+    type Kind = AlwaysString;
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> AlwaysString {
         output.start_json_string();
         let bytes = self.as_bytes();
         let mut start = 0;
@@ -970,7 +974,7 @@ impl ToJson for str {
             }
         }
         output.end_json_string();
-        StringValue
+        AlwaysString
     }
 }
 
@@ -987,22 +991,22 @@ impl<T: ToJson> ToJson for Option<T> {
 }
 
 impl<T: ToJson, const N: usize> ToJson for [T; N] {
-    type Kind = ArrayValue;
-    fn jsony_to_json_into(&self, array: &mut TextWriter) -> ArrayValue {
+    type Kind = AlwaysArray;
+    fn jsony_to_json_into(&self, array: &mut TextWriter) -> AlwaysArray {
         self.as_slice().jsony_to_json_into(array)
     }
 }
 
 impl<T: ToJson> ToJson for Vec<T> {
-    type Kind = ArrayValue;
-    fn jsony_to_json_into(&self, array: &mut TextWriter) -> ArrayValue {
+    type Kind = AlwaysArray;
+    fn jsony_to_json_into(&self, array: &mut TextWriter) -> AlwaysArray {
         self.as_slice().jsony_to_json_into(array)
     }
 }
 
 impl<T: ToJson> ToJson for [T] {
-    type Kind = ArrayValue;
-    fn jsony_to_json_into(&self, output: &mut TextWriter) -> ArrayValue {
+    type Kind = AlwaysArray;
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> AlwaysArray {
         output.start_json_array();
         for value in self {
             value.jsony_to_json_into(output);
@@ -1042,9 +1046,9 @@ impl<T: ToJson + ?Sized> ToJson for Arc<T> {
 }
 
 impl ToJson for String {
-    type Kind = StringValue;
+    type Kind = AlwaysString;
 
-    fn jsony_to_json_into(&self, output: &mut TextWriter) -> StringValue {
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> AlwaysString {
         self.as_str().jsony_to_json_into(output)
     }
 }
@@ -1057,9 +1061,9 @@ impl<T: ToJson + ?Sized> ToJson for &T {
 }
 
 impl<V: ToJson, S> ToJson for HashSet<V, S> {
-    type Kind = ArrayValue;
+    type Kind = AlwaysArray;
 
-    fn jsony_to_json_into(&self, output: &mut TextWriter) -> ArrayValue {
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> AlwaysArray {
         output.start_json_array();
         for value in self {
             value.jsony_to_json_into(output);
@@ -1068,10 +1072,10 @@ impl<V: ToJson, S> ToJson for HashSet<V, S> {
         output.end_json_array()
     }
 }
-impl<K: ToJson<Kind = StringValue>, V: ToJson, S> ToJson for HashMap<K, V, S> {
-    type Kind = ObjectValue;
+impl<K: ToJson<Kind = AlwaysString>, V: ToJson, S> ToJson for HashMap<K, V, S> {
+    type Kind = AlwaysObject;
 
-    fn jsony_to_json_into(&self, output: &mut TextWriter) -> ObjectValue {
+    fn jsony_to_json_into(&self, output: &mut TextWriter) -> AlwaysObject {
         output.start_json_object();
         for (key, value) in self {
             key.jsony_to_json_into(output);
@@ -1140,7 +1144,7 @@ impl<'a, 'b> ArrayWriter<'a, 'b> {
             phantom: PhantomData,
         }
     }
-    pub fn extend(&mut self, a: &dyn ToJson<Kind = ArrayValue>) {
+    pub fn extend(&mut self, a: &dyn ToJson<Kind = AlwaysArray>) {
         self.writer.smart_array_comma();
         self.writer.join_parent_json_value_with_next();
         a.jsony_to_json_into(self.writer);
@@ -1168,14 +1172,14 @@ impl<'a, 'b> ObjectWriter<'a, 'b> {
     pub fn inner_writer<'j>(&'j mut self) -> &'j mut TextWriter<'b> {
         &mut self.writer
     }
-    pub fn extend(&mut self, a: &dyn ToJson<Kind = ObjectValue>) {
+    pub fn extend(&mut self, a: &dyn ToJson<Kind = AlwaysObject>) {
         self.writer.smart_object_comma();
         self.writer.join_parent_json_value_with_next();
         a.jsony_to_json_into(self.writer);
         self.writer.join_object_with_next_value();
         self.writer.joining = false;
     }
-    pub fn dyn_key<'q>(&'q mut self, a: &dyn ToJson<Kind = StringValue>) -> ValueWriter<'q, 'b> {
+    pub fn dyn_key<'q>(&'q mut self, a: &dyn ToJson<Kind = AlwaysString>) -> ValueWriter<'q, 'b> {
         self.writer.smart_object_comma();
         a.jsony_to_json_into(self.writer);
         self.writer.push_colon();
@@ -1207,22 +1211,22 @@ impl<'a, 'b> Drop for ValueWriter<'a, 'b> {
     }
 }
 
-impl<'a, 'b> ValueExtender<'a, 'b, ObjectValue> {
-    pub fn extend(&mut self, value: &dyn ToJson<Kind = ObjectValue>) {
+impl<'a, 'b> ValueExtender<'a, 'b, AlwaysObject> {
+    pub fn extend(&mut self, value: &dyn ToJson<Kind = AlwaysObject>) {
         self.writer.join_object_with_next_value();
         value.jsony_to_json_into(self.writer);
     }
 }
 
-impl<'a, 'b> ValueExtender<'a, 'b, ArrayValue> {
-    pub fn extend(&mut self, value: &dyn ToJson<Kind = ArrayValue>) {
+impl<'a, 'b> ValueExtender<'a, 'b, AlwaysArray> {
+    pub fn extend(&mut self, value: &dyn ToJson<Kind = AlwaysArray>) {
         self.writer.join_array_with_next_value();
         value.jsony_to_json_into(self.writer);
     }
 }
 
-impl<'a, 'b> ValueExtender<'a, 'b, StringValue> {
-    pub fn extend(&mut self, value: &dyn ToJson<Kind = StringValue>) {
+impl<'a, 'b> ValueExtender<'a, 'b, AlwaysString> {
+    pub fn extend(&mut self, value: &dyn ToJson<Kind = AlwaysString>) {
         self.writer.join_string_with_next_value();
         value.jsony_to_json_into(self.writer);
     }

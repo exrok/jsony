@@ -15,6 +15,7 @@
 //! assert_eq!(json["a"]["name_of_missing_key"][0]["c"].key_error(), Some("name_of_missing_key"));
 //! ```
 
+use crate::LazyValue;
 use memchr::memchr;
 
 use crate::{from_json_with_config, FromJson, JsonError, JsonParserConfig};
@@ -163,17 +164,8 @@ pub(crate) fn object_index<'a>(bytes: &'a [u8], key: &[u8]) -> Result<&'a [u8], 
     Err(ErrorCode::MissingObjectKey)
 }
 
-/// Lazy JSON Parsing
-#[repr(transparent)]
-pub struct Value {
-    /// We'll parsing the head of the string is a next json value (possibly with additional whitespace)
-    // Error are represented by empty string with pointer tagging
-    // (why? to work around std:ops::Index only returning references)
-    raw: str,
-}
-
-impl std::ops::Index<&'static str> for Value {
-    type Output = Value;
+impl std::ops::Index<&'static str> for LazyValue {
+    type Output = LazyValue;
 
     /// If the current value is an object, get the value of the corresponding key
     fn index(&self, key: &'static str) -> &Self::Output {
@@ -182,15 +174,15 @@ impl std::ops::Index<&'static str> for Value {
         }
         match object_index(self.raw.as_bytes(), key.as_bytes()) {
             // Safety: See contract of object_index, since self.raw was valid UTF-8 so is value
-            Ok(value) => Value::new(unsafe { std::str::from_utf8_unchecked(value) }),
-            Err(ErrorCode::MissingObjectKey) => Value::string_index_error(key),
+            Ok(value) => LazyValue::new(unsafe { std::str::from_utf8_unchecked(value) }),
+            Err(ErrorCode::MissingObjectKey) => LazyValue::string_index_error(key),
             Err(err) => err.as_value(),
         }
     }
 }
 
-impl std::ops::Index<usize> for Value {
-    type Output = Value;
+impl std::ops::Index<usize> for LazyValue {
+    type Output = LazyValue;
 
     /// If the current value is an array, get the value of the corresponding index
     fn index(&self, index: usize) -> &Self::Output {
@@ -204,7 +196,7 @@ impl std::ops::Index<usize> for Value {
                 //     index,
                 //     value[..value.len().min(50)].escape_ascii()
                 // );
-                Value::new(unsafe { std::str::from_utf8_unchecked(value) })
+                LazyValue::new(unsafe { std::str::from_utf8_unchecked(value) })
             }
             Err(err) => err.as_value(),
         }
@@ -222,19 +214,19 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    fn as_value(self) -> &'static Value {
+    fn as_value(self) -> &'static LazyValue {
         // Safety:
         //   - Since ErrorCode is never 0, fake_pointer is never null
         //   - Since length is set to 0 no other restrictions exist
         //   - Since #[repr(transparent)] Value(str), cast is safe
         unsafe {
             let fake_pointer = self as usize as *const u8;
-            &*(core::ptr::slice_from_raw_parts(fake_pointer, 0) as *const Value)
+            &*(core::ptr::slice_from_raw_parts(fake_pointer, 0) as *const LazyValue)
         }
     }
 }
 
-impl Value {
+impl LazyValue {
     pub fn parse<'a, T: FromJson<'a>>(&'a self) -> Result<T, JsonError> {
         if self.is_error() {
             todo!();
@@ -264,7 +256,7 @@ impl Value {
         }
     }
 
-    fn string_index_error(key: &'static str) -> &'static Value {
+    fn string_index_error(key: &'static str) -> &'static LazyValue {
         #[cfg(target_pointer_width = "64")]
         // Safety:
         //   - key pointer must be non-null by definition of references
@@ -278,7 +270,7 @@ impl Value {
                 return ErrorCode::MissingObjectKey.as_value();
             }
             let tagged = pointer_bits | (key.len() << 49) | (0xC000_0000_0000_0000);
-            &*(core::ptr::slice_from_raw_parts(tagged as *const u8, 0) as *const Value)
+            &*(core::ptr::slice_from_raw_parts(tagged as *const u8, 0) as *const LazyValue)
         }
         #[cfg(not(target_pointer_width = "64"))]
         {
@@ -324,15 +316,15 @@ impl Value {
         self.raw.is_empty()
     }
 
-    pub fn null() -> &'static Value {
-        Value::new("")
+    pub fn null() -> &'static LazyValue {
+        LazyValue::new("")
     }
 
-    pub fn new(raw: &str) -> &Value {
+    pub fn new(raw: &str) -> &LazyValue {
         if raw.is_empty() {
             ErrorCode::Eof.as_value()
         } else {
-            unsafe { &*(raw as *const str as *const Value) }
+            unsafe { &*(raw as *const str as *const LazyValue) }
         }
     }
 
@@ -365,7 +357,7 @@ mod test {
     use super::*;
     #[test]
     fn arrays() {
-        let value = Value::new(stringify!([
+        let value = LazyValue::new(stringify!([
             {
                 "inner": [42, "nice"]
             },
@@ -386,13 +378,13 @@ mod test {
 
     #[test]
     fn errors() {
-        let value = Value::new(stringify!({
+        let value = LazyValue::new(stringify!({
             "hello": 124,
             "nice": {"inner": [1,2,3]}
         }));
         assert_eq!(value["nice"]["inner"][0].parse::<u64>().unwrap(), 1);
         assert_eq!(
-            Value::new("[]")[0].error_code(),
+            LazyValue::new("[]")[0].error_code(),
             Some(ErrorCode::OutOfBoundsArrayAccess)
         );
         assert_eq!(

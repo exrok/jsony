@@ -680,7 +680,7 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
                 }]
                 out.end_json_array()
             );
-            ToJsonKind::Static("ArrayValue")
+            ToJsonKind::Static("AlwaysArray")
         }
     };
     let stream = out.split_off_stream(head);
@@ -724,7 +724,7 @@ fn inner_struct_to_json(
                 if field.attr.flatten {
                     splat!(out;
                         for (key, value) in ([?(on_self) self.][#field.name]).iter() {
-                            let _: ::jsony::json::StringValue = key.jsony_to_json_into(out);
+                            let _: ::jsony::json::AlwaysString = key.jsony_to_json_into(out);
                             out.push_colon();
                             value.jsony_to_json_into(out);
                             out.push_comma();
@@ -736,7 +736,7 @@ fn inner_struct_to_json(
             if field.attr.flatten {
                 splat!(out;
                     out.join_parent_json_value_with_next();
-                    let _: ::jsony::json::ObjectValue =
+                    let _: ::jsony::json::AlwaysObject =
                 );
             }
             splat!(out; <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into([?(on_self) &self.][#field.name], out););
@@ -757,7 +757,7 @@ fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(
         out.end_json_object()
     );
 
-    impl_to_json(out, ToJsonKind::Static("ObjectValue"), ctx, body)
+    impl_to_json(out, ToJsonKind::Static("AlwaysObject"), ctx, body)
 }
 
 fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
@@ -893,11 +893,11 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
     }
     splat! { out; Self::Kind {} };
     let stream = out.buf.drain(start..).collect();
-    //todo should sometimes be StringValue
+    //todo should sometimes be AlwaysString
     let kind = if all_objects {
-        "ObjectValue"
+        "AlwaysObject"
     } else {
-        "StringValue"
+        "AlwaysString"
     };
     impl_to_json(out, ToJsonKind::Static(kind), ctx, stream)
 }

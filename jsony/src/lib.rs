@@ -23,7 +23,7 @@ use json::JsonValueKind;
 use parser::Parser;
 
 pub use jsony_macros::{array, object, Jsony};
-pub use text_writer::TextSink;
+pub use text_writer::IntoTextWriter;
 
 /// A trait for parsing a value from a compact binary representation.
 ///
@@ -192,9 +192,33 @@ pub trait ToJson {
     fn jsony_to_json_into(&self, output: &mut TextWriter) -> Self::Kind;
 }
 
-/// Lazy JSON parser
-pub fn drill(input: &str) -> &lazy_parser::Value {
-    lazy_parser::Value::new(input)
+/// Lazy JSON Parsing
+#[repr(transparent)]
+pub struct LazyValue {
+    /// We'll parsing the head of the string is a next json value (possibly with additional whitespace)
+    // Error are represented by empty string with pointer tagging
+    // (why? to work around std:ops::Index only returning references)
+    raw: str,
+}
+
+/// # Lazy JSON parser
+///
+/// Interpret the given a string a JSON value to lazily parse. Particular useful,
+/// when you need to extract a single deeply nested value out of larger JSON object.
+///
+///
+/// See [LazyValue] for more info.
+///
+/// ## Example
+/// ```
+/// let object = jsony::drill(stringify![{
+///     "key": {"inner": [0, false]},
+/// }]);
+/// let value: bool = object["key"]["inner"][1].parse().unwrap();
+/// assert_eq!(value, false);
+/// ```
+pub fn drill(input: &str) -> &LazyValue {
+    LazyValue::new(input)
 }
 
 struct JsonErrorInner {
@@ -211,6 +235,9 @@ impl JsonErrorInner {
     }
 }
 
+/// The error type for JSON decoding failure with context.
+///
+/// See [DecodeError] for the contextless errors used during decoding.
 pub struct JsonError {
     inner: Box<JsonErrorInner>,
 }
@@ -341,7 +368,8 @@ impl Default for JsonParserConfig {
 /// # Example
 ///
 /// ```rust
-/// todo!()
+/// assert_eq!(jsony::from_json::<u32>("123")?, 123);
+/// # Ok::<(), jsony::JsonError>(())
 /// ```
 /// # Errors
 ///
@@ -443,10 +471,40 @@ pub fn to_json<T: ?Sized + ToJson>(value: &T) -> String {
     buf.into_string()
 }
 
-pub fn to_json_into<'a, T: ToJson, O: TextSink<'a>>(value: &T, output: O) -> O::Output {
-    let mut buffer = O::buffer(output);
+/// Converts the given value into a JSON string appending it to the provided output.
+///
+/// Can be more efficent then `to_json` when used it avoid allocations or
+/// extra copies.
+///
+/// ## Examples
+/// **Appending to a String:**
+/// ```
+/// let mut output = String::new();
+/// assert_eq!(jsony::to_json_into(&false, &mut output), "false");
+/// assert_eq!(jsony::to_json_into(&42u32, &mut output), "42");
+/// assert_eq!(jsony::to_json_into(&None::<u32>, &mut output), "null");
+/// assert_eq!(output, "false42null");
+/// ```
+/// **Avoiding heap allocation via a stack allocated buffer:**
+/// ```
+/// let mut temp = [std::mem::MaybeUninit::<u8>::uninit(); 32];
+/// assert_eq!(jsony::to_json_into(&false, &mut temp[..]), "false");
+/// assert_eq!(jsony::to_json_into(&42u32, &mut temp[..]), "42");
+/// assert_eq!(jsony::to_json_into(&None::<u32>, &mut temp[..]), "null");
+/// ```
+/// Note: When the temp buffers capacity is exceeded a heap allocation will
+/// be used hence the return type of `Cow<'a, [u8]>`.
+///
+/// **Writing to `std::io::Writer`:**
+/// ```
+/// let writer: &mut (dyn std::io::Write + Send) = &mut std::io::stdout();
+/// assert_eq!(jsony::to_json_into(&false, writer)?, 5, "returns number of bytes written");
+/// # Ok::<_, std::io::Error>(())
+/// ```
+pub fn to_json_into<'a, T: ToJson, W: IntoTextWriter<'a>>(value: &T, output: W) -> W::Output {
+    let mut buffer = W::into_text_writer(output);
     value.jsony_to_json_into(&mut buffer);
-    O::finish(buffer)
+    W::finish_writing(buffer)
 }
 
 pub fn from_binary<'a, T: FromBinary<'a>>(slice: &'a [u8]) -> Result<T, FromBinaryError> {

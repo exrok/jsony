@@ -840,7 +840,7 @@ impl Codegen {
     fn dyn_key(&mut self, _span: Span, expr: TokenStream) {
         self.flush_text();
         splat! {(self.out);
-            let _: ::jsony::json::StringValue =
+            let _: ::jsony::json::AlwaysString =
                 [@parend(expr)].jsony_to_json_into([#self.builder]);
         };
         self.text.push_str(":");
@@ -869,7 +869,7 @@ impl Codegen {
             Flatten::Object => {
                 splat! {(self.out);
                     [#self.builder].join_parent_json_value_with_next();
-                    let _: ::jsony::json::ObjectValue = [@expr].jsony_to_json_into(
+                    let _: ::jsony::json::AlwaysObject = [@expr].jsony_to_json_into(
                         [#self.builder]
                     );
                     [#self.builder].join_object_with_next_value();
@@ -878,7 +878,7 @@ impl Codegen {
             Flatten::Array => {
                 splat! {(self.out);
                     [#self.builder].join_parent_json_value_with_next();
-                    let _: ::jsony::json::ArrayValue = [@expr].jsony_to_json_into(
+                    let _: ::jsony::json::AlwaysArray = [@expr].jsony_to_json_into(
                         [#self.builder]
                     );
                     [#self.builder].join_array_with_next_value();

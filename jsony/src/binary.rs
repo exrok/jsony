@@ -92,12 +92,6 @@ impl<'a> Decoder<'a> {
 /// - `0` for individual bytes
 /// - Zero-filled arrays
 /// - Empty slices
-///
-/// # Examples
-///
-/// ```
-/// // Example usage of Decoder
-/// ```
 pub struct Decoder<'a> {
     start: NonNull<u8>,
     end: NonNull<u8>,

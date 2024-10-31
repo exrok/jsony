@@ -941,7 +941,7 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
                 }
                 out.blit(389, 4);
             };
-            ToJsonKind::Static("ArrayValue")
+            ToJsonKind::Static("AlwaysArray")
         }
     };
     let stream = out.split_off_stream(head);
@@ -1069,7 +1069,7 @@ fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(
         out.blit(463, 4);
         out.split_off_stream(len)
     };
-    impl_to_json(out, ToJsonKind::Static("ObjectValue"), ctx, body)
+    impl_to_json(out, ToJsonKind::Static("AlwaysObject"), ctx, body)
 }
 fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     let mut flattening: Option<&Field> = None;
@@ -1308,9 +1308,9 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
     };
     let stream = out.buf.drain(start..).collect();
     let kind = if all_objects {
-        "ObjectValue"
+        "AlwaysObject"
     } else {
-        "StringValue"
+        "AlwaysString"
     };
     impl_to_json(out, ToJsonKind::Static(kind), ctx, stream)
 }
