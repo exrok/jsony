@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use jsony::{json::AnyValue, object, TextWriter, ToJson};
 
 #[test]
@@ -361,4 +363,18 @@ fn if_guard() {
             "bar": "kept"
         }
     )
+}
+
+#[test]
+fn empty_flattens() {
+    let hashmap: HashMap<&str, i64> = HashMap::default();
+    assert_object_eq!(
+        {
+            ..hashmap,
+            ..hashmap,
+            ..hashmap,
+            ..hashmap,
+        },
+        {}
+    );
 }

@@ -1,6 +1,6 @@
 use crate::ast::{
     self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttr, Generic,
-    GenericKind, Tag,
+    GenericKind, Tag, Via,
 };
 use crate::case::RenameRule;
 use crate::util::MemoryPool;
@@ -687,28 +687,73 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
     impl_to_json(out, kind, ctx, stream)
 }
 
-fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
-    let mut text = String::new();
+fn inner_struct_to_json(
+    out: &mut RustWriter,
+    ctx: &Ctx,
+    fields: &[Field],
+    text: &mut String,
+    on_self: bool,
+) -> Result<(), Error> {
     let mut first = true;
-    let body = token_stream!(
+    splat!(
         out;
-        out.start_json_object();
-        [for (field in fields) {
-            out.push_str([
-                text.clear();
-                if first {
-                    first = false;
-                }  else {
-                    text.push(',');
-                }
-                if let Err(err) = field_name_json(ctx, field, &mut text) {
+        [for field in fields {
+            if !first {
+                text.push(',');
+            }
+            first = field.attr.flatten;
+            if !field.attr.flatten {
+                if let Err(err) = field_name_json(ctx, field, text) {
                     return Err(err)
                 }
                 text.push(':');
-                out.buf.push(TokenTree::Literal(Literal::string(&text)));
-            ]);
-            <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into(&self.[#field.name], out);
+            }
+            if !text.is_empty() {
+                if text == "," {
+                    splat!(out; out.push_comma(););
+                } else {
+                    splat!(out;
+                        out.push_str([
+                            out.buf.push(TokenTree::Literal(Literal::string(&text)));
+                        ]);
+                    );
+                }
+                text.clear();
+            }
+            if let Via::Iterator = field.attr.via {
+                if field.attr.flatten {
+                    splat!(out;
+                        for (key, value) in ([?(on_self) self.][#field.name]).iter() {
+                            let _: ::jsony::json::StringValue = key.jsony_to_json_into(out);
+                            out.push_colon();
+                            value.jsony_to_json_into(out);
+                            out.push_comma();
+                        }
+                    );
+                    continue;
+                }
+            }
+            if field.attr.flatten {
+                splat!(out;
+                    out.join_parent_json_value_with_next();
+                    let _: ::jsony::json::ObjectValue =
+                );
+            }
+            splat!(out; <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into([?(on_self) &self.][#field.name], out););
+            if field.attr.flatten {
+                splat!(out; out.join_object_with_next_value(););
+            }
+
         }]
+    );
+    Ok(())
+}
+fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+    let mut text = String::new();
+    let body = token_stream!(
+        out;
+        out.start_json_object();
+        [inner_struct_to_json(out, ctx, fields, &mut text, true)?]
         out.end_json_object()
     );
 
@@ -862,69 +907,19 @@ fn enum_variant_to_json_struct(
     variant: &EnumVariant,
     text: &mut String,
 ) -> Result<(), Error> {
-    // let ordered_fields = schema_ordered_fields(variant.fields);
-    let mut flattening: Option<&Field> = None;
-    for field in variant.fields {
-        if field.attr.flatten {
-            if flattening.is_some() {
-                return Err(Error::span_msg(
-                    "Only one flatten field is currently supproted",
-                    field.name.span(),
-                ));
-            }
-            flattening = Some(field);
-        }
-    }
-    if flattening.is_some() {
-        throw!("Flattening in ToJson not implemented yet");
-    }
-    let mut first = true;
     splat!(
         out;
         [
             match ctx.target.tag {
-                Tag::Untagged=> splat!(out;out.start_json_object();),
+                Tag::Untagged => splat!(out;out.start_json_object();),
                 Tag::Inline(..) if ctx.target.content.is_some() => text.push('{'),
-                Tag::Default  => text.push('{'),
+                Tag::Default  => {
+                    text.push('{')
+                },
                 _ => ()
             }
         ]
-        [for (field in variant.fields) {
-            out.push_str([
-                if first {
-                    first = false;
-                }  else {
-                    text.push(',');
-                }
-                if let Err(err) = field_name_json(ctx, field, text) {
-                    return Err(err)
-                }
-                text.push(':');
-                out.buf.push(TokenTree::Literal(Literal::string(&text)));
-                text.clear();
-            ]);
-            <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into([#field.name], out);
-        }]
-        [
-        match ctx.target.tag {
-            Tag::Untagged=> splat!(out;out.end_json_object();),
-            Tag::Default  => {
-                text.push('}');
-                splat! {
-                    out;
-                    out.push_str([@Literal::string(&text).into()]);
-                };
-            },
-            Tag::Inline(..) if ctx.target.content.is_some() => {
-                text.push('}');
-                splat! {
-                    out;
-                    out.push_str([@Literal::string(&text).into()]);
-                };
-            },
-            _ => ()
-        }
-        ]
+        [inner_struct_to_json(out, ctx, &variant.fields, text, false)?];
     );
     Ok(())
 }
@@ -939,13 +934,16 @@ fn enum_variant_to_json(
     let start = out.buf.len();
     match &ctx.target.tag {
         Tag::Inline(..) => {
-            variant_name_json(ctx, variant, text)?;
-            if let Some(content) = &ctx.target.content {
-                text.push_str(",\"");
-                crate::template::raw_escape(&content, text);
-                text.push_str("\":");
+            if let EnumKind::None = variant.kind {
             } else {
-                text.push_str(",");
+                variant_name_json(ctx, variant, text)?;
+                if let Some(content) = &ctx.target.content {
+                    text.push_str(",\"");
+                    crate::template::raw_escape(&content, text);
+                    text.push_str("\":");
+                } else {
+                    text.push_str(",");
+                }
             }
         }
         Tag::Untagged => (),
@@ -979,9 +977,7 @@ fn enum_variant_to_json(
             }
         }
         EnumKind::None => {
-            text.push('"');
             variant_name_json(ctx, variant, text)?;
-            text.push('"');
             splat! {
                 out;
                 out.push_str([@Literal::string(&text).into()]);

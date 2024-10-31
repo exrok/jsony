@@ -17,9 +17,9 @@ use Kind::{Empty, False, Map, Null, Number, True};
 const HASH_MAP_THRESHHOLD: usize = 8;
 
 use crate::{
-    json::{decode_object_sequence, DecodeError},
+    json::{decode_object_sequence, AnyValue, DecodeError},
     parser::Peek,
-    FromJson,
+    FromJson, ToJson,
 };
 
 impl Kind {
@@ -313,6 +313,38 @@ impl<'a> Drop for JsonItem<'a> {
     }
 }
 
+impl<'a> ToJson for JsonItem<'a> {
+    type Kind = AnyValue;
+
+    fn jsony_to_json_into(&self, output: &mut crate::TextWriter) -> Self::Kind {
+        match self.json_type() {
+            Null => output.push_str("null"),
+            True => output.push_str("true"),
+            False => output.push_str("false"),
+            Kind::String => {
+                self.as_str().unwrap().jsony_to_json_into(output);
+            }
+            Number => {
+                output.push_str(self.as_str().unwrap());
+            }
+            Map => {
+                output.start_json_object();
+                for (key, value) in self.as_object_entries().unwrap() {
+                    key.jsony_to_json_into(output);
+                    output.push_colon();
+                    value.jsony_to_json_into(output);
+                    output.push_comma();
+                }
+                output.end_json_object();
+            }
+            Kind::Array => {
+                self.as_array().unwrap().jsony_to_json_into(output);
+            }
+            Empty => output.push_str("null"),
+        };
+        AnyValue
+    }
+}
 unsafe impl<'a> FromJson<'a> for JsonItem<'a> {
     fn decode_json(
         parser: &mut crate::parser::Parser<'a>,

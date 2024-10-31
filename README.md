@@ -27,14 +27,14 @@ It is not recommended to be used for external facing systems at this time.
 use jsony::Jsony;
 
 #[derive(Jsony, Debug)]
-#[jsony(FromJson, tag = "kind")]
+#[jsony(FromJson, ToJson, tag = "kind")]
 enum Status<'a> {
     Online,
     Error {
         #[jsony(default = i64::MAX)]
         code: i64,
         message: Cow<'a, str>,
-        #[jsony(flatten)]
+        #[jsony(flatten, via = Iterator)]
         properties: Vec<(String, JsonItem<'a>)>,
     },
     Offline,
@@ -56,7 +56,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(matches!(previous, Status::Offline));
 
     let status: Status = jsony::from_json(&input)?;
-    println!("{:#?}", status);
+
+    assert_eq!(
+      input,
+      jsony::to_json(&status)
+    );
 
     Ok(())
 }

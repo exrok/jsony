@@ -1012,11 +1012,11 @@ impl<T: ToJson> ToJson for [T] {
     }
 }
 
-impl<'a, T: ToJson + Clone> ToJson for Cow<'a, T> {
+impl<'a, T: ToJson + ToOwned + ?Sized> ToJson for Cow<'a, T> {
     type Kind = T::Kind;
 
     fn jsony_to_json_into(&self, output: &mut TextWriter) -> T::Kind {
-        <T as ToJson>::jsony_to_json_into(self, output)
+        <T as ToJson>::jsony_to_json_into(self.as_ref(), output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for Rc<T> {
@@ -1073,8 +1073,8 @@ impl<K: ToJson<Kind = StringValue>, V: ToJson, S> ToJson for HashMap<K, V, S> {
 
     fn jsony_to_json_into(&self, output: &mut TextWriter) -> ObjectValue {
         output.start_json_object();
-        for (_key, value) in self {
-            value.jsony_to_json_into(output);
+        for (key, value) in self {
+            key.jsony_to_json_into(output);
             output.push_colon();
             value.jsony_to_json_into(output);
             output.push_comma();

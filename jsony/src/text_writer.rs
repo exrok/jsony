@@ -162,7 +162,7 @@ impl<'a> TextWriter<'a> {
     }
     pub fn join_object_with_next_value(&mut self) {
         debug_assert!(!self.joining);
-        self.joining = true;
+        self.joining = false;
         if let Some([a, b]) = self.buffer.last_2() {
             debug_assert_eq!(*b, b'}');
             if *a == b'{' {
@@ -176,7 +176,7 @@ impl<'a> TextWriter<'a> {
     }
     pub fn join_array_with_next_value(&mut self) {
         debug_assert!(!self.joining);
-        self.joining = true;
+        self.joining = false;
         if let Some([a, b]) = self.buffer.last_2() {
             debug_assert_eq!(*b, b']');
             if *a == b'[' {

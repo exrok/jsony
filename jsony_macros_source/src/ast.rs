@@ -23,10 +23,17 @@ pub enum DeriveTargetKind {
 }
 
 #[cfg_attr(feature = "debug", derive(Debug))]
+pub enum Via {
+    Iterator,
+    None,
+}
+
+#[cfg_attr(feature = "debug", derive(Debug))]
 pub struct FieldAttr {
     pub rename: Option<Literal>,
     /// eventually probably have kind here but lets keep it simple for now
     pub flatten: bool,
+    pub via: Via,
     pub default: Option<Vec<TokenTree>>,
 }
 
@@ -37,6 +44,7 @@ impl Default for FieldAttr {
             rename: Default::default(),
             flatten: false,
             default: None,
+            via: Via::None,
         }
     }
 }
@@ -524,6 +532,28 @@ fn parse_single_field_attr(
             attrs.rename = Some(rename);
             Ok(())
         }
+        "via" => {
+            if attrs.rename.is_some() {
+                throw!("Duplicate rename attribute" @ ident.span())
+            }
+            let Some(TokenTree::Ident(vai_ident)) = value.pop() else {
+                throw!("Expected a value" @ ident.span())
+            };
+            if !value.is_empty() {
+                throw!("Unexpected a single literal" @ ident.span())
+            }
+            let via = vai_ident.to_string();
+            match via.as_str() {
+                "Iterator" => {
+                    attrs.via = Via::Iterator;
+                }
+                _ => {
+                    throw!("Unknown via value" @ vai_ident.span())
+                }
+            }
+
+            Ok(())
+        }
         "default" => {
             if attrs.default.is_some() {
                 throw!("Duplicate rename attribute" @ ident.span())
@@ -894,6 +924,7 @@ static DEFAULT_ATTR: DefaultFieldAttr = const {
         rename: None,
         flatten: false,
         default: None,
+        via: Via::None,
     })
 };
 
