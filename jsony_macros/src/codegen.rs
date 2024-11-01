@@ -957,7 +957,7 @@ fn inner_struct_to_json(
     let mut first = true;
     {
         {
-            for field in fields {
+            for (i, field) in fields.iter().enumerate() {
                 if !first {
                     text.push(',');
                 }
@@ -1000,10 +1000,18 @@ fn inner_struct_to_json(
                             out.blit_ident(26);
                             {
                                 let at = out.buf.len();
-                                if on_self {
-                                    out.blit(378, 2);
+                                {
+                                    if on_self {
+                                        {
+                                            out.blit(377, 3);
+                                            out.buf.push(TokenTree::from(field.name.clone()));
+                                        }
+                                    } else {
+                                        {
+                                            out.buf.push(TokenTree::from(ctx.temp[i].clone()));
+                                        }
+                                    }
                                 };
-                                out.buf.push(TokenTree::from(field.name.clone()));
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
                             out.blit(401, 3);
@@ -1039,10 +1047,18 @@ fn inner_struct_to_json(
                     out.blit(366, 11);
                     {
                         let at = out.buf.len();
-                        if on_self {
-                            out.blit(377, 3);
+                        {
+                            if on_self {
+                                {
+                                    out.blit(377, 3);
+                                    out.buf.push(TokenTree::from(field.name.clone()));
+                                }
+                            } else {
+                                {
+                                    out.buf.push(TokenTree::from(ctx.temp[i].clone()));
+                                }
+                            }
                         };
-                        out.buf.push(TokenTree::from(field.name.clone()));
                         out.blit(159, 2);
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
@@ -1266,9 +1282,11 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
                             {
                                 let at = out.buf.len();
                                 {
-                                    for field in variant.fields {
+                                    for (i, field) in variant.fields.iter().enumerate() {
                                         {
                                             out.buf.push(TokenTree::from(field.name.clone()));
+                                            out.blit_punct(9);
+                                            out.buf.push(TokenTree::from(ctx.temp[i].clone()));
                                             out.blit_punct(1);
                                         }
                                     }
@@ -2440,9 +2458,11 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                             {
                                 let at = out.buf.len();
                                 {
-                                    for field in variant.fields {
+                                    for (i, field) in variant.fields.iter().enumerate() {
                                         {
                                             out.buf.push(TokenTree::from(field.name.clone()));
+                                            out.blit_punct(9);
+                                            out.buf.push(TokenTree::from(ctx.temp[i].clone()));
                                             out.blit_punct(1);
                                         }
                                     }
@@ -2468,7 +2488,7 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                                             ctx,
                                             field,
                                             &(|out| {
-                                                out.buf.push(TokenTree::from(field.name.clone()));
+                                                out.buf.push(TokenTree::from(ctx.temp[i].clone()));
                                             }),
                                         )
                                     }
@@ -2594,7 +2614,7 @@ fn handle_enum(target: &DeriveTargetInner, variants: &[EnumVariant]) -> Result<T
     let mut max_tuples = 0;
     for var in variants {
         if match var.kind {
-            EnumKind::Tuple => true,
+            EnumKind::Tuple | EnumKind::Struct => true,
             _ => false,
         } {
             max_tuples = max_tuples.max(var.fields.len());

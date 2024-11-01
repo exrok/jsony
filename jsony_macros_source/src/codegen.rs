@@ -697,7 +697,7 @@ fn inner_struct_to_json(
     let mut first = true;
     splat!(
         out;
-        [for field in fields {
+        [for (i, field) in fields.iter().enumerate() {
             if !first {
                 text.push(',');
             }
@@ -723,7 +723,11 @@ fn inner_struct_to_json(
             if let Via::Iterator = field.attr.via {
                 if field.attr.flatten {
                     splat!(out;
-                        for (key, value) in ([?(on_self) self.][#field.name]).iter() {
+                        for (key, value) in ([if on_self {
+                            splat!(out; &self.[#field.name])
+                        } else {
+                            splat!(out; [#ctx.temp[i]])
+                        }]).iter() {
                             let _: ::jsony::json::AlwaysString = key.jsony_to_json_into(out);
                             out.push_colon();
                             value.jsony_to_json_into(out);
@@ -739,7 +743,11 @@ fn inner_struct_to_json(
                     let _: ::jsony::json::AlwaysObject =
                 );
             }
-            splat!(out; <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into([?(on_self) &self.][#field.name], out););
+            splat!(out; <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into([if on_self {
+                splat!(out; &self.[#field.name])
+            } else {
+                splat!(out; [#ctx.temp[i]])
+            }], out););
             if field.attr.flatten {
                 splat!(out; out.join_object_with_next_value(););
             }
@@ -870,7 +878,7 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
                     },
                     EnumKind::Struct => {
                         splat!{out; {
-                            [for field in variant.fields { splat!(out; [#field.name],) }]
+                            [for (i, field) in variant.fields.iter().enumerate() { splat!(out; [#field.name]: [#ctx.temp[i]],) }]
                         } => [
                             text.clear();
                             enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
@@ -1386,11 +1394,11 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                     },
                     EnumKind::Struct => {
                         splat!{out; {
-                            [for field in variant.fields { splat!(out; [#field.name],) }]
+                            [for (i, field) in variant.fields.iter().enumerate() { splat!(out; [#field.name]: [#ctx.temp[i]],) }]
                         } => {
                             encoder.push([#Literal::u8_unsuffixed(i as u8)]);
                             [for field in variant.fields {
-                                binary_encode_field(out, ctx, field, &|out| splat!{out; [#field.name]})
+                                binary_encode_field(out, ctx, field, &|out| splat!{out; [#ctx.temp[i]]})
                             }]
                         }}
                     },
@@ -1452,7 +1460,7 @@ fn handle_enum(target: &DeriveTargetInner, variants: &[EnumVariant]) -> Result<T
     let mut ctx = Ctx::new(&mut output, target)?;
     let mut max_tuples = 0;
     for var in variants {
-        if matches!(var.kind, EnumKind::Tuple) {
+        if matches!(var.kind, EnumKind::Tuple | EnumKind::Struct) {
             max_tuples = max_tuples.max(var.fields.len());
         }
     }
