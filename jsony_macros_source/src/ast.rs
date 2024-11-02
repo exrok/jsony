@@ -1,6 +1,6 @@
 use crate::{case::RenameRule, util::Allocator, Error};
 
-use proc_macro2::{Delimiter, Ident, Literal, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, Ident, Literal, Span, TokenStream, TokenTree};
 
 #[cfg_attr(feature = "debug", derive(Debug))]
 pub enum GenericKind {
@@ -29,22 +29,38 @@ pub enum Via {
 }
 
 #[cfg_attr(feature = "debug", derive(Debug))]
-pub struct FieldAttr {
-    pub rename: Option<Literal>,
-    /// eventually probably have kind here but lets keep it simple for now
-    pub flatten: bool,
-    pub via: Via,
-    pub default: Option<Vec<TokenTree>>,
+struct FieldAttr {
+    enabled: TraitSet,
+    #[allow(dead_code)]
+    span: Span,
+    inner: FieldAttrInner,
+}
+
+#[cfg_attr(feature = "debug", derive(Debug))]
+enum FieldAttrInner {
+    Rename(Literal),
+    Flatten,
+    Via(Via),
+    Default(Vec<TokenTree>),
+}
+
+#[cfg_attr(feature = "debug", derive(Debug))]
+pub struct FieldAttrs {
+    attrs: Vec<FieldAttr>,
+    flags: u64,
+    // pub rename: Option<Literal>,
+    // /// eventually probably have kind here but lets keep it simple for now
+    // pub flatten: bool,
+    // pub via: Via,
+    // pub default: Option<Vec<TokenTree>>,
 }
 
 #[allow(clippy::derivable_impls)]
-impl Default for FieldAttr {
+impl Default for FieldAttrs {
     fn default() -> Self {
         Self {
-            rename: Default::default(),
-            flatten: false,
-            default: None,
-            via: Via::None,
+            attrs: Default::default(),
+            flags: 0,
         }
     }
 }
@@ -95,15 +111,75 @@ pub struct Field<'a> {
     pub name: &'a Ident,
     pub ty: &'a [TokenTree],
     #[allow(dead_code)]
-    pub attr: &'a FieldAttr,
+    pub attr: &'a FieldAttrs,
     pub flags: u32,
+}
+
+impl<'a> EnumVariant<'a> {
+    pub fn rename(&self, for_trait: TraitSet) -> Option<&Literal> {
+        for attr in &self.attr.attrs {
+            if attr.enabled & for_trait != 0 {
+                if let FieldAttrInner::Rename(lit) = &attr.inner {
+                    return Some(lit);
+                }
+            }
+        }
+        None
+    }
+}
+
+impl<'a> Field<'a> {
+    pub fn via(&self, for_trait: TraitSet) -> &Via {
+        // todo optimize via flags
+        for attr in &self.attr.attrs {
+            if attr.enabled & for_trait != 0 {
+                if let FieldAttrInner::Via(via) = &attr.inner {
+                    return via;
+                }
+            }
+        }
+        &Via::None
+    }
+    pub fn flatten(&self, for_trait: TraitSet) -> bool {
+        // todo optimize via flags
+        for attr in &self.attr.attrs {
+            if attr.enabled & for_trait != 0 {
+                if let FieldAttrInner::Flatten = attr.inner {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    pub fn default(&self, for_trait: TraitSet) -> Option<&[TokenTree]> {
+        for attr in &self.attr.attrs {
+            if attr.enabled & for_trait != 0 {
+                if let FieldAttrInner::Default(tokens) = &attr.inner {
+                    return Some(tokens);
+                }
+            }
+        }
+        None
+    }
+    pub fn rename(&self, for_trait: TraitSet) -> Option<&Literal> {
+        for attr in &self.attr.attrs {
+            if attr.enabled & for_trait != 0 {
+                if let FieldAttrInner::Rename(lit) = &attr.inner {
+                    return Some(lit);
+                }
+            }
+        }
+        None
+    }
 }
 
 impl<'a> Field<'a> {
     pub const GENERIC: u32 = 1u32 << 0;
     pub const IN_TUPLE: u32 = 1u32 << 1;
-    pub const WITH_FLATTEN: u32 = 1u32 << 2;
-    pub const WITH_DEFAULT: u32 = 1u32 << 3;
+    pub const WITH_TO_JSON_FLATTEN: u32 = 1u32 << 2;
+    // pub const WITH_FROM_JSON_FLATTEN: u32 = 1u32 << 3;
+    pub const WITH_TO_JSON_DEFAULT: u32 = 1u32 << 4;
+    // pub const WITH_DEFAULT: u32 = 1u32 << 5;
     #[allow(dead_code)]
     pub fn is(&self, flags: u32) -> bool {
         self.flags & flags != 0
@@ -120,7 +196,7 @@ pub struct EnumVariant<'a> {
     pub fields: &'a [Field<'a>],
     pub kind: EnumKind,
     #[allow(dead_code)]
-    pub attr: &'a FieldAttr,
+    pub attr: &'a FieldAttrs,
 }
 
 #[cfg_attr(feature = "debug", derive(Debug))]
@@ -213,7 +289,7 @@ fn parse_container_attr(
         "tag" => {
             match target.tag {
                 Tag::Inline(_) => throw!("Duplicate tag attribute" @ attr.span()),
-                Tag::Untagged => throw!("Cannot of a tag & be untagged" @ attr.span()),
+                Tag::Untagged => throw!("Cannot have a tag & be untagged" @ attr.span()),
                 Tag::Default => (),
             }
             let [TokenTree::Literal(tag_name), rest @ ..] = value else {
@@ -280,7 +356,7 @@ fn extract_container_attr(
     };
     let name = ident.to_string();
     if name == "jsony" {
-        parse_attrs(group.stream(), &mut |attr, value| {
+        parse_attrs(group.stream(), &mut |_, attr, value| {
             parse_container_attr(target, attr, value)
         })
     } else if name == "repr" {
@@ -511,31 +587,33 @@ pub fn extract_derive_target<'a>(
         tok => throw!("Expected either body or where clause", tok),
     }
 }
-
+const TRAIT_COUNT: u64 = 4;
 fn parse_single_field_attr(
-    attrs: &mut FieldAttr,
+    attrs: &mut FieldAttrs,
+    mut trait_set: TraitSet,
     ident: Ident,
     value: &mut Vec<TokenTree>,
 ) -> Result<(), Error> {
     let name = ident.to_string();
-    match name.as_str() {
+    if trait_set == 0 {
+        trait_set = TO_JSON | FROM_JSON | TO_BINARY | FROM_BINARY;
+    }
+    let offset = match name.as_str() {
         "rename" => {
-            if attrs.rename.is_some() {
-                throw!("Duplicate rename attribute" @ ident.span())
-            }
             let Some(TokenTree::Literal(rename)) = value.pop() else {
                 throw!("Expected a literal" @ ident.span())
             };
             if !value.is_empty() {
                 throw!("Unexpected a single literal" @ ident.span())
             }
-            attrs.rename = Some(rename);
-            Ok(())
+            attrs.attrs.push(FieldAttr {
+                enabled: trait_set,
+                span: ident.span(),
+                inner: FieldAttrInner::Rename(rename),
+            });
+            0u64 * TRAIT_COUNT
         }
         "via" => {
-            if attrs.rename.is_some() {
-                throw!("Duplicate rename attribute" @ ident.span())
-            }
             let Some(TokenTree::Ident(vai_ident)) = value.pop() else {
                 throw!("Expected a value" @ ident.span())
             };
@@ -545,39 +623,56 @@ fn parse_single_field_attr(
             let via = vai_ident.to_string();
             match via.as_str() {
                 "Iterator" => {
-                    attrs.via = Via::Iterator;
+                    attrs.attrs.push(FieldAttr {
+                        enabled: trait_set,
+                        span: ident.span(),
+                        inner: FieldAttrInner::Via(Via::Iterator),
+                    });
                 }
                 _ => {
                     throw!("Unknown via value" @ vai_ident.span())
                 }
             }
 
-            Ok(())
+            1u64 * TRAIT_COUNT
         }
         "default" => {
-            if attrs.default.is_some() {
-                throw!("Duplicate rename attribute" @ ident.span())
-            }
-            attrs.default = Some(if value.is_empty() {
-                crate::default_call_tokens(ident.span())
-            } else {
-                std::mem::take(value)
+            // attrs.default = Some(if value.is_empty() {
+            //     crate::default_call_tokens(ident.span())
+            // } else {
+            //     std::mem::take(value)
+            // });
+            attrs.attrs.push(FieldAttr {
+                enabled: trait_set,
+                span: ident.span(),
+                inner: FieldAttrInner::Default(if value.is_empty() {
+                    crate::default_call_tokens(ident.span())
+                } else {
+                    std::mem::take(value)
+                }),
             });
-            Ok(())
+            3u64 * TRAIT_COUNT
         }
         "flatten" => {
-            if attrs.flatten {
-                throw!("Duplicate rename attribute" @ ident.span())
-            }
             if !value.is_empty() {
                 throw!("flatten doesn't take any arguments" @ ident.span())
             }
-            attrs.flatten = true;
-            Ok(())
+            attrs.attrs.push(FieldAttr {
+                enabled: trait_set,
+                span: ident.span(),
+                inner: FieldAttrInner::Flatten,
+            });
+            4u64 * TRAIT_COUNT
         }
 
         _ => throw!("Unknown attr field" @ ident.span()),
+    };
+    let mask = (trait_set as u64) << offset;
+    if attrs.flags & mask != 0 {
+        throw!("Duplicate attribute" @ ident.span())
     }
+    attrs.flags |= mask;
+    Ok(())
 }
 
 fn extract_jsony_attr(group: TokenStream) -> Option<TokenStream> {
@@ -596,40 +691,66 @@ fn extract_jsony_attr(group: TokenStream) -> Option<TokenStream> {
     Some(group.stream())
 }
 
+pub type TraitSet = u8;
+pub const TO_JSON: TraitSet = 1 << 0;
+pub const FROM_JSON: TraitSet = 1 << 1;
+pub const TO_BINARY: TraitSet = 1 << 2;
+pub const FROM_BINARY: TraitSet = 1 << 3;
 fn parse_attrs(
     toks: TokenStream,
-    func: &mut dyn FnMut(Ident, &mut Vec<TokenTree>) -> Result<(), Error>,
+    func: &mut dyn FnMut(TraitSet, Ident, &mut Vec<TokenTree>) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let mut toks = toks.into_iter();
     let mut buf: Vec<TokenTree> = Vec::new();
-    while let Some(tok) = toks.next() {
-        let TokenTree::Ident(ident) = tok else {
+    'outer: while let Some(tok) = toks.next() {
+        let TokenTree::Ident(mut ident) = tok else {
             throw!("Expected ident" @ tok.span())
         };
-        if let Some(sep) = toks.next() {
-            let TokenTree::Punct(sep) = sep else {
-                throw!("Expected either `=` or `,`" @ sep.span());
-            };
-            match sep.as_char() {
-                '=' => (),
-                ',' => {
-                    if let Err(err) = func(ident, &mut buf) {
-                        return Err(err);
+        let mut trait_set = 0;
+        'processing: loop {
+            if let Some(sep) = toks.next() {
+                let sep = match sep {
+                    TokenTree::Punct(sep) => sep,
+                    TokenTree::Ident(true_ident) => {
+                        let text = ident.to_string();
+                        match text.as_str() {
+                            "ToJson" => trait_set |= TO_JSON,
+                            "FromJson" => trait_set |= FROM_JSON,
+                            "ToBinary" => trait_set |= TO_BINARY,
+                            "FromBinary" => trait_set |= FROM_BINARY,
+                            "To" => trait_set |= TO_JSON | TO_BINARY,
+                            "From" => trait_set |= FROM_JSON | FROM_BINARY,
+                            _ => throw!("Expected trait or alias" @ ident.span()),
+                        }
+                        ident = true_ident;
+                        continue 'processing;
                     }
-                    continue;
-                }
-                _ => throw!("Expected either `=` or `,`" @ sep.span()),
-            }
-            for tok in toks.by_ref() {
-                if let TokenTree::Punct(punct) = &tok {
-                    if punct.as_char() == ',' {
-                        break;
+                    _ => {
+                        throw!("Expected either `=` or `,`" @ sep.span());
                     }
+                };
+                match sep.as_char() {
+                    '=' => (),
+                    ',' => {
+                        if let Err(err) = func(trait_set, ident, &mut buf) {
+                            return Err(err);
+                        }
+                        continue 'outer;
+                    }
+                    _ => throw!("Expected either `=` or `,`" @ sep.span()),
                 }
-                buf.push(tok);
+                for tok in toks.by_ref() {
+                    if let TokenTree::Punct(punct) = &tok {
+                        if punct.as_char() == ',' {
+                            break;
+                        }
+                    }
+                    buf.push(tok);
+                }
             }
+            break;
         }
-        if let Err(err) = func(ident, &mut buf) {
+        if let Err(err) = func(trait_set, ident, &mut buf) {
             return Err(err);
         }
         buf.clear();
@@ -639,16 +760,16 @@ fn parse_attrs(
 }
 
 fn parse_field_attr<'a>(
-    current: &mut Option<&'a mut FieldAttr>,
-    attr_buf: &mut Allocator<'a, FieldAttr>,
+    current: &mut Option<&'a mut FieldAttrs>,
+    attr_buf: &mut Allocator<'a, FieldAttrs>,
     toks: TokenStream,
 ) -> Result<(), Error> {
     let Some(attrs) = extract_jsony_attr(toks) else {
         return Ok(());
     };
     let attr = current.get_or_insert_with(|| attr_buf.alloc_default());
-    parse_attrs(attrs, &mut |ident, buf| {
-        parse_single_field_attr(attr, ident, buf)
+    parse_attrs(attrs, &mut |set, ident, buf| {
+        parse_single_field_attr(attr, set, ident, buf)
     })
 }
 
@@ -656,7 +777,7 @@ struct VariantTemp<'a> {
     name: &'a Ident,
     start: usize,
     end: usize,
-    attr: &'a FieldAttr,
+    attr: &'a FieldAttrs,
     kind: EnumKind,
 }
 
@@ -698,7 +819,7 @@ pub fn parse_enum<'a>(
     fields: &'a [TokenTree],
     tt_buf: &'a mut Vec<TokenTree>,
     field_buf: &'a mut Vec<Field<'a>>,
-    attr_buf: &mut Allocator<'a, FieldAttr>,
+    attr_buf: &mut Allocator<'a, FieldAttrs>,
 ) -> Result<Vec<EnumVariant<'a>>, Error> {
     let mut temp = parse_inner_enum_variants(fields, tt_buf, attr_buf)?;
     {
@@ -744,11 +865,11 @@ pub fn parse_enum<'a>(
 fn parse_inner_enum_variants<'a>(
     fields: &'a [TokenTree],
     tt_buffer: &mut Vec<TokenTree>,
-    attr_buffer: &mut Allocator<'a, FieldAttr>,
+    attr_buffer: &mut Allocator<'a, FieldAttrs>,
 ) -> Result<Vec<VariantTemp<'a>>, Error> {
     let mut f = fields.iter().enumerate();
     let mut enums: Vec<VariantTemp<'a>> = Vec::new();
-    let mut next_attr: Option<&'a mut FieldAttr> = None;
+    let mut next_attr: Option<&'a mut FieldAttrs> = None;
     loop {
         let i = if let Some((i, tok)) = f.next() {
             let TokenTree::Punct(punct) = tok else {
@@ -855,14 +976,15 @@ fn parse_inner_enum_variants<'a>(
     Ok(enums)
 }
 
-fn flags_from_attr(attr: &Option<&mut FieldAttr>) -> u32 {
+fn flags_from_attr(attr: &Option<&mut FieldAttrs>) -> u32 {
     let mut f = 0;
     if let Some(attr) = attr {
-        if attr.flatten {
-            f |= Field::WITH_FLATTEN;
-        }
-        if attr.default.is_some() {
-            f |= Field::WITH_DEFAULT;
+        for attr in &attr.attrs {
+            match &attr.inner {
+                FieldAttrInner::Flatten => f |= ((attr.enabled & 0b11) << 2) as u32,
+                FieldAttrInner::Default(..) => f |= ((attr.enabled & 0b11) << 4) as u32,
+                _ => (),
+            }
         }
     }
     f
@@ -872,10 +994,10 @@ pub fn parse_tuple_fields<'a>(
     fake_name: &'a Ident,
     output: &mut Vec<Field<'a>>,
     fields: &'a [TokenTree],
-    attr_buf: &mut Allocator<'a, FieldAttr>,
+    attr_buf: &mut Allocator<'a, FieldAttrs>,
 ) -> Result<(), Error> {
     let mut f = fields.iter().enumerate();
-    let mut next_attr: Option<&mut FieldAttr> = None;
+    let mut next_attr: Option<&mut FieldAttrs> = None;
     while let Some((i, tok)) = f.next() {
         if let TokenTree::Punct(punct) = tok {
             if punct.as_char() == '#' {
@@ -917,24 +1039,22 @@ pub fn parse_tuple_fields<'a>(
     Ok(())
 }
 
-struct DefaultFieldAttr(FieldAttr);
+struct DefaultFieldAttr(FieldAttrs);
 unsafe impl Sync for DefaultFieldAttr {}
 static DEFAULT_ATTR: DefaultFieldAttr = const {
-    DefaultFieldAttr(FieldAttr {
-        rename: None,
-        flatten: false,
-        default: None,
-        via: Via::None,
+    DefaultFieldAttr(FieldAttrs {
+        attrs: Vec::new(),
+        flags: 0,
     })
 };
 
 pub fn parse_struct_fields<'a>(
     output: &mut Vec<Field<'a>>,
     fields: &'a [TokenTree],
-    attr_buf: &mut Allocator<'a, FieldAttr>,
+    attr_buf: &mut Allocator<'a, FieldAttrs>,
 ) -> Result<(), Error> {
     let mut f = fields.iter().enumerate();
-    let mut next_attr: Option<&'a mut FieldAttr> = None;
+    let mut next_attr: Option<&'a mut FieldAttrs> = None;
     while let Some((i, tok)) = f.next() {
         let TokenTree::Punct(punct) = tok else {
             continue;

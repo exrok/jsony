@@ -1,6 +1,6 @@
 use crate::ast::{
-    self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttr, Generic,
-    GenericKind, Tag, Via,
+    self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttrs, Generic,
+    GenericKind, Tag, Via, FROM_JSON, TO_JSON,
 };
 use crate::case::RenameRule;
 use crate::util::MemoryPool;
@@ -540,7 +540,7 @@ fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) -> Result
     Ok(())
 }
 fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
-    if let Some(name) = &field.attr.rename {
+    if let Some(name) = field.rename(FROM_JSON) {
         return name.clone();
     }
     if ctx.target.rename_all != RenameRule::None {
@@ -555,7 +555,7 @@ fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
 }
 fn variant_name_json(ctx: &Ctx, field: &EnumVariant, output: &mut String) -> Result<(), Error> {
     output.push('"');
-    if let Some(name) = &field.attr.rename {
+    if let Some(name) = field.rename(TO_JSON) {
         match crate::lit::literal_inline(name.to_string()) {
             crate::lit::InlineKind::String(value) => {
                 crate::template::raw_escape(&value, output);
@@ -581,7 +581,7 @@ fn variant_name_json(ctx: &Ctx, field: &EnumVariant, output: &mut String) -> Res
 }
 fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) -> Result<(), Error> {
     output.push('"');
-    if let Some(name) = &field.attr.rename {
+    if let Some(name) = &field.rename(TO_JSON) {
         match crate::lit::literal_inline(name.to_string()) {
             crate::lit::InlineKind::String(value) => {
                 crate::template::raw_escape(&value, output);
@@ -701,7 +701,7 @@ fn struct_schema(
         let len = out.buf.len();
         {
             for field in fields {
-                let Some(default) = &field.attr.default else {
+                let Some(default) = &field.default(FROM_JSON) else {
                     break;
                 };
                 {
@@ -805,12 +805,14 @@ fn body_of_struct_from_json_with_flatten(
 fn schema_ordered_fields<'a>(fields: &'a [Field<'a>]) -> Vec<&'a Field<'a>> {
     let mut buf = Vec::with_capacity(fields.len());
     for field in fields {
-        if field.flags & (Field::WITH_DEFAULT | Field::WITH_FLATTEN) == Field::WITH_DEFAULT {
+        if field.flags & (Field::WITH_TO_JSON_DEFAULT | Field::WITH_TO_JSON_FLATTEN)
+            == Field::WITH_TO_JSON_DEFAULT
+        {
             buf.push(field);
         }
     }
     for field in fields {
-        if field.flags & (Field::WITH_DEFAULT | Field::WITH_FLATTEN) == 0 {
+        if field.flags & (Field::WITH_TO_JSON_DEFAULT | Field::WITH_TO_JSON_FLATTEN) == 0 {
             buf.push(field);
         }
     }
@@ -819,7 +821,7 @@ fn schema_ordered_fields<'a>(fields: &'a [Field<'a>]) -> Vec<&'a Field<'a>> {
 fn required_bitset(ordered: &[&Field]) -> u64 {
     let mut defaults = 0;
     for field in ordered {
-        if field.flags & Field::WITH_DEFAULT != 0 {
+        if field.flags & Field::WITH_TO_JSON_DEFAULT != 0 {
             defaults += 1;
             continue;
         }
@@ -961,8 +963,9 @@ fn inner_struct_to_json(
                 if !first {
                     text.push(',');
                 }
-                first = field.attr.flatten;
-                if !field.attr.flatten {
+                let flattened = field.flatten(TO_JSON);
+                first = flattened;
+                if !flattened {
                     if let Err(err) = field_name_json(ctx, field, text) {
                         return Err(err);
                     }
@@ -988,8 +991,8 @@ fn inner_struct_to_json(
                     }
                     text.clear();
                 }
-                if let Via::Iterator = field.attr.via {
-                    if field.attr.flatten {
+                if let Via::Iterator = field.via(TO_JSON) {
+                    if flattened {
                         {
                             out.blit_ident(107);
                             {
@@ -1036,7 +1039,7 @@ fn inner_struct_to_json(
                         continue;
                     }
                 }
-                if field.attr.flatten {
+                if flattened {
                     {
                         out.blit(435, 18);
                     };
@@ -1064,7 +1067,7 @@ fn inner_struct_to_json(
                     };
                     out.blit_punct(0);
                 };
-                if field.attr.flatten {
+                if flattened {
                     {
                         out.blit(453, 5);
                     };
@@ -1090,7 +1093,7 @@ fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(
 fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     let mut flattening: Option<&Field> = None;
     for field in fields {
-        if field.attr.flatten {
+        if field.flatten(FROM_JSON) {
             if flattening.is_some() {
                 return Err(Error::span_msg(
                     "Only one flatten field is currently supproted",
@@ -1459,7 +1462,7 @@ fn enum_variant_from_json_struct(
     let ordered_fields = schema_ordered_fields(variant.fields);
     let mut flattening: Option<&Field> = None;
     for field in variant.fields {
-        if field.attr.flatten {
+        if field.flatten(FROM_JSON) {
             if flattening.is_some() {
                 return Err(Error::span_msg(
                     "Only one flatten field is currently supproted",
@@ -2660,7 +2663,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     let field_toks: Vec<TokenTree> = body.into_iter().collect();
     let mut tt_buf = Vec::<TokenTree>::new();
     let mut field_buf = Vec::<Field>::new();
-    let mut pool = MemoryPool::<FieldAttr>::new();
+    let mut pool = MemoryPool::<FieldAttrs>::new();
     let mut attr_buf = pool.allocator();
     match kind {
         DeriveTargetKind::Struct => {
