@@ -115,7 +115,7 @@ pub unsafe trait ToBinary {
 
 /// A trait for types that can be parsed from JSON.
 ///
-/// Either `emplace_for_json` or `decode_json` should be implemented.
+/// Either `emplace_for_json` or `json_decode` should be implemented.
 ///
 /// # Safety
 ///
@@ -141,7 +141,7 @@ pub unsafe trait FromJson<'a>: Sized + 'a {
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
-        match Self::decode_json(parser) {
+        match Self::json_decode(parser) {
             Ok(value) => {
                 dest.cast::<Self>().write(value);
                 Ok(())
@@ -164,7 +164,7 @@ pub unsafe trait FromJson<'a>: Sized + 'a {
     ///
     /// The parsed value if successful, or an error if parsing failed.
     #[inline]
-    fn decode_json(parser: &mut Parser<'a>) -> Result<Self, &'static DecodeError> {
+    fn json_decode(parser: &mut Parser<'a>) -> Result<Self, &'static DecodeError> {
         let mut value = std::mem::MaybeUninit::<Self>::uninit();
         if let Err(err) = unsafe {
             Self::emplace_from_json(NonNull::new_unchecked(value.as_mut_ptr()).cast(), parser)
@@ -189,7 +189,10 @@ pub trait ToJson {
     type Kind: JsonValueKind;
 
     /// Converts `self` to JSON and appends it to the given `TextWriter`.
-    fn jsony_to_json_into(&self, output: &mut TextWriter) -> Self::Kind;
+    /// Note: this method is prefixed to avoid collisions in macros that
+    /// that invoke it via method resolution.
+    #[allow(non_snake_case)]
+    fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind;
 }
 
 /// Lazy JSON Parsing
@@ -467,7 +470,7 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
 /// ```
 pub fn to_json<T: ?Sized + ToJson>(value: &T) -> String {
     let mut buf = TextWriter::new();
-    value.jsony_to_json_into(&mut buf);
+    value.json_encode__jsony(&mut buf);
     buf.into_string()
 }
 
@@ -503,7 +506,7 @@ pub fn to_json<T: ?Sized + ToJson>(value: &T) -> String {
 /// ```
 pub fn to_json_into<'a, T: ToJson, W: IntoTextWriter<'a>>(value: &T, output: W) -> W::Output {
     let mut buffer = W::into_text_writer(output);
-    value.jsony_to_json_into(&mut buffer);
+    value.json_encode__jsony(&mut buffer);
     W::finish_writing(buffer)
 }
 

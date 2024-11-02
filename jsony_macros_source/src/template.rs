@@ -841,7 +841,7 @@ impl Codegen {
         self.flush_text();
         splat! {(self.out);
             let _: ::jsony::json::AlwaysString =
-                [@parend(expr)].jsony_to_json_into([#self.builder]);
+                [@parend(expr)].json_encode__jsony([#self.builder]);
         };
         self.text.push_str(":");
     }
@@ -863,13 +863,13 @@ impl Codegen {
         match self.flatten {
             Flatten::None => {
                 splat! {(self.out);
-                    [@expr].jsony_to_json_into([#self.builder]);
+                    [@expr].json_encode__jsony([#self.builder]);
                 }
             }
             Flatten::Object => {
                 splat! {(self.out);
                     [#self.builder].join_parent_json_value_with_next();
-                    let _: ::jsony::json::AlwaysObject = [@expr].jsony_to_json_into(
+                    let _: ::jsony::json::AlwaysObject = [@expr].json_encode__jsony(
                         [#self.builder]
                     );
                     [#self.builder].join_object_with_next_value();
@@ -878,7 +878,7 @@ impl Codegen {
             Flatten::Array => {
                 splat! {(self.out);
                     [#self.builder].join_parent_json_value_with_next();
-                    let _: ::jsony::json::AlwaysArray = [@expr].jsony_to_json_into(
+                    let _: ::jsony::json::AlwaysArray = [@expr].json_encode__jsony(
                         [#self.builder]
                     );
                     [#self.builder].join_array_with_next_value();

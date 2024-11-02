@@ -301,7 +301,7 @@ fn impl_to_json(
                     },
                 }
             ];
-            fn jsony_to_json_into(&self, out: &mut jsony::TextWriter) -> Self::Kind [
+            fn json_encode__jsony(&self, out: &mut jsony::TextWriter) -> Self::Kind [
                 output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
@@ -664,7 +664,7 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
         }
         [field] => {
             splat!(out;
-                <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into(&self.[#Literal::usize_unsuffixed(0)], out)
+                <[~field.ty] as ::jsony::ToJson>::json_encode__jsony(&self.[#Literal::usize_unsuffixed(0)], out)
             );
             ToJsonKind::Forward(field)
         }
@@ -679,7 +679,7 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
                     } else {
                         splat!(out; out.push_comma());
                     }]
-                    <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into(&self.[#Literal::usize_unsuffixed(i)], out);
+                    <[~field.ty] as ::jsony::ToJson>::json_encode__jsony(&self.[#Literal::usize_unsuffixed(i)], out);
                 }]
                 out.end_json_array()
             );
@@ -732,9 +732,9 @@ fn inner_struct_to_json(
                         } else {
                             splat!(out; [#ctx.temp[i]])
                         }]).iter() {
-                            let _: ::jsony::json::AlwaysString = key.jsony_to_json_into(out);
+                            let _: ::jsony::json::AlwaysString = key.json_encode__jsony(out);
                             out.push_colon();
-                            value.jsony_to_json_into(out);
+                            value.json_encode__jsony(out);
                             out.push_comma();
                         }
                     );
@@ -747,7 +747,7 @@ fn inner_struct_to_json(
                     let _: ::jsony::json::AlwaysObject =
                 );
             }
-            splat!(out; <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into([if on_self {
+            splat!(out; <[~field.ty] as ::jsony::ToJson>::json_encode__jsony([if on_self {
                 splat!(out; &self.[#field.name])
             } else {
                 splat!(out; [#ctx.temp[i]])
@@ -980,7 +980,7 @@ fn enum_variant_to_json(
             };
             splat! {
                 out;
-                <[~field.ty] as ::jsony::ToJson>::jsony_to_json_into([#ctx.temp[0]], out);
+                <[~field.ty] as ::jsony::ToJson>::json_encode__jsony([#ctx.temp[0]], out);
             }
         }
         EnumKind::Struct => {
@@ -1123,7 +1123,7 @@ fn enum_variant_from_json(
             //  https://github.com/rust-lang/rust/issues/120141
             splat! {
                 out;
-                match < [~field.ty] as ::jsony::FromJson<#[#ctx.lifetime]> >::decode_json(parser) {
+                match < [~field.ty] as ::jsony::FromJson<#[#ctx.lifetime]> >::json_decode(parser) {
                     Ok(value) => {
                         dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name](value));
                         [?(untagged) break #success]

@@ -1000,7 +1000,7 @@ fn inner_struct_to_json(
                                 out.blit(398, 3);
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            out.blit_ident(26);
+                            out.blit_ident(25);
                             {
                                 let at = out.buf.len();
                                 {
@@ -1965,11 +1965,11 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                     {
                         if mixed_strings_and_objects {
                             {
-                                out.blit_ident(22);
+                                out.blit_ident(21);
                             }
                         } else {
                             {
-                                out.blit_ident(21);
+                                out.blit_ident(20);
                             }
                         }
                     };
