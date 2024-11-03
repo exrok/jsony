@@ -52,6 +52,34 @@ unsafe impl<'a> FieldVistor<'a> for FuncFieldVisitor<'a> {
     }
 }
 
+unsafe impl<'a, K, T> FromJsonFieldVisitor<'a> for BTreeMap<K, T>
+where
+    K: FromText<'a> + Ord + Eq,
+    T: FromJson<'a>,
+{
+    type Vistor = FuncFieldVisitor<'a>;
+
+    unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Vistor {
+        ptr.cast::<Self>().write(Self::new());
+        // this common pattern can be generlized safely once we get safe transmute
+        FuncFieldVisitor {
+            visit: |ptr, field, parser| {
+                let map = &mut *ptr.cast::<Self>().as_ptr();
+                let (field, ctx) = unsafe { parser.unfreeze_with_context(field) };
+                let key = K::from_text(ctx, field)?;
+                let value = T::json_decode(parser)?;
+                map.insert(key, value);
+                Ok(())
+            },
+            drop: |ptr| {
+                let map = ptr.cast::<Self>();
+                std::ptr::drop_in_place(map.as_ptr());
+            },
+            ptr,
+        }
+    }
+}
+
 unsafe impl<'a, K, T> FromJsonFieldVisitor<'a> for HashMap<K, T>
 where
     K: FromText<'a> + Hash + Eq,
@@ -385,6 +413,7 @@ unsafe impl<'de, K: FromJson<'de> + Eq + Hash> FromJson<'de> for HashSet<K> {
         result
     }
 }
+
 unsafe impl<'de, K: FromJson<'de> + Eq + Hash, V: FromJson<'de>> FromJson<'de> for HashMap<K, V> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -1072,6 +1101,22 @@ impl<V: ToJson, S> ToJson for HashSet<V, S> {
         output.end_json_array()
     }
 }
+
+impl<K: ToJson<Kind = AlwaysString>, V: ToJson> ToJson for BTreeMap<K, V> {
+    type Kind = AlwaysObject;
+
+    fn json_encode__jsony(&self, output: &mut TextWriter) -> AlwaysObject {
+        output.start_json_object();
+        for (key, value) in self {
+            key.json_encode__jsony(output);
+            output.push_colon();
+            value.json_encode__jsony(output);
+            output.push_comma();
+        }
+        output.end_json_object()
+    }
+}
+
 impl<K: ToJson<Kind = AlwaysString>, V: ToJson, S> ToJson for HashMap<K, V, S> {
     type Kind = AlwaysObject;
 

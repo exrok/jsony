@@ -241,3 +241,29 @@ impl<'a> ObjectSchema<'a> {
         Err(error)
     }
 }
+
+// Note that we make P generic here so that we couple lifetime with T
+// P will always be &mut Parser<'_>
+pub const unsafe fn emplace_json_for_with_attribute<P, T, F>(
+    _func: &F,
+) -> for<'b> unsafe fn(NonNull<()>, &mut Parser<'b>) -> Result<(), &'static DecodeError>
+where
+    F: 'static + Fn(P) -> Result<T, &'static DecodeError>,
+{
+    const { assert!(std::mem::size_of::<F>() == 0) }
+    let foor: unsafe fn(dest: NonNull<()>, parser: P) -> Result<(), &'static DecodeError> = unsafe {
+        |dest: NonNull<()>, parser: P| -> Result<(), &'static DecodeError> {
+            // safety: from above assert F is ZST.
+            let func = std::mem::transmute_copy::<(), F>(&());
+            match func(parser) {
+                Ok(value) => {
+                    let value: T = value;
+                    dest.cast::<T>().write(value);
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
+        }
+    };
+    unsafe { std::mem::transmute(foor) }
+}

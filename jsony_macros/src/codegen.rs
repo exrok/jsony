@@ -1,6 +1,6 @@
 use crate::ast::{
     self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttrs, Generic,
-    GenericKind, Tag, Via, FROM_JSON, TO_JSON,
+    GenericKind, Tag, Via, FROM_BINARY, FROM_JSON, TO_BINARY, TO_JSON,
 };
 use crate::case::RenameRule;
 use crate::util::MemoryPool;
@@ -60,7 +60,7 @@ fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBound
             }
             GenericKind::Type => (),
             GenericKind::Const => {
-                buffer.blit_ident(123);
+                buffer.blit_ident(126);
             }
         }
         buffer.buf.push(generic.ident.clone().into());
@@ -124,7 +124,7 @@ fn bodyless_impl_from(
             output.blit_punct(2);
         };
         if !target.where_clauses.is_empty() || !target.generic_field_types.is_empty() {
-            output.blit_ident(112);
+            output.blit_ident(116);
             for ty in &target.generic_field_types {
                 output.buf.extend_from_slice(ty);
                 output.blit_punct(9);
@@ -140,7 +140,7 @@ fn bodyless_impl_from(
 }
 fn impl_from_binary(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
     {
-        output.blit_ident(136);
+        output.blit_ident(141);
         if let Err(err) = bodyless_impl_from(
             output,
             None,
@@ -179,7 +179,7 @@ fn impl_from_json_field_visitor(
     inner: TokenStream,
 ) -> Result<(), Error> {
     {
-        output.blit_ident(136);
+        output.blit_ident(141);
         if let Err(err) = bodyless_impl_from(
             output,
             Some(Ident::new("json", Span::call_site())),
@@ -217,7 +217,7 @@ fn impl_from_json_field_visitor(
 }
 fn impl_from_json(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
     {
-        output.blit_ident(136);
+        output.blit_ident(141);
         if let Err(err) =
             bodyless_impl_from(output, None, Ident::new("FromJson", Span::call_site()), ctx)
         {
@@ -274,7 +274,7 @@ fn impl_to_binary(
             output.blit_punct(2);
         };
         if !target.where_clauses.is_empty() || !target.generic_field_types.is_empty() {
-            output.blit_ident(112);
+            output.blit_ident(116);
             {
                 for ty in &target.generic_field_types {
                     {
@@ -289,7 +289,7 @@ fn impl_to_binary(
             output.blit(123, 2);
             {
                 let at = output.buf.len();
-                output.blit(125, 11);
+                output.blit(125, 13);
                 output.tt_group(Delimiter::Parenthesis, at);
             };
             {
@@ -316,7 +316,7 @@ fn impl_to_json(
 ) -> Result<(), Error> {
     let any_generics = !target.generics.is_empty();
     {
-        output.blit_ident(87);
+        output.blit_ident(89);
         if any_generics {
             output.blit_punct(3);
             {
@@ -325,7 +325,7 @@ fn impl_to_json(
             output.blit_punct(2);
         };
         output.buf.extend_from_slice(&crate_path);
-        output.blit(136, 4);
+        output.blit(138, 4);
         output.buf.push(TokenTree::from(target.name.clone()));
         if any_generics {
             output.blit_punct(3);
@@ -335,21 +335,21 @@ fn impl_to_json(
             output.blit_punct(2);
         };
         if !target.where_clauses.is_empty() || !target.generic_field_types.is_empty() {
-            output.blit_ident(112);
+            output.blit_ident(116);
             {
                 for ty in &target.generic_field_types {
                     {
                         output.buf.extend_from_slice(ty);
                         output.blit_punct(9);
                         output.buf.extend_from_slice(&crate_path);
-                        output.blit(140, 4);
+                        output.blit(142, 4);
                     }
                 }
             };
         };
         {
             let at = output.buf.len();
-            output.blit(144, 3);
+            output.blit(146, 3);
             {
                 match kind {
                     ToJsonKind::Static(kind) => {
@@ -360,19 +360,19 @@ fn impl_to_json(
                     ToJsonKind::Forward(field) => {
                         output.blit_punct(3);
                         output.buf.extend_from_slice(field.ty);
-                        output.blit_ident(142);
+                        output.blit_ident(147);
                         output.buf.extend_from_slice(&crate_path);
-                        output.blit(147, 7);
+                        output.blit(149, 7);
                     }
                 }
             };
-            output.blit(154, 3);
+            output.blit(156, 3);
             {
                 let at = output.buf.len();
-                output.blit(157, 11);
+                output.blit(159, 11);
                 output.tt_group(Delimiter::Parenthesis, at);
             };
-            output.blit(168, 6);
+            output.blit(170, 6);
             {
                 output
                     .buf
@@ -469,11 +469,22 @@ fn binary_encode_field(
     place: &dyn Fn(&mut RustWriter),
 ) {
     {
-        output.blit_punct(3);
-        output.buf.extend_from_slice(field.ty);
-        output.blit_ident(142);
-        output.buf.extend_from_slice(&ctx.crate_path);
-        output.blit(174, 7);
+        {
+            if let Some(path) = field.with(TO_BINARY) {
+                {
+                    output.buf.extend_from_slice(path);
+                }
+            } else {
+                {
+                    output.blit_punct(3);
+                    output.buf.extend_from_slice(field.ty);
+                    output.blit_ident(147);
+                    output.buf.extend_from_slice(&ctx.crate_path);
+                    output.blit(176, 4);
+                }
+            }
+        };
+        output.blit(180, 3);
         {
             let at = output.buf.len();
             {
@@ -482,21 +493,32 @@ fn binary_encode_field(
             output.blit(127, 2);
             output.tt_group(Delimiter::Parenthesis, at);
         };
-        output.blit_punct(0);
+        output.blit_punct(13);
     };
 }
 fn binary_decode_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
     {
-        out.blit_punct(3);
-        out.buf.extend_from_slice(field.ty);
-        out.blit_ident(142);
         {
-            ctx.FromBinary(out)
+            if let Some(path) = field.with(FROM_BINARY) {
+                {
+                    out.buf.extend_from_slice(path);
+                }
+            } else {
+                {
+                    out.blit_punct(3);
+                    out.buf.extend_from_slice(field.ty);
+                    out.blit_ident(147);
+                    {
+                        ctx.FromBinary(out)
+                    };
+                    out.blit_punct(2);
+                }
+            }
         };
-        out.blit(181, 4);
+        out.blit(183, 3);
         {
             let at = out.buf.len();
-            out.blit_ident(83);
+            out.blit_ident(86);
             out.tt_group(Delimiter::Parenthesis, at);
         };
     };
@@ -506,7 +528,7 @@ impl Ctx<'_> {
     fn FromJson(&self, out: &mut RustWriter) {
         {
             out.buf.extend_from_slice(&self.crate_path);
-            out.blit(185, 5);
+            out.blit(186, 5);
             out.buf.push(TokenTree::from(self.lifetime.clone()));
             out.blit_punct(2);
         }
@@ -515,27 +537,45 @@ impl Ctx<'_> {
     fn FromBinary(&self, out: &mut RustWriter) {
         {
             out.buf.extend_from_slice(&self.crate_path);
-            out.blit(190, 5);
+            out.blit(191, 5);
             out.buf.push(TokenTree::from(self.lifetime.clone()));
             out.blit_punct(2);
         }
     }
 }
 fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) -> Result<(), Error> {
-    {
-        out.buf.extend_from_slice(&ctx.crate_path);
-        out.blit(195, 6);
+    if let Some(with) = field.with(FROM_JSON) {
         {
-            let at = out.buf.len();
-            out.blit_punct(3);
+            out.buf.extend_from_slice(&ctx.crate_path);
+            out.blit(196, 22);
+            out.buf.push(TokenTree::from(ctx.lifetime.clone()));
+            out.blit(7, 2);
             out.buf.extend_from_slice(field.ty);
-            out.blit_ident(142);
+            out.blit(218, 3);
             {
-                ctx.FromJson(out)
+                let at = out.buf.len();
+                out.blit_punct(4);
+                out.buf.extend_from_slice(with);
+                out.blit(221, 3);
+                out.tt_group(Delimiter::Parenthesis, at);
             };
-            out.blit(201, 4);
-            out.tt_group(Delimiter::Parenthesis, at);
-        };
+        }
+    } else {
+        {
+            out.buf.extend_from_slice(&ctx.crate_path);
+            out.blit(224, 6);
+            {
+                let at = out.buf.len();
+                out.blit_punct(3);
+                out.buf.extend_from_slice(field.ty);
+                out.blit_ident(147);
+                {
+                    ctx.FromJson(out)
+                };
+                out.blit(230, 4);
+                out.tt_group(Delimiter::Parenthesis, at);
+            };
+        }
     }
     Ok(())
 }
@@ -634,12 +674,12 @@ fn struct_schema(
         let len = out.buf.len();
         for (i, field) in fields.iter().enumerate() {
             out.buf.extend_from_slice(&ctx.crate_path);
-            out.blit(205, 6);
+            out.blit(234, 6);
             {
                 let at = out.buf.len();
-                out.blit(211, 2);
+                out.blit(240, 2);
                 out.buf.push(field_name_literal(ctx, field).into());
-                out.blit(213, 13);
+                out.blit(242, 13);
                 {
                     let at = out.buf.len();
                     {
@@ -660,7 +700,7 @@ fn struct_schema(
                     };
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit(226, 3);
+                out.blit(255, 3);
                 if let Err(err) = schema_field_decode(out, ctx, field) {
                     return Err(err);
                 };
@@ -676,15 +716,15 @@ fn struct_schema(
         {
             for field in fields {
                 {
-                    out.blit(229, 7);
+                    out.blit(258, 7);
                     {
                         let at = out.buf.len();
-                        out.blit(236, 10);
+                        out.blit(265, 10);
                         out.buf.extend_from_slice(field.ty);
-                        out.blit(246, 4);
+                        out.blit(275, 4);
                         {
                             let at = out.buf.len();
-                            out.blit(250, 2);
+                            out.blit(279, 2);
                             out.buf.extend_from_slice(field.ty);
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
@@ -705,26 +745,26 @@ fn struct_schema(
                     break;
                 };
                 {
-                    out.blit(252, 16);
+                    out.blit(281, 16);
                     {
                         let at = out.buf.len();
-                        out.blit(268, 3);
+                        out.blit(297, 3);
                         out.buf.extend_from_slice(field.ty);
-                        out.blit_punct(4);
+                        out.blit_punct(5);
                         out.buf.extend_from_slice(default);
                         out.blit(29, 2);
                         {
                             let at = out.buf.len();
-                            out.blit(271, 6);
+                            out.blit(300, 6);
                             {
                                 let at = out.buf.len();
-                                out.blit_ident(137);
+                                out.blit_ident(146);
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            out.blit_punct(0);
+                            out.blit_punct(13);
                             out.tt_group(Delimiter::Brace, at);
                         };
-                        out.blit(277, 9);
+                        out.blit(306, 9);
                         out.tt_group(Delimiter::Brace, at);
                     };
                     out.blit_punct(1);
@@ -735,14 +775,14 @@ fn struct_schema(
     };
     let schema_defaults = TokenTree::Group(Group::new(Delimiter::Bracket, ts));
     {
-        out.blit(286, 9);
+        out.blit(315, 9);
         {
             let at = out.buf.len();
-            out.blit(295, 3);
+            out.blit(324, 3);
             out.buf.push(schema_fields);
-            out.blit(298, 4);
+            out.blit(327, 4);
             out.buf.push(schema_drops);
-            out.blit(302, 4);
+            out.blit(331, 4);
             out.buf.push(schema_defaults);
             out.blit_punct(1);
             out.tt_group(Delimiter::Brace, at);
@@ -757,15 +797,15 @@ fn body_of_struct_from_json_with_flatten(
 ) -> TokenStream {
     {
         let len = out.buf.len();
-        out.blit(306, 5);
+        out.blit(335, 5);
         out.buf.extend_from_slice(flatten_field.ty);
-        out.blit(311, 14);
+        out.blit(340, 14);
         {
             let at = out.buf.len();
-            out.blit(325, 3);
+            out.blit(354, 3);
             {
                 let at = out.buf.len();
-                out.blit(224, 2);
+                out.blit(253, 2);
                 {
                     let at = out.buf.len();
                     {
@@ -777,10 +817,10 @@ fn body_of_struct_from_json_with_flatten(
                 };
                 out.tt_group(Delimiter::Parenthesis, at);
             };
-            out.blit(328, 3);
+            out.blit(357, 3);
             out.tt_group(Delimiter::Parenthesis, at);
         };
-        out.blit(331, 6);
+        out.blit(360, 6);
         out.buf.push(TokenTree::from(ctx.lifetime.clone()));
         if !ctx.generics.is_empty() {
             out.blit_punct(1);
@@ -788,13 +828,13 @@ fn body_of_struct_from_json_with_flatten(
                 fmt_generics(out, ctx.generics, USE)
             };
         };
-        out.blit(337, 4);
+        out.blit(366, 4);
         {
             let at = out.buf.len();
-            out.blit(341, 5);
+            out.blit(370, 5);
             {
                 let at = out.buf.len();
-                out.blit(346, 3);
+                out.blit(375, 3);
                 out.tt_group(Delimiter::Parenthesis, at);
             };
             out.tt_group(Delimiter::Parenthesis, at);
@@ -841,20 +881,20 @@ fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> 
             {
                 out.blit_punct(3);
                 out.buf.extend_from_slice(field.ty);
-                out.blit(349, 9);
+                out.blit(378, 9);
                 out.buf.push(TokenTree::from(ctx.lifetime.clone()));
-                out.blit(358, 5);
+                out.blit(387, 5);
                 {
                     let at = out.buf.len();
-                    out.blit_ident(143);
+                    out.blit_ident(148);
                     if !match ctx.target.repr {
                         ast::Repr::Transparent | ast::Repr::C => true,
                         _ => false,
                     } {
-                        out.blit(326, 2);
+                        out.blit(355, 2);
                         {
                             let at = out.buf.len();
-                            out.blit(216, 10);
+                            out.blit(245, 10);
                             {
                                 let at = out.buf.len();
                                 {
@@ -887,7 +927,7 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
     let kind = match fields {
         [] => {
             {
-                out.blit(363, 3);
+                out.blit(392, 3);
                 {
                     let at = out.buf.len();
                     {
@@ -900,15 +940,26 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
         }
         [field] => {
             {
-                out.blit_punct(3);
-                out.buf.extend_from_slice(field.ty);
-                out.blit(366, 11);
+                {
+                    if let Some(with) = field.with(TO_JSON) {
+                        {
+                            out.buf.extend_from_slice(with);
+                            out.blit(395, 3);
+                        }
+                    } else {
+                        {
+                            out.blit_punct(3);
+                            out.buf.extend_from_slice(field.ty);
+                            out.blit(398, 11);
+                        }
+                    }
+                };
                 {
                     let at = out.buf.len();
-                    out.blit(377, 3);
+                    out.blit(409, 3);
                     out.buf
                         .push(TokenTree::from(Literal::usize_unsuffixed(0).clone()));
-                    out.blit(159, 2);
+                    out.blit(161, 2);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
             };
@@ -917,31 +968,42 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
         _ => {
             let mut first = true;
             {
-                out.blit(380, 5);
+                out.blit(412, 5);
                 for (i, field) in fields.iter().enumerate() {
                     {
                         if first {
                             first = false;
                         } else {
                             {
-                                out.blit(385, 4);
+                                out.blit(417, 4);
                             };
                         }
                     };
-                    out.blit_punct(3);
-                    out.buf.extend_from_slice(field.ty);
-                    out.blit(366, 11);
+                    {
+                        if let Some(with) = field.with(TO_JSON) {
+                            {
+                                out.buf.extend_from_slice(with);
+                                out.blit(395, 3);
+                            }
+                        } else {
+                            {
+                                out.blit_punct(3);
+                                out.buf.extend_from_slice(field.ty);
+                                out.blit(398, 11);
+                            }
+                        }
+                    };
                     {
                         let at = out.buf.len();
-                        out.blit(377, 3);
+                        out.blit(409, 3);
                         out.buf
                             .push(TokenTree::from(Literal::usize_unsuffixed(i).clone()));
-                        out.blit(159, 2);
+                        out.blit(161, 2);
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    out.blit_punct(0);
+                    out.blit_punct(13);
                 }
-                out.blit(389, 4);
+                out.blit(421, 4);
             };
             ToJsonKind::Static("AlwaysArray")
         }
@@ -974,11 +1036,11 @@ fn inner_struct_to_json(
                 if !text.is_empty() {
                     if text == "," {
                         {
-                            out.blit(393, 5);
+                            out.blit(425, 5);
                         };
                     } else {
                         {
-                            out.blit(363, 3);
+                            out.blit(392, 3);
                             {
                                 let at = out.buf.len();
                                 {
@@ -986,7 +1048,7 @@ fn inner_struct_to_json(
                                 };
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            out.blit_punct(0);
+                            out.blit_punct(13);
                         };
                     }
                     text.clear();
@@ -994,19 +1056,19 @@ fn inner_struct_to_json(
                 if let Via::Iterator = field.via(TO_JSON) {
                     if flattened {
                         {
-                            out.blit_ident(107);
+                            out.blit_ident(110);
                             {
                                 let at = out.buf.len();
-                                out.blit(398, 3);
+                                out.blit(430, 3);
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            out.blit_ident(25);
+                            out.blit_ident(27);
                             {
                                 let at = out.buf.len();
                                 {
                                     if on_self {
                                         {
-                                            out.blit(377, 3);
+                                            out.blit(409, 3);
                                             out.buf.push(TokenTree::from(field.name.clone()));
                                         }
                                     } else {
@@ -1017,22 +1079,22 @@ fn inner_struct_to_json(
                                 };
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            out.blit(401, 3);
+                            out.blit(433, 3);
                             {
                                 let at = out.buf.len();
-                                out.blit(404, 16);
+                                out.blit(436, 16);
                                 {
                                     let at = out.buf.len();
-                                    out.blit_ident(150);
+                                    out.blit_ident(157);
                                     out.tt_group(Delimiter::Parenthesis, at);
                                 };
-                                out.blit(420, 9);
+                                out.blit(452, 9);
                                 {
                                     let at = out.buf.len();
-                                    out.blit_ident(150);
+                                    out.blit_ident(157);
                                     out.tt_group(Delimiter::Parenthesis, at);
                                 };
-                                out.blit(429, 6);
+                                out.blit(461, 6);
                                 out.tt_group(Delimiter::Brace, at);
                             };
                         };
@@ -1041,19 +1103,30 @@ fn inner_struct_to_json(
                 }
                 if flattened {
                     {
-                        out.blit(435, 18);
+                        out.blit(467, 18);
                     };
                 }
                 {
-                    out.blit_punct(3);
-                    out.buf.extend_from_slice(field.ty);
-                    out.blit(366, 11);
+                    {
+                        if let Some(with) = field.with(TO_JSON) {
+                            {
+                                out.buf.extend_from_slice(with);
+                                out.blit(395, 3);
+                            }
+                        } else {
+                            {
+                                out.blit_punct(3);
+                                out.buf.extend_from_slice(field.ty);
+                                out.blit(398, 11);
+                            }
+                        }
+                    };
                     {
                         let at = out.buf.len();
                         {
                             if on_self {
                                 {
-                                    out.blit(377, 3);
+                                    out.blit(409, 3);
                                     out.buf.push(TokenTree::from(field.name.clone()));
                                 }
                             } else {
@@ -1062,14 +1135,14 @@ fn inner_struct_to_json(
                                 }
                             }
                         };
-                        out.blit(159, 2);
+                        out.blit(161, 2);
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    out.blit_punct(0);
+                    out.blit_punct(13);
                 };
                 if flattened {
                     {
-                        out.blit(453, 5);
+                        out.blit(485, 5);
                     };
                 }
             }
@@ -1081,11 +1154,11 @@ fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(
     let mut text = String::new();
     let body = {
         let len = out.buf.len();
-        out.blit(458, 5);
+        out.blit(490, 5);
         {
             inner_struct_to_json(out, ctx, fields, &mut text, true)?
         };
-        out.blit(463, 4);
+        out.blit(495, 4);
         out.split_off_stream(len)
     };
     impl_to_json(out, ToJsonKind::Static("AlwaysObject"), ctx, body)
@@ -1105,10 +1178,10 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
     }
     let ordered_fields = schema_ordered_fields(fields);
     {
-        out.blit(467, 5);
+        out.blit(499, 5);
         {
             let at = out.buf.len();
-            out.blit(472, 6);
+            out.blit(504, 6);
             out.buf.push(TokenTree::from(ctx.lifetime.clone()));
             if !ctx.generics.is_empty() {
                 out.blit_punct(1);
@@ -1116,24 +1189,24 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                     fmt_generics(out, ctx.generics, DEF)
                 };
             };
-            out.blit(478, 15);
+            out.blit(510, 15);
             out.buf.push(TokenTree::from(ctx.lifetime.clone()));
             out.blit_punct(2);
             if !ctx.target.where_clauses.is_empty() || !ctx.target.generic_field_types.is_empty() {
-                out.blit_ident(112);
+                out.blit_ident(116);
                 for ty in &ctx.target.generic_field_types {
                     out.buf.extend_from_slice(ty);
-                    out.blit(186, 4);
+                    out.blit(187, 4);
                     out.buf.push(TokenTree::from(ctx.lifetime.clone()));
                     out.blit_punct(2);
                 }
             };
             {
                 let at = out.buf.len();
-                out.blit(482, 9);
+                out.blit(514, 9);
                 {
                     let at = out.buf.len();
-                    out.blit(493, 4);
+                    out.blit(525, 4);
                     {
                         let at = out.buf.len();
                         {
@@ -1141,7 +1214,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                         };
                         out.tt_group(Delimiter::Brace, at);
                     };
-                    out.blit(497, 12);
+                    out.blit(529, 12);
                     out.tt_group(Delimiter::Brace, at);
                 };
                 out.tt_group(Delimiter::Brace, at);
@@ -1152,7 +1225,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                 } else {
                     {
                         let len = out.buf.len();
-                        out.blit(332, 5);
+                        out.blit(361, 5);
                         out.buf.push(TokenTree::from(ctx.lifetime.clone()));
                         if !ctx.generics.is_empty() {
                             out.blit_punct(1);
@@ -1160,10 +1233,10 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                                 fmt_generics(out, ctx.generics, USE)
                             };
                         };
-                        out.blit(337, 4);
+                        out.blit(366, 4);
                         {
                             let at = out.buf.len();
-                            out.blit(509, 5);
+                            out.blit(541, 5);
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
                         out.split_off_stream(len)
@@ -1173,10 +1246,10 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                 if ctx.target.flattenable {
                     let body = {
                         let len = out.buf.len();
-                        out.blit(514, 7);
+                        out.blit(546, 7);
                         {
                             let at = out.buf.len();
-                            out.blit(521, 11);
+                            out.blit(553, 11);
                             out.buf.push(TokenTree::from(ctx.lifetime.clone()));
                             if !ctx.generics.is_empty() {
                                 out.blit_punct(1);
@@ -1184,10 +1257,10 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                                     fmt_generics(out, ctx.generics, USE)
                                 };
                             };
-                            out.blit(532, 5);
+                            out.blit(564, 5);
                             out.buf
                                 .push(TokenTree::from(Literal::u64_unsuffixed(0).clone()));
-                            out.blit(537, 3);
+                            out.blit(569, 3);
                             out.buf.push(TokenTree::from(
                                 Literal::u64_unsuffixed(required_bitset(&ordered_fields)).clone(),
                             ));
@@ -1200,7 +1273,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                         out,
                         ctx,
                         &(|out| {
-                            out.blit(540, 9);
+                            out.blit(572, 9);
                             out.buf.push(TokenTree::from(ctx.lifetime.clone()));
                             out.blit_punct(2);
                         }),
@@ -1210,7 +1283,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
             };
             out.tt_group(Delimiter::Brace, at);
         };
-        out.blit_punct(0);
+        out.blit_punct(13);
     };
     Ok(())
 }
@@ -1222,27 +1295,6 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
     let mut text = String::with_capacity(64);
     let start = out.buf.len();
     let mut all_objects = true;
-    if let Tag::Inline(tag_name) = &ctx.target.tag {
-        {
-            out.blit(458, 5);
-        };
-        text.push('"');
-        crate::template::raw_escape(&tag_name, &mut text);
-        text.push_str("\":");
-        {
-            out.blit(363, 3);
-            {
-                let at = out.buf.len();
-                out.buf.push(Literal::string(&text).into());
-                out.tt_group(Delimiter::Parenthesis, at);
-            };
-            out.blit_punct(0);
-        };
-    } else if all_objects {
-        {
-            out.blit(458, 5);
-        };
-    }
     for variant in variants {
         if let EnumKind::Struct = variant.kind {
             continue;
@@ -1250,8 +1302,29 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
         all_objects = false;
         break;
     }
+    if let Tag::Inline(tag_name) = &ctx.target.tag {
+        {
+            out.blit(490, 5);
+        };
+        text.push('"');
+        crate::template::raw_escape(&tag_name, &mut text);
+        text.push_str("\":");
+        {
+            out.blit(392, 3);
+            {
+                let at = out.buf.len();
+                out.buf.push(Literal::string(&text).into());
+                out.tt_group(Delimiter::Parenthesis, at);
+            };
+            out.blit_punct(13);
+        };
+    } else if all_objects {
+        {
+            out.blit(490, 5);
+        };
+    }
     {
-        out.blit(549, 2);
+        out.blit(581, 2);
         {
             let at = out.buf.len();
             {
@@ -1275,7 +1348,7 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
                                 };
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            out.blit(551, 2);
+                            out.blit(583, 2);
                             {
                                 text.clear();
                                 enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
@@ -1296,14 +1369,14 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
                                 };
                                 out.tt_group(Delimiter::Brace, at);
                             };
-                            out.blit(551, 2);
+                            out.blit(583, 2);
                             {
                                 text.clear();
                                 enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
                             };
                         }
                         EnumKind::None => {
-                            out.blit(551, 2);
+                            out.blit(583, 2);
                             {
                                 text.clear();
                                 enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
@@ -1317,15 +1390,15 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
     };
     if let Tag::Inline(..) = &ctx.target.tag {
         {
-            out.blit(553, 5);
+            out.blit(585, 5);
         };
     } else if all_objects {
         {
-            out.blit(553, 5);
+            out.blit(585, 5);
         };
     }
     {
-        out.blit(558, 5);
+        out.blit(590, 5);
     };
     let stream = out.buf.drain(start..).collect();
     let kind = if all_objects {
@@ -1345,7 +1418,7 @@ fn enum_variant_to_json_struct(
         {
             match ctx.target.tag {
                 Tag::Untagged => {
-                    out.blit(458, 5);
+                    out.blit(490, 5);
                 }
                 Tag::Inline(..) if ctx.target.content.is_some() => text.push('{'),
                 Tag::Default => text.push('{'),
@@ -1355,7 +1428,21 @@ fn enum_variant_to_json_struct(
         {
             inner_struct_to_json(out, ctx, &variant.fields, text, false)?
         };
-        out.blit_punct(0);
+        out.blit_punct(13);
+        {
+            match ctx.target.tag {
+                Tag::Untagged => {
+                    out.blit(585, 5);
+                }
+                Tag::Inline(..) if ctx.target.content.is_some() => {
+                    out.blit(585, 5);
+                }
+                Tag::Default => {
+                    out.blit(585, 5);
+                }
+                _ => (),
+            }
+        };
     };
     Ok(())
 }
@@ -1387,7 +1474,7 @@ fn enum_variant_to_json(
             } else {
                 if !all_objects {
                     {
-                        out.blit(458, 5);
+                        out.blit(490, 5);
                     };
                 }
                 variant_name_json(ctx, variant, text)?;
@@ -1403,17 +1490,40 @@ fn enum_variant_to_json(
                     variant.name.span(),
                 ));
             };
+            if !text.is_empty() {
+                {
+                    out.blit(392, 3);
+                    {
+                        let at = out.buf.len();
+                        out.buf.push(Literal::string(&text).into());
+                        out.tt_group(Delimiter::Parenthesis, at);
+                    };
+                    out.blit_punct(13);
+                };
+                text.clear();
+            }
             {
-                out.blit_punct(3);
-                out.buf.extend_from_slice(field.ty);
-                out.blit(366, 11);
+                {
+                    if let Some(with) = field.with(TO_JSON) {
+                        {
+                            out.buf.extend_from_slice(with);
+                            out.blit(395, 3);
+                        }
+                    } else {
+                        {
+                            out.blit_punct(3);
+                            out.buf.extend_from_slice(field.ty);
+                            out.blit(398, 11);
+                        }
+                    }
+                };
                 {
                     let at = out.buf.len();
                     out.buf.push(TokenTree::from(ctx.temp[0].clone()));
-                    out.blit(159, 2);
+                    out.blit(161, 2);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit_punct(0);
+                out.blit_punct(13);
             }
         }
         EnumKind::Struct => {
@@ -1424,13 +1534,13 @@ fn enum_variant_to_json(
         EnumKind::None => {
             variant_name_json(ctx, variant, text)?;
             {
-                out.blit(363, 3);
+                out.blit(392, 3);
                 {
                     let at = out.buf.len();
                     out.buf.push(Literal::string(&text).into());
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit_punct(0);
+                out.blit_punct(13);
             };
             text.clear();
         }
@@ -1441,7 +1551,7 @@ fn enum_variant_to_json(
                 if let EnumKind::None = variant.kind {
                 } else {
                     {
-                        out.blit(553, 5);
+                        out.blit(585, 5);
                     };
                 }
             }
@@ -1474,13 +1584,13 @@ fn enum_variant_from_json_struct(
     }
     if let Some(flatten_field) = flattening {
         {
-            out.blit(563, 2);
+            out.blit(595, 2);
             if ctx.target.has_lifetime() {
                 out.blit(1, 2);
                 out.buf.push(TokenTree::from(ctx.lifetime.clone()));
                 out.blit_punct(2);
             };
-            out.blit_punct(4);
+            out.blit_punct(5);
             {
                 let at = out.buf.len();
                 for field in &ordered_fields {
@@ -1489,13 +1599,13 @@ fn enum_variant_from_json_struct(
                 }
                 out.tt_group(Delimiter::Parenthesis, at);
             };
-            out.blit(565, 13);
+            out.blit(597, 13);
             {
                 let at = out.buf.len();
-                out.blit(578, 3);
+                out.blit(610, 3);
                 {
                     let at = out.buf.len();
-                    out.blit_punct(5);
+                    out.blit_punct(4);
                     if let Err(err) = struct_schema(
                         out,
                         ctx,
@@ -1506,58 +1616,58 @@ fn enum_variant_from_json_struct(
                     };
                     out.tt_group(Delimiter::Brace, at);
                 };
-                out.blit(581, 13);
+                out.blit(613, 13);
                 out.tt_group(Delimiter::Brace, at);
             };
-            out.blit(594, 40);
+            out.blit(626, 40);
             out.buf.extend_from_slice(flatten_field.ty);
-            out.blit(634, 11);
+            out.blit(666, 11);
             out.buf.extend_from_slice(flatten_field.ty);
-            out.blit(311, 14);
+            out.blit(340, 14);
             {
                 let at = out.buf.len();
-                out.blit(645, 12);
+                out.blit(677, 12);
                 {
                     let at = out.buf.len();
-                    out.blit(657, 7);
+                    out.blit(689, 7);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit(328, 3);
+                out.blit(357, 3);
                 out.tt_group(Delimiter::Parenthesis, at);
             };
-            out.blit_punct(0);
+            out.blit_punct(13);
             if let Tag::Inline(tag_name) = &ctx.target.tag {
                 if ctx.target.content.is_none() {
-                    out.blit(664, 11);
+                    out.blit(696, 11);
                     {
                         let at = out.buf.len();
-                        out.blit(675, 2);
+                        out.blit(707, 2);
                         out.buf.push(Literal::string(tag_name).into());
-                        out.blit(677, 4);
+                        out.blit(709, 4);
                         out.tt_group(Delimiter::Brace, at);
                     };
-                    out.blit_punct(0);
+                    out.blit_punct(13);
                 };
             };
-            out.blit(681, 3);
+            out.blit(713, 3);
             {
                 let at = out.buf.len();
-                out.blit_ident(122);
+                out.blit_ident(125);
                 out.tt_group(Delimiter::Parenthesis, at);
             };
-            out.blit(684, 4);
+            out.blit(716, 4);
             {
                 let at = out.buf.len();
-                out.blit(645, 12);
+                out.blit(677, 12);
                 {
                     let at = out.buf.len();
-                    out.blit(688, 7);
+                    out.blit(720, 7);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit(342, 4);
+                out.blit(371, 4);
                 {
                     let at = out.buf.len();
-                    out.blit(346, 3);
+                    out.blit(375, 3);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
                 out.blit_punct(1);
@@ -1566,24 +1676,24 @@ fn enum_variant_from_json_struct(
             {
                 let at = out.buf.len();
                 if !untagged {
-                    out.blit(695, 2);
+                    out.blit(727, 2);
                     {
                         let at = out.buf.len();
-                        out.blit_ident(122);
+                        out.blit_ident(125);
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    out.blit_punct(0);
+                    out.blit_punct(13);
                 };
                 out.tt_group(Delimiter::Brace, at);
             };
-            out.blit_ident(84);
+            out.blit_ident(109);
             {
                 let at = out.buf.len();
-                out.blit(697, 14);
+                out.blit(729, 14);
                 {
                     ctx.target_type(out)
                 };
-                out.blit(711, 4);
+                out.blit(743, 4);
                 {
                     let at = out.buf.len();
                     out.buf.push(TokenTree::from(ctx.target.name.clone()));
@@ -1593,32 +1703,32 @@ fn enum_variant_from_json_struct(
                         let at = out.buf.len();
                         for (i, field) in ordered_fields.iter().enumerate() {
                             out.buf.push(TokenTree::from(field.name.clone()));
-                            out.blit(715, 3);
+                            out.blit(747, 3);
                             out.buf.push(Literal::usize_unsuffixed(i).into());
                             out.blit_punct(1);
                         }
                         out.buf.push(TokenTree::from(flatten_field.name.clone()));
-                        out.blit(718, 6);
+                        out.blit(750, 6);
                         out.tt_group(Delimiter::Brace, at);
                     };
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit_punct(0);
+                out.blit_punct(13);
                 if untagged {
-                    out.blit(724, 3);
+                    out.blit(756, 3);
                 };
                 out.tt_group(Delimiter::Brace, at);
             };
         }
     } else {
         {
-            out.blit(563, 2);
+            out.blit(595, 2);
             if ctx.target.has_lifetime() {
                 out.blit(1, 2);
                 out.buf.push(TokenTree::from(ctx.lifetime.clone()));
                 out.blit_punct(2);
             };
-            out.blit_punct(4);
+            out.blit_punct(5);
             {
                 let at = out.buf.len();
                 for field in &ordered_fields {
@@ -1627,13 +1737,13 @@ fn enum_variant_from_json_struct(
                 }
                 out.tt_group(Delimiter::Parenthesis, at);
             };
-            out.blit(565, 13);
+            out.blit(597, 13);
             {
                 let at = out.buf.len();
-                out.blit(578, 3);
+                out.blit(610, 3);
                 {
                     let at = out.buf.len();
-                    out.blit_punct(5);
+                    out.blit_punct(4);
                     if let Err(err) = struct_schema(
                         out,
                         ctx,
@@ -1644,48 +1754,48 @@ fn enum_variant_from_json_struct(
                     };
                     out.tt_group(Delimiter::Brace, at);
                 };
-                out.blit(581, 13);
+                out.blit(613, 13);
                 out.tt_group(Delimiter::Brace, at);
             };
-            out.blit(727, 27);
+            out.blit(759, 27);
             {
                 let at = out.buf.len();
-                out.blit_ident(122);
+                out.blit_ident(125);
                 out.tt_group(Delimiter::Parenthesis, at);
             };
-            out.blit(684, 4);
+            out.blit(716, 4);
             {
                 let at = out.buf.len();
-                out.blit(645, 12);
+                out.blit(677, 12);
                 {
                     let at = out.buf.len();
-                    out.blit(688, 7);
+                    out.blit(720, 7);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit(754, 5);
+                out.blit(786, 5);
                 out.tt_group(Delimiter::Parenthesis, at);
             };
             {
                 let at = out.buf.len();
                 if !untagged {
-                    out.blit(695, 2);
+                    out.blit(727, 2);
                     {
                         let at = out.buf.len();
-                        out.blit_ident(122);
+                        out.blit_ident(125);
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    out.blit_punct(0);
+                    out.blit_punct(13);
                 };
                 out.tt_group(Delimiter::Brace, at);
             };
-            out.blit_ident(84);
+            out.blit_ident(109);
             {
                 let at = out.buf.len();
-                out.blit(697, 14);
+                out.blit(729, 14);
                 {
                     ctx.target_type(out)
                 };
-                out.blit(711, 4);
+                out.blit(743, 4);
                 {
                     let at = out.buf.len();
                     out.buf.push(TokenTree::from(ctx.target.name.clone()));
@@ -1695,7 +1805,7 @@ fn enum_variant_from_json_struct(
                         let at = out.buf.len();
                         for (i, field) in ordered_fields.iter().enumerate() {
                             out.buf.push(TokenTree::from(field.name.clone()));
-                            out.blit(715, 3);
+                            out.blit(747, 3);
                             out.buf.push(Literal::usize_unsuffixed(i).into());
                             out.blit_punct(1);
                         }
@@ -1703,9 +1813,9 @@ fn enum_variant_from_json_struct(
                     };
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit_punct(0);
+                out.blit_punct(13);
                 if untagged {
-                    out.blit(724, 3);
+                    out.blit(756, 3);
                 };
                 out.tt_group(Delimiter::Brace, at);
             };
@@ -1722,6 +1832,21 @@ fn enum_variant_from_json(
     let start = out.buf.len();
     match variant.kind {
         EnumKind::Tuple => {
+            if ctx.target.content.is_some() {
+                {
+                    out.blit(791, 3);
+                    {
+                        let at = out.buf.len();
+                        out.blit(727, 2);
+                        {
+                            let at = out.buf.len();
+                            out.blit(794, 10);
+                            out.tt_group(Delimiter::Parenthesis, at);
+                        };
+                        out.tt_group(Delimiter::Brace, at);
+                    };
+                }
+            }
             let [field] = variant.fields else {
                 return Err(Error::span_msg(
                     "Only single field enum tuples are currently supported.",
@@ -1729,32 +1854,44 @@ fn enum_variant_from_json(
                 ));
             };
             {
-                out.blit(759, 2);
-                out.buf.extend_from_slice(field.ty);
-                out.blit(349, 9);
-                out.buf.push(TokenTree::from(ctx.lifetime.clone()));
-                out.blit(761, 5);
+                out.blit_ident(138);
+                {
+                    if let Some(with) = field.with(FROM_JSON) {
+                        {
+                            out.buf.extend_from_slice(with);
+                        }
+                    } else {
+                        {
+                            out.blit_punct(3);
+                            out.buf.extend_from_slice(field.ty);
+                            out.blit(378, 9);
+                            out.buf.push(TokenTree::from(ctx.lifetime.clone()));
+                            out.blit(387, 2);
+                        }
+                    }
+                };
+                out.blit(221, 3);
                 {
                     let at = out.buf.len();
-                    out.blit_ident(149);
+                    out.blit_ident(155);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
                 {
                     let at = out.buf.len();
-                    out.blit_ident(141);
+                    out.blit_ident(149);
                     {
                         let at = out.buf.len();
-                        out.blit_ident(137);
+                        out.blit_ident(146);
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    out.blit(551, 2);
+                    out.blit(583, 2);
                     {
                         let at = out.buf.len();
-                        out.blit(705, 6);
+                        out.blit(737, 6);
                         {
                             ctx.target_type(out)
                         };
-                        out.blit(711, 4);
+                        out.blit(743, 4);
                         {
                             let at = out.buf.len();
                             out.buf.push(TokenTree::from(ctx.target.name.clone()));
@@ -1762,34 +1899,34 @@ fn enum_variant_from_json(
                             out.buf.push(TokenTree::from(variant.name.clone()));
                             {
                                 let at = out.buf.len();
-                                out.blit_ident(137);
+                                out.blit_ident(146);
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        out.blit_punct(0);
+                        out.blit_punct(13);
                         if untagged {
-                            out.blit(724, 3);
+                            out.blit(756, 3);
                         };
                         out.tt_group(Delimiter::Brace, at);
                     };
-                    out.blit(766, 2);
+                    out.blit(804, 2);
                     {
                         let at = out.buf.len();
-                        out.blit_ident(122);
+                        out.blit_ident(125);
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    out.blit(551, 2);
+                    out.blit(583, 2);
                     {
                         let at = out.buf.len();
                         if !untagged {
-                            out.blit(695, 2);
+                            out.blit(727, 2);
                             {
                                 let at = out.buf.len();
-                                out.blit_ident(122);
+                                out.blit_ident(125);
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            out.blit_punct(0);
+                            out.blit_punct(13);
                         };
                         out.tt_group(Delimiter::Brace, at);
                     };
@@ -1798,16 +1935,57 @@ fn enum_variant_from_json(
             }
         }
         EnumKind::Struct => {
+            if ctx.target.content.is_some() {
+                {
+                    out.blit(791, 3);
+                    {
+                        let at = out.buf.len();
+                        out.blit(727, 2);
+                        {
+                            let at = out.buf.len();
+                            out.blit(794, 10);
+                            out.tt_group(Delimiter::Parenthesis, at);
+                        };
+                        out.tt_group(Delimiter::Brace, at);
+                    };
+                }
+            }
             if let Err(err) = enum_variant_from_json_struct(out, ctx, variant, untagged) {
                 return Err(err);
             }
         }
         EnumKind::None => {
-            out.blit(705, 6);
+            {
+                if let Tag::Inline(..) = ctx.target.tag {
+                    if ctx.target.content.is_none() {
+                        {
+                            out.blit(713, 3);
+                            {
+                                let at = out.buf.len();
+                                out.blit_ident(145);
+                                out.tt_group(Delimiter::Parenthesis, at);
+                            };
+                            out.blit(806, 5);
+                            {
+                                let at = out.buf.len();
+                                out.blit(727, 2);
+                                {
+                                    let at = out.buf.len();
+                                    out.blit_ident(145);
+                                    out.tt_group(Delimiter::Parenthesis, at);
+                                };
+                                out.blit_punct(13);
+                                out.tt_group(Delimiter::Brace, at);
+                            };
+                        }
+                    }
+                }
+            };
+            out.blit(737, 6);
             {
                 ctx.target_type(out)
             };
-            out.blit(711, 4);
+            out.blit(743, 4);
             {
                 let at = out.buf.len();
                 out.buf.push(TokenTree::from(ctx.target.name.clone()));
@@ -1815,9 +1993,9 @@ fn enum_variant_from_json(
                 out.buf.push(TokenTree::from(variant.name.clone()));
                 out.tt_group(Delimiter::Parenthesis, at);
             };
-            out.blit_punct(0);
+            out.blit_punct(13);
             if untagged {
-                out.blit(724, 3);
+                out.blit(756, 3);
             };
         }
     };
@@ -1836,20 +2014,20 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
         Tag::Untagged => {
             let body = {
                 let len = out.buf.len();
-                out.blit(768, 11);
+                out.blit(811, 11);
                 {
                     let at = out.buf.len();
                     for (i, variant) in variants.iter().enumerate() {
                         {
                             let at = out.buf.len();
                             if i != 0 {
-                                out.blit(779, 3);
+                                out.blit(822, 3);
                                 {
                                     let at = out.buf.len();
-                                    out.blit(782, 2);
+                                    out.blit(825, 2);
                                     out.tt_group(Delimiter::Parenthesis, at);
                                 };
-                                out.blit_punct(0);
+                                out.blit_punct(13);
                             };
                             if let Err(err) = enum_variant_from_json(out, ctx, variant, true) {
                                 return Err(err);
@@ -1857,13 +2035,13 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                             out.tt_group(Delimiter::Brace, at);
                         };
                     }
-                    out.blit(695, 2);
+                    out.blit(727, 2);
                     {
                         let at = out.buf.len();
-                        out.blit(784, 10);
+                        out.blit(827, 10);
                         {
                             let at = out.buf.len();
-                            out.blit(794, 2);
+                            out.blit(837, 2);
                             out.buf.push(
                                 Literal::string("Untagged enum didn't match any variant").into(),
                             );
@@ -1873,7 +2051,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                     };
                     out.tt_group(Delimiter::Brace, at);
                 };
-                out.blit_ident(141);
+                out.blit_ident(149);
                 {
                     let at = out.buf.len();
                     out.tt_group_empty(Delimiter::Parenthesis);
@@ -1899,11 +2077,14 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
         {
             if let Some(tag) = inline_tag {
                 {
-                    out.blit(796, 6);
+                    if ctx.target.content.is_some() {
+                        out.blit(839, 5);
+                    };
+                    out.blit(844, 6);
                     {
                         if let Some(content) = &ctx.target.content {
                             {
-                                out.blit_ident(45);
+                                out.blit_ident(47);
                                 {
                                     let at = out.buf.len();
                                     out.buf.push(Literal::string(tag).into());
@@ -1914,7 +2095,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                             }
                         } else {
                             {
-                                out.blit_ident(46);
+                                out.blit_ident(48);
                                 {
                                     let at = out.buf.len();
                                     out.buf.push(Literal::string(tag).into());
@@ -1925,64 +2106,90 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                     };
                     {
                         let at = out.buf.len();
-                        out.blit_ident(141);
+                        {
+                            if let Some(..) = &ctx.target.content {
+                                {
+                                    out.blit_ident(149);
+                                    {
+                                        let at = out.buf.len();
+                                        {
+                                            let at = out.buf.len();
+                                            out.blit(850, 3);
+                                            out.tt_group(Delimiter::Parenthesis, at);
+                                        };
+                                        out.tt_group(Delimiter::Parenthesis, at);
+                                    };
+                                    out.blit(583, 2);
+                                    {
+                                        let at = out.buf.len();
+                                        out.blit(853, 5);
+                                        out.tt_group(Delimiter::Brace, at);
+                                    };
+                                }
+                            } else {
+                                {
+                                    out.blit_ident(149);
+                                    {
+                                        let at = out.buf.len();
+                                        out.blit_ident(146);
+                                        out.tt_group(Delimiter::Parenthesis, at);
+                                    };
+                                    out.blit(858, 4);
+                                }
+                            }
+                        };
+                        out.blit_ident(154);
                         {
                             let at = out.buf.len();
-                            out.blit_ident(137);
+                            out.blit_ident(145);
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        out.blit(802, 5);
+                        out.blit(862, 4);
                         {
                             let at = out.buf.len();
-                            out.blit_ident(132);
-                            out.tt_group(Delimiter::Parenthesis, at);
-                        };
-                        out.blit(807, 4);
-                        {
-                            let at = out.buf.len();
-                            out.blit_ident(132);
+                            out.blit_ident(145);
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
                         out.blit_punct(1);
                         out.tt_group(Delimiter::Brace, at);
                     };
-                    out.blit_punct(0);
+                    out.blit_punct(13);
                 }
             } else {
                 {
-                    out.blit(811, 2);
+                    out.blit(866, 2);
                     {
                         let at = out.buf.len();
-                        out.blit_ident(103);
+                        out.blit_ident(105);
                         {
                             let at = out.buf.len();
-                            out.blit_ident(130);
+                            out.blit_ident(136);
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    out.blit(770, 3);
+                    out.blit(806, 3);
                     {
                         if mixed_strings_and_objects {
                             {
-                                out.blit_ident(21);
+                                out.blit_ident(23);
                             }
                         } else {
                             {
-                                out.blit_ident(20);
+                                out.blit_ident(22);
                             }
                         }
                     };
-                    out.blit(813, 2);
+                    out.blit(868, 2);
                     {
                         let at = out.buf.len();
-                        out.blit(695, 2);
+                        out.blit(727, 2);
                         {
                             let at = out.buf.len();
-                            out.blit(815, 8);
+                            out.blit(870, 8);
                             {
                                 let at = out.buf.len();
-                                out.blit(794, 2);
+                                out.blit(837, 2);
                                 out.buf.push(
                                     Literal::string("Expected single field object for enum").into(),
                                 );
@@ -1990,14 +2197,14 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                             };
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        out.blit_punct(0);
+                        out.blit_punct(13);
                         out.tt_group(Delimiter::Brace, at);
                     };
-                    out.blit_punct(0);
+                    out.blit_punct(13);
                 }
             }
         };
-        out.blit(823, 2);
+        out.blit(878, 2);
         {
             let at = out.buf.len();
             {
@@ -2009,7 +2216,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                     }
                     {
                         out.buf.push(variant_key_literal(ctx, variant).into());
-                        out.blit(551, 2);
+                        out.blit(583, 2);
                         if let Err(err) = enum_variant_from_json(out, ctx, variant, false) {
                             return Err(err);
                         };
@@ -2017,22 +2224,22 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                     };
                 }
             };
-            out.blit(825, 3);
+            out.blit(880, 3);
             {
                 let at = out.buf.len();
-                out.blit(828, 11);
+                out.blit(883, 11);
                 {
                     let at = out.buf.len();
-                    out.blit_ident(130);
+                    out.blit_ident(136);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit(839, 3);
+                out.blit(894, 3);
                 {
                     let at = out.buf.len();
-                    out.blit(842, 10);
+                    out.blit(897, 10);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit_punct(0);
+                out.blit_punct(13);
                 out.tt_group(Delimiter::Brace, at);
             };
             out.tt_group(Delimiter::Brace, at);
@@ -2041,11 +2248,27 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
             if let Some(_) = inline_tag {
                 if ctx.target.content.is_some() {
                     {
-                        out.blit(852, 4);
+                        out.blit(907, 2);
+                        {
+                            let at = out.buf.len();
+                            out.blit(909, 4);
+                            out.tt_group(Delimiter::Brace, at);
+                        };
+                        out.blit_ident(109);
+                        {
+                            let at = out.buf.len();
+                            out.blit_ident(149);
+                            {
+                                let at = out.buf.len();
+                                out.tt_group_empty(Delimiter::Parenthesis);
+                                out.tt_group(Delimiter::Parenthesis, at);
+                            };
+                            out.tt_group(Delimiter::Brace, at);
+                        };
                     }
                 } else {
                     {
-                        out.blit_ident(141);
+                        out.blit_ident(149);
                         {
                             let at = out.buf.len();
                             out.tt_group_empty(Delimiter::Parenthesis);
@@ -2055,19 +2278,19 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                 }
             } else {
                 {
-                    out.blit(856, 8);
+                    out.blit(913, 8);
                     {
                         let at = out.buf.len();
-                        out.blit_ident(141);
+                        out.blit_ident(149);
                         {
                             let at = out.buf.len();
-                            out.blit_ident(77);
+                            out.blit_ident(79);
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        out.blit(551, 2);
+                        out.blit(583, 2);
                         {
                             let at = out.buf.len();
-                            out.blit(864, 2);
+                            out.blit(921, 2);
                             {
                                 let at = out.buf.len();
                                 out.tt_group_empty(Delimiter::Parenthesis);
@@ -2075,44 +2298,44 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                             };
                             out.tt_group(Delimiter::Brace, at);
                         };
-                        out.blit(766, 2);
+                        out.blit(804, 2);
                         {
                             let at = out.buf.len();
-                            out.blit_ident(132);
+                            out.blit_ident(145);
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        out.blit(551, 2);
+                        out.blit(583, 2);
                         {
                             let at = out.buf.len();
-                            out.blit_ident(147);
+                            out.blit_ident(154);
                             {
                                 let at = out.buf.len();
-                                out.blit_ident(132);
+                                out.blit_ident(145);
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
                             out.tt_group(Delimiter::Brace, at);
                         };
-                        out.blit(866, 2);
+                        out.blit(923, 2);
                         {
                             let at = out.buf.len();
-                            out.blit_ident(103);
+                            out.blit_ident(105);
                             {
                                 let at = out.buf.len();
-                                out.blit_ident(138);
+                                out.blit_ident(143);
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        out.blit(551, 2);
+                        out.blit(583, 2);
                         {
                             let at = out.buf.len();
-                            out.blit_ident(147);
+                            out.blit_ident(154);
                             {
                                 let at = out.buf.len();
-                                out.blit(815, 8);
+                                out.blit(870, 8);
                                 {
                                     let at = out.buf.len();
-                                    out.blit(794, 2);
+                                    out.blit(837, 2);
                                     out.buf.push(
                                         Literal::string("More the one field in enum tab object")
                                             .into(),
@@ -2126,17 +2349,17 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                         out.blit_punct(1);
                         out.tt_group(Delimiter::Brace, at);
                     };
-                    out.blit(868, 11);
+                    out.blit(925, 11);
                     {
                         ctx.target_type(out)
                     };
                     out.blit_punct(2);
                     {
                         let at = out.buf.len();
-                        out.blit(879, 7);
+                        out.blit(936, 7);
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    out.blit(886, 4);
+                    out.blit(943, 4);
                 }
             }
         };
@@ -2145,37 +2368,37 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
     if mixed_strings_and_objects {
         body = {
             let len = out.buf.len();
-            out.blit(890, 5);
+            out.blit(947, 5);
             {
                 let at = out.buf.len();
-                out.blit_ident(141);
+                out.blit_ident(149);
                 {
                     let at = out.buf.len();
-                    out.blit(895, 12);
+                    out.blit(952, 12);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit(551, 2);
+                out.blit(583, 2);
                 out.buf
                     .push(TokenTree::Group(Group::new(Delimiter::Brace, body)));
-                out.blit(866, 2);
+                out.blit(923, 2);
                 {
                     let at = out.buf.len();
-                    out.blit(907, 12);
+                    out.blit(964, 12);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit(919, 7);
+                out.blit(976, 7);
                 {
                     let at = out.buf.len();
-                    out.blit_ident(141);
+                    out.blit_ident(149);
                     {
                         let at = out.buf.len();
-                        out.blit_ident(130);
+                        out.blit_ident(136);
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    out.blit(551, 2);
+                    out.blit(583, 2);
                     {
                         let at = out.buf.len();
-                        out.blit(926, 5);
+                        out.blit(983, 5);
                         {
                             let at = out.buf.len();
                             {
@@ -2183,7 +2406,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                                     if let EnumKind::None = variant.kind {
                                         {
                                             out.buf.push(variant_key_literal(ctx, variant).into());
-                                            out.blit(551, 2);
+                                            out.blit(583, 2);
                                             out.buf.push(TokenTree::from(ctx.target.name.clone()));
                                             out.blit(3, 2);
                                             out.buf.push(TokenTree::from(variant.name.clone()));
@@ -2192,76 +2415,76 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                                     }
                                 }
                             };
-                            out.blit(825, 3);
+                            out.blit(880, 3);
                             {
                                 let at = out.buf.len();
-                                out.blit(836, 3);
+                                out.blit(891, 3);
                                 {
                                     let at = out.buf.len();
-                                    out.blit(831, 4);
+                                    out.blit(886, 4);
                                     out.tt_group(Delimiter::Parenthesis, at);
                                 };
-                                out.blit(839, 3);
+                                out.blit(894, 3);
                                 {
                                     let at = out.buf.len();
-                                    out.blit(842, 10);
+                                    out.blit(897, 10);
                                     out.tt_group(Delimiter::Parenthesis, at);
                                 };
-                                out.blit_punct(0);
+                                out.blit_punct(13);
                                 out.tt_group(Delimiter::Brace, at);
                             };
                             out.tt_group(Delimiter::Brace, at);
                         };
-                        out.blit(704, 7);
+                        out.blit(736, 7);
                         {
                             ctx.target_type(out)
                         };
-                        out.blit(711, 4);
+                        out.blit(743, 4);
                         {
                             let at = out.buf.len();
-                            out.blit_ident(137);
+                            out.blit_ident(146);
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        out.blit(931, 3);
+                        out.blit(988, 3);
                         {
                             let at = out.buf.len();
                             out.tt_group_empty(Delimiter::Parenthesis);
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        out.blit_punct(0);
+                        out.blit_punct(13);
                         out.tt_group(Delimiter::Brace, at);
                     };
-                    out.blit_ident(147);
+                    out.blit_ident(154);
                     {
                         let at = out.buf.len();
-                        out.blit_ident(132);
+                        out.blit_ident(145);
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    out.blit(807, 4);
+                    out.blit(862, 4);
                     {
                         let at = out.buf.len();
-                        out.blit_ident(132);
+                        out.blit_ident(145);
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
                     out.blit_punct(1);
                     out.tt_group(Delimiter::Brace, at);
                 };
-                out.blit(866, 2);
+                out.blit(923, 2);
                 {
                     let at = out.buf.len();
-                    out.blit_ident(138);
+                    out.blit_ident(143);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit(551, 2);
+                out.blit(583, 2);
                 {
                     let at = out.buf.len();
-                    out.blit(695, 2);
+                    out.blit(727, 2);
                     {
                         let at = out.buf.len();
-                        out.blit(815, 8);
+                        out.blit(870, 8);
                         {
                             let at = out.buf.len();
-                            out.blit(794, 2);
+                            out.blit(837, 2);
                             out.buf.push(
                                 Literal::string("Expected either an object or a string").into(),
                             );
@@ -2270,19 +2493,19 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                         };
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    out.blit_punct(0);
+                    out.blit_punct(13);
                     out.tt_group(Delimiter::Brace, at);
                 };
-                out.blit_ident(147);
+                out.blit_ident(154);
                 {
                     let at = out.buf.len();
-                    out.blit_ident(132);
+                    out.blit_ident(145);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit(807, 4);
+                out.blit(862, 4);
                 {
                     let at = out.buf.len();
-                    out.blit_ident(132);
+                    out.blit_ident(145);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
                 out.blit_punct(1);
@@ -2313,7 +2536,7 @@ fn handle_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenSt
                         &ctx,
                         field,
                         &(|out| {
-                            out.blit(377, 3);
+                            out.blit(409, 3);
                             out.buf.push(TokenTree::from(field.name.clone()));
                         }),
                     )
@@ -2368,7 +2591,7 @@ fn handle_tuple_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<T
                         &ctx,
                         field,
                         &(|out| {
-                            out.blit(377, 3);
+                            out.blit(409, 3);
                             out.buf
                                 .push(TokenTree::from(Literal::usize_unsuffixed(i).clone()));
                         }),
@@ -2406,7 +2629,7 @@ fn handle_tuple_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<T
 fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
     let body = {
         let len = out.buf.len();
-        out.blit(549, 2);
+        out.blit(581, 2);
         {
             let at = out.buf.len();
             {
@@ -2430,10 +2653,10 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                                 };
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            out.blit(551, 2);
+                            out.blit(583, 2);
                             {
                                 let at = out.buf.len();
-                                out.blit(934, 3);
+                                out.blit(991, 3);
                                 {
                                     let at = out.buf.len();
                                     out.buf.push(TokenTree::from(
@@ -2441,7 +2664,7 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                                     ));
                                     out.tt_group(Delimiter::Parenthesis, at);
                                 };
-                                out.blit_punct(0);
+                                out.blit_punct(13);
                                 {
                                     for (i, field) in variant.fields.iter().enumerate() {
                                         binary_encode_field(
@@ -2472,10 +2695,10 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                                 };
                                 out.tt_group(Delimiter::Brace, at);
                             };
-                            out.blit(551, 2);
+                            out.blit(583, 2);
                             {
                                 let at = out.buf.len();
-                                out.blit(934, 3);
+                                out.blit(991, 3);
                                 {
                                     let at = out.buf.len();
                                     out.buf.push(TokenTree::from(
@@ -2483,7 +2706,7 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                                     ));
                                     out.tt_group(Delimiter::Parenthesis, at);
                                 };
-                                out.blit_punct(0);
+                                out.blit_punct(13);
                                 {
                                     for field in variant.fields {
                                         binary_encode_field(
@@ -2500,10 +2723,10 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                             };
                         }
                         EnumKind::None => {
-                            out.blit(551, 2);
+                            out.blit(583, 2);
                             {
                                 let at = out.buf.len();
-                                out.blit(934, 3);
+                                out.blit(991, 3);
                                 {
                                     let at = out.buf.len();
                                     out.buf.push(TokenTree::from(
@@ -2511,7 +2734,7 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                                     ));
                                     out.tt_group(Delimiter::Parenthesis, at);
                                 };
-                                out.blit_punct(0);
+                                out.blit_punct(13);
                                 out.tt_group(Delimiter::Brace, at);
                             };
                         }
@@ -2531,7 +2754,7 @@ fn enum_from_binary(
 ) -> Result<(), Error> {
     let body = {
         let len = out.buf.len();
-        out.blit(937, 5);
+        out.blit(994, 5);
         {
             let at = out.buf.len();
             {
@@ -2540,7 +2763,7 @@ fn enum_from_binary(
                         {
                             if i + 1 == variants.len() {
                                 {
-                                    out.blit_ident(138);
+                                    out.blit_ident(143);
                                 }
                             } else {
                                 {
@@ -2550,7 +2773,7 @@ fn enum_from_binary(
                                 }
                             }
                         };
-                        out.blit(551, 2);
+                        out.blit(583, 2);
                         {
                             match variant.kind {
                                 EnumKind::Tuple => {

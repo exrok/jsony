@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 #[doc(hidden)]
@@ -178,6 +179,10 @@ pub unsafe trait FromJson<'a>: Sized + 'a {
 
 mod __private {
     pub trait Sealed {}
+}
+pub struct NewType<M, T> {
+    pub value: T,
+    pub marker: PhantomData<M>,
 }
 
 /// A trait for converting a value into JSON.

@@ -765,3 +765,27 @@ mod test {
         assert_eq!(&from_binary::<Vec<&str>>(&encoded).unwrap(), inputs)
     }
 }
+
+macro_rules! tuple_impls {
+    ($(($($tn: ident: $ty: tt),*)),* $(,)?) => {
+        $(
+            unsafe impl<$($ty: ToBinary),*> ToBinary for ($($ty,)*) {
+                fn binary_encode(&self, encoder: &mut BytesWriter) {
+                    let ($($tn),*,) = self;
+                    $($tn.binary_encode(encoder);)*
+                }
+            }
+            unsafe impl<'a, $($ty: FromBinary<'a>),*> FromBinary<'a> for ($($ty,)*) {
+                fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
+                    ($( $ty::binary_decode(decoder), )*)
+                }
+            }
+        )*
+    };
+}
+
+tuple_impls! {
+    (t0: T0),
+    (t0: T0, t1: T1),
+    (t0: T0, t1: T1, t2: T2),
+}

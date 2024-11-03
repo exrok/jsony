@@ -42,17 +42,13 @@ enum FieldAttrInner {
     Flatten,
     Via(Via),
     Default(Vec<TokenTree>),
+    With(Vec<TokenTree>),
 }
 
 #[cfg_attr(feature = "debug", derive(Debug))]
 pub struct FieldAttrs {
     attrs: Vec<FieldAttr>,
     flags: u64,
-    // pub rename: Option<Literal>,
-    // /// eventually probably have kind here but lets keep it simple for now
-    // pub flatten: bool,
-    // pub via: Via,
-    // pub default: Option<Vec<TokenTree>>,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -129,6 +125,17 @@ impl<'a> EnumVariant<'a> {
 }
 
 impl<'a> Field<'a> {
+    pub fn with(&self, for_trait: TraitSet) -> Option<&[TokenTree]> {
+        // todo optimize via flags
+        for attr in &self.attr.attrs {
+            if attr.enabled & for_trait != 0 {
+                if let FieldAttrInner::With(with) = &attr.inner {
+                    return Some(with);
+                }
+            }
+        }
+        None
+    }
     pub fn via(&self, for_trait: TraitSet) -> &Via {
         // todo optimize via flags
         for attr in &self.attr.attrs {
@@ -278,6 +285,14 @@ fn parse_container_attr(
         }
         "ToBinary" => {
             target.to_binary = true;
+        }
+        "Binary" => {
+            target.to_binary = true;
+            target.from_binary = true;
+        }
+        "Json" => {
+            target.to_json = true;
+            target.from_json = true;
         }
         "FromBinary" => {
             target.from_binary = true;
@@ -637,11 +652,6 @@ fn parse_single_field_attr(
             1u64 * TRAIT_COUNT
         }
         "default" => {
-            // attrs.default = Some(if value.is_empty() {
-            //     crate::default_call_tokens(ident.span())
-            // } else {
-            //     std::mem::take(value)
-            // });
             attrs.attrs.push(FieldAttr {
                 enabled: trait_set,
                 span: ident.span(),
@@ -664,7 +674,14 @@ fn parse_single_field_attr(
             });
             4u64 * TRAIT_COUNT
         }
-
+        "with" => {
+            attrs.attrs.push(FieldAttr {
+                enabled: trait_set,
+                span: ident.span(),
+                inner: FieldAttrInner::With(std::mem::take(value)),
+            });
+            5u64 * TRAIT_COUNT
+        }
         _ => throw!("Unknown attr field" @ ident.span()),
     };
     let mask = (trait_set as u64) << offset;

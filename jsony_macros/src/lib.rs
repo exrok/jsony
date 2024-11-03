@@ -121,10 +121,11 @@ pub fn object(input: TokenStream) -> TokenStream {
 ///
 /// | Format | Supported Traits | Description |
 /// |--------|------------------|-------------|
-/// | `rename = "..."` | `Json` | Use provided string as field name.
 /// | `default [= ...]` | `From` | Use `Default::default()` or provided expression if field is missing.
-/// | `via = ...` | All | Implement conversion through provided trait.
 /// | `flatten` | `Json` | Flatten the contents of the field into the container it is defined in.
+/// | `rename = "..."` | `Json` | Use provided string as field name.
+/// | `via = ...` | All | Implement conversion through provided trait.
+/// | `with = ...` | All | Use methods from specified module instead of trait. [read more](#jsonywith---on-fields)
 ///
 /// ## Format Aliases
 /// In the container attributes to specify the traits to derive and on the prefix of
@@ -144,6 +145,50 @@ pub fn object(input: TokenStream) -> TokenStream {
 ///
 /// `#[jsony(To flatten)]` is the same as `#[jsony(ToJson flatten)]` as `ToBinary` does not support `flatten`.
 /// Whereas `#[jsony(Binary flatten)]` is a compile-time error since `flatten` is not supported by either `ToBinary` nor `FromBinary`.
+///
+/// ### Detailed Field Attributes Descriptions
+///
+/// #### `#[jsony(with = ...)]` on fields
+///
+/// Uses the functions from the provided module path when a encoding/decoding trait method would normally be used.
+///
+/// The function corresponds to the save methods of each trait (ommiting the `__jsony` suffix if present).
+///
+/// | Trait | Function |
+/// |-------|-----------------|
+/// | `ToJson` | `fn json_encode(value: &bool, output: &mut TextWriter)`
+/// | `FromJson` | `fn json_decode<'a>(parser: &mut jsony::parser::Parser<'a>) -> Result<bool, &'static DecodeError>`
+/// | `ToBinary` | `fn binary_encode(value: &bool, output: &mut BytesWriter)`
+/// | `FromBinary` | `fn binary_decode(decoder: &mut jsony::binary::Decoder<'_>) -> bool`
+///
+/// ##### Example of `with` attribute
+/// ```ignore
+/// mod bool_as_int {
+///     use jsony::{
+///         json::DecodeError, BytesWriter, FromBinary, FromJson, TextWriter, ToBinary, ToJson,
+///     };
+///     pub fn json_encode(value: &bool, output: &mut TextWriter) {
+///         (*value as u32).json_encode__jsony(output);
+///     }
+///     pub fn json_decode(parser: &mut jsony::parser::Parser<'_>) -> Result<bool, &'static DecodeError> {
+///         Ok(<u32>::json_decode(parser)? != 0)
+///     }
+///     pub fn binary_encode(value: &bool, output: &mut BytesWriter) {
+///         (*value as u32).binary_encode(output)
+///     }
+///     pub fn binary_decode(decoder: &mut jsony::binary::Decoder<'_>) -> bool {
+///         u32::binary_decode(decoder) != 0
+///     }
+/// }
+///
+/// #[derive(Jsony)]
+/// #[jsony(Binary, Json)]
+/// struct Example {
+///     #[jsony(with = bool_as_int)]
+///     value: bool
+/// }
+/// ```
+/// Note: The functions in the with module can be generic.
 ///
 /// ### Detailed Container Attributes Descriptions
 /// #### `#[jsony(transparent)]`

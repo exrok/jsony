@@ -1,6 +1,6 @@
 use crate::ast::{
     self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttrs, Generic,
-    GenericKind, Tag, Via, FROM_JSON, TO_JSON,
+    GenericKind, Tag, Via, FROM_BINARY, FROM_JSON, TO_BINARY, TO_JSON,
 };
 use crate::case::RenameRule;
 use crate::util::MemoryPool;
@@ -258,7 +258,7 @@ fn impl_to_binary(
                     splat!(output; [~ty]: ToBinary,)
                 }
              ]] {
-            fn binary_encode(&self, encoder: &mut Vec<u8>) [
+            fn binary_encode(&self, encoder: &mut ::jsony::BytesWriter) [
                 output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
@@ -389,7 +389,14 @@ fn binary_encode_field(
 ) {
     splat! {
         output;
-        <[~field.ty] as [~&ctx.crate_path]::ToBinary>::binary_encode(
+        [
+            if let Some(path) = field.with(TO_BINARY) {
+                splat!(output; [~path])
+            } else {
+                splat!(output; <[~field.ty] as [~&ctx.crate_path]::ToBinary>)
+            }
+        ]
+        ::binary_encode(
             [place(output)], encoder
         );
     };
@@ -398,7 +405,14 @@ fn binary_encode_field(
 fn binary_decode_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
     splat! {
         out;
-        <[~field.ty] as [ctx.FromBinary(out)]>::binary_decode(
+        [
+            if let Some(path) = field.with(FROM_BINARY) {
+                splat!(out; [~path])
+            } else {
+                splat!(out; <[~field.ty] as [ctx.FromBinary(out)]>)
+            }
+        ]
+        ::binary_decode(
             decoder
         )
     };
@@ -416,7 +430,17 @@ impl Ctx<'_> {
 }
 
 fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) -> Result<(), Error> {
-    splat! { out; [~&ctx.crate_path]::__internal::erase(<[~field.ty] as [ctx.FromJson(out)]>::emplace_from_json) }
+    if let Some(with) = field.with(FROM_JSON) {
+        splat! { out;
+           [~&ctx.crate_path]::__internal::emplace_json_for_with_attribute::<&mut ::jsony::parser::Parser<#[#ctx.lifetime]>, [~field.ty], _>(
+               &[~with]::json_decode
+           )
+        }
+    } else {
+        splat! { out; [~&ctx.crate_path]::__internal::erase(
+            <[~field.ty] as [ctx.FromJson(out)]>::emplace_from_json
+        ) }
+    }
     Ok(())
 }
 
@@ -629,6 +653,7 @@ fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> 
             throw!("FromJson not implemented for Tuples without fields yet.")
         }
         [field] => {
+            //tod immple with
             splat!(out;
                 < [~field.ty] as ::jsony::FromJson<#[#ctx.lifetime]> >::emplace_from_json(
                     // to remove addition is repr(transparent) or repr(c)
@@ -664,7 +689,14 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
         }
         [field] => {
             splat!(out;
-                <[~field.ty] as ::jsony::ToJson>::json_encode__jsony(&self.[#Literal::usize_unsuffixed(0)], out)
+                [
+                    if let Some(with) = field.with(TO_JSON) {
+                        splat!(out; [~with]::json_encode)
+                    } else {
+                        splat!(out; <[~field.ty] as ::jsony::ToJson>::json_encode__jsony)
+                    }
+                ]
+                (&self.[#Literal::usize_unsuffixed(0)], out)
             );
             ToJsonKind::Forward(field)
         }
@@ -679,7 +711,13 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
                     } else {
                         splat!(out; out.push_comma());
                     }]
-                    <[~field.ty] as ::jsony::ToJson>::json_encode__jsony(&self.[#Literal::usize_unsuffixed(i)], out);
+                    [
+                        if let Some(with) = field.with(TO_JSON) {
+                            splat!(out; [~with]::json_encode)
+                        } else {
+                            splat!(out; <[~field.ty] as ::jsony::ToJson>::json_encode__jsony)
+                        }
+                    ](&self.[#Literal::usize_unsuffixed(i)], out);
                 }]
                 out.end_json_array()
             );
@@ -747,7 +785,13 @@ fn inner_struct_to_json(
                     let _: ::jsony::json::AlwaysObject =
                 );
             }
-            splat!(out; <[~field.ty] as ::jsony::ToJson>::json_encode__jsony([if on_self {
+            splat!(out; [
+                        if let Some(with) = field.with(TO_JSON) {
+                            splat!(out; [~with]::json_encode)
+                        } else {
+                            splat!(out; <[~field.ty] as ::jsony::ToJson>::json_encode__jsony)
+                        }
+                    ]([if on_self {
                 splat!(out; &self.[#field.name])
             } else {
                 splat!(out; [#ctx.temp[i]])
@@ -850,6 +894,13 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
     let mut text = String::with_capacity(64);
     let start = out.buf.len();
     let mut all_objects = true;
+    for variant in variants {
+        if let EnumKind::Struct = variant.kind {
+            continue;
+        }
+        all_objects = false;
+        break;
+    }
     if let Tag::Inline(tag_name) = &ctx.target.tag {
         splat!(out; out.start_json_object(););
         text.push('"');
@@ -858,13 +909,6 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
         splat! { out; out.push_str([@Literal::string(&text).into()]); };
     } else if all_objects {
         splat!(out; out.start_json_object(););
-    }
-    for variant in variants {
-        if let EnumKind::Struct = variant.kind {
-            continue;
-        }
-        all_objects = false;
-        break;
     }
     splat!(
         out;
@@ -932,6 +976,23 @@ fn enum_variant_to_json_struct(
             }
         ]
         [inner_struct_to_json(out, ctx, &variant.fields, text, false)?];
+        [
+            // opt: Could do a static '}' push if we know that there isn't a trailling comma which
+            // can occour when flattening
+            match ctx.target.tag {
+                Tag::Untagged => splat!(out;out.end_json_object();),
+                Tag::Inline(..) if ctx.target.content.is_some() => splat!(out;out.end_json_object();),
+                Tag::Default  => {
+                    splat!(out;out.end_json_object();)
+                    // text.push('}')
+                },
+                _ => ()
+            }
+            // if !text.is_empty() {
+            //     splat!(out; out.push_str([@Literal::string(&text).into()]););
+            //     text.clear();
+            // }
+        ]
     );
     Ok(())
 }
@@ -978,9 +1039,23 @@ fn enum_variant_to_json(
             let [field] = variant.fields else {
                 throw!("Only single field enum tuples are currently supported." @ variant.name.span())
             };
+            if !text.is_empty() {
+                splat! {
+                    out;
+                    out.push_str([@Literal::string(&text).into()]);
+                };
+                text.clear();
+            }
             splat! {
                 out;
-                <[~field.ty] as ::jsony::ToJson>::json_encode__jsony([#ctx.temp[0]], out);
+                [
+                    if let Some(with) = field.with(TO_JSON) {
+                        splat!(out; [~with]::json_encode)
+                    } else {
+                        splat!(out; <[~field.ty] as ::jsony::ToJson>::json_encode__jsony)
+                    }
+                ]
+                ([#ctx.temp[0]], out);
             }
         }
         EnumKind::Struct => {
@@ -1116,6 +1191,14 @@ fn enum_variant_from_json(
     let start = out.buf.len();
     match variant.kind {
         EnumKind::Tuple => {
+            if ctx.target.content.is_some() {
+                splat! {
+                    out;
+                    if !at_content {
+                        return Err(&::jsony::parser::MISSING_CONTENT_TAG)
+                    }
+                }
+            }
             let [field] = variant.fields else {
                 throw!("Only single field enum tuples are currently supported." @ variant.name.span())
             };
@@ -1123,7 +1206,13 @@ fn enum_variant_from_json(
             //  https://github.com/rust-lang/rust/issues/120141
             splat! {
                 out;
-                match < [~field.ty] as ::jsony::FromJson<#[#ctx.lifetime]> >::json_decode(parser) {
+                match [
+                    if let Some(with) = field.with(FROM_JSON) {
+                        splat!(out; [~with])
+                    } else {
+                        splat!(out; < [~field.ty] as ::jsony::FromJson<#[#ctx.lifetime]> >)
+                    }
+                ]::json_decode(parser) {
                     Ok(value) => {
                         dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name](value));
                         [?(untagged) break #success]
@@ -1135,12 +1224,32 @@ fn enum_variant_from_json(
             }
         }
         EnumKind::Struct => {
+            if ctx.target.content.is_some() {
+                splat! {
+                    out;
+                    if !at_content {
+                        return Err(&::jsony::parser::MISSING_CONTENT_TAG)
+                    }
+                }
+            }
             if let Err(err) = enum_variant_from_json_struct(out, ctx, variant, untagged) {
                 return Err(err);
             }
         }
         EnumKind::None => splat! {
             out;
+            [
+                if let Tag::Inline(..) = ctx.target.tag {
+                    if ctx.target.content.is_none() {
+                        splat!{
+                            out;
+                            if let Err(err) = parser.skip_value() {
+                                return Err(err);
+                            }
+                        }
+                    }
+                }
+            ]
             dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name]);
             [?(untagged) break #success]
         },
@@ -1194,6 +1303,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
             if let Some(tag) = inline_tag {
                 splat!(
                     out;
+                    [?(ctx.target.content.is_some()) let at_content: bool;]
                     let variant = match parser.
                     [
                         if let Some(content) = &ctx.target.content {
@@ -1204,7 +1314,14 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                     ]
 
                      {
-                        Ok(value) => value,
+                        [if let Some(..) = &ctx.target.content {
+                            splat!(out; Ok((value, is_at_content)) => {
+                                at_content = is_at_content;
+                                value
+                            })
+                        } else {
+                            splat!(out; Ok(value) => value,)
+                        }]
                         Err(err) => return Err(err),
                     };
                 )
@@ -1250,7 +1367,8 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
         [
             if let Some(_) = inline_tag {
                 if ctx.target.content.is_some() {
-                    splat!(out; parser.discard_remaining_object_fields())
+                    //todo this leaks?
+                    splat!(out; if at_content {parser.discard_remaining_object_fields()} else {Ok(())})
                 } else {
                     splat!(out; Ok(()))
                 }

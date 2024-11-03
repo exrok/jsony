@@ -151,6 +151,9 @@ pub static RECURSION_LIMIT_EXCEEDED: DecodeError = DecodeError {
 pub static MISSING_REQUIRED_FIELDS: DecodeError = DecodeError {
     message: "Missing required fields",
 };
+pub static MISSING_CONTENT_TAG: DecodeError = DecodeError {
+    message: "Missing content tag",
+};
 
 fn extract_numeric_literal(
     bytes: &[u8],
@@ -461,7 +464,7 @@ impl<'j> Parser<'j> {
         &mut self,
         tag: &str,
         content: &str,
-    ) -> JsonResult<&str> {
+    ) -> JsonResult<(&str, bool)> {
         if self.peek()? != Peek::Object {
             return Err(&EOF_WHILE_PARSING_OBJECT);
         }
@@ -481,22 +484,23 @@ impl<'j> Parser<'j> {
                     Ok(value) => {
                         if let Some(content_index) = content_index {
                             self.index = content_index;
-                            return Ok(value);
+                            return Ok((value, true));
                         }
                         loop {
                             match self.object_step() {
                                 Ok(Some(name)) => {
                                     if name == content {
-                                        return Ok(value);
+                                        return Ok((value, true));
                                     }
                                     if let Err(err) = self.skip_value() {
                                         return Err(err);
                                     }
                                 }
                                 Ok(None) => {
-                                    return Err(&DecodeError {
-                                        message: "Missing content field",
-                                    });
+                                    return Ok((value, false));
+                                    // return Err(&DecodeError {
+                                    //     message: "Missing content field",
+                                    // });
                                 }
                                 Err(err) => {
                                     return Err(err);

@@ -32,6 +32,7 @@ enum FieldAttrInner {
     Flatten,
     Via(Via),
     Default(Vec<TokenTree>),
+    With(Vec<TokenTree>),
 }
 pub struct FieldAttrs {
     attrs: Vec<FieldAttr>,
@@ -101,6 +102,16 @@ impl<'a> EnumVariant<'a> {
     }
 }
 impl<'a> Field<'a> {
+    pub fn with(&self, for_trait: TraitSet) -> Option<&[TokenTree]> {
+        for attr in &self.attr.attrs {
+            if attr.enabled & for_trait != 0 {
+                if let FieldAttrInner::With(with) = &attr.inner {
+                    return Some(with);
+                }
+            }
+        }
+        None
+    }
     pub fn via(&self, for_trait: TraitSet) -> &Via {
         for attr in &self.attr.attrs {
             if attr.enabled & for_trait != 0 {
@@ -197,6 +208,14 @@ fn parse_container_attr(
         }
         "ToBinary" => {
             target.to_binary = true;
+        }
+        "Binary" => {
+            target.to_binary = true;
+            target.from_binary = true;
+        }
+        "Json" => {
+            target.to_json = true;
+            target.from_json = true;
         }
         "FromBinary" => {
             target.from_binary = true;
@@ -644,6 +663,14 @@ fn parse_single_field_attr(
                 inner: FieldAttrInner::Flatten,
             });
             4u64 * TRAIT_COUNT
+        }
+        "with" => {
+            attrs.attrs.push(FieldAttr {
+                enabled: trait_set,
+                span: ident.span(),
+                inner: FieldAttrInner::With(std::mem::take(value)),
+            });
+            5u64 * TRAIT_COUNT
         }
         _ => return Err(Error::span_msg("Unknown attr field", ident.span())),
     };
