@@ -1,4 +1,60 @@
-use std::marker::PhantomData;
+//! # Jsony
+//! An ergonomic and performant (at runtime & compile time) serialization framework
+//! for the following formats:
+//! - [JSON](json) (with optional extensions: trailing commas, comments, unquoted keys)
+//! - [Custom Binary Encoding](crate::binary)
+//! - [x-www-form-urlencoded](from_form_urlencoded) (in progress)
+//!
+//! ### Decoding/Encoding JSON with strongly typed data structures
+//!
+//! The Jsony derive macro can automatically implement the encoding and decoding
+//! for a number of formats.
+//! ```
+//! use jsony::Jsony;
+//!
+//! #[derive(Jsony)]
+//! #[jsony(Json)]
+//! struct Player {
+//!     name: String,
+//!     health: u32,
+//!     inventory: Vec<String>
+//! }
+//!
+//! fn main() -> Result<(), jsony::JsonError> {
+//!     let input = r#"
+//!         {
+//!             "name": "Jimmy",
+//!             "health": 100,
+//!             "inventory": [
+//!                 "Rock",
+//!                 "Helmet"
+//!             ]
+//!         }"#;
+//!
+//!     let mut player: Player = jsony::from_json(input)?;
+//!     player.health -= 10;
+//!
+//!     let output: String = jsony::to_json(&player);
+//!
+//!     println!("generated json:\n {}", output);
+//!
+//!     Ok(())
+//! }
+//! ```
+//! Here we choose to implement `ToJson` and `FromJson` automatically via the `Json` attribute.
+//!
+//! When deriving a format trait, all fields in the struct/enum need to implement the same
+//! trait or have an implementation specified by a field attribute.
+//!
+//! #### Feature Documentation
+//! - [Jsony derive macro](crate::Jsony): Declaratively specify how your Rust types map to various formats.
+//! - [Flexible JSON decoder](crate::JsonParserConfig): Enable extensions for comments, trailing comments and more.
+//! - [JSON template macros](crate::object): Flexibly generate a JSON string directly.
+//! - [Binary format](crate::binary): Encode data in a fast, compact binary representation.
+//! - [Lazy JSON Parsing](crate::drill): Dynamically parse only what you need.
+//! - [Compact loosely typed Value](crate::value::JsonItem): Represent arbitrary JSON values in memory.
+//! - [Flexible encode destination](crate::to_json_into): Encode to a file or stack-allocating buffer.
+
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 #[doc(hidden)]
@@ -23,7 +79,13 @@ use json::DecodeError;
 use json::JsonValueKind;
 use parser::Parser;
 
-pub use jsony_macros::{array, object, Jsony};
+/// Templating macro for creating JSON Arrays
+///
+/// See [object] template macro for more details.
+///
+/// Works that sames `object!{}` except produces an array.
+pub use jsony_macros::array;
+pub use jsony_macros::{object, Jsony};
 pub use text_writer::IntoTextWriter;
 
 /// A trait for parsing a value from a compact binary representation.
@@ -179,10 +241,6 @@ pub unsafe trait FromJson<'a>: Sized + 'a {
 
 mod __private {
     pub trait Sealed {}
-}
-pub struct NewType<M, T> {
-    pub value: T,
-    pub marker: PhantomData<M>,
 }
 
 /// A trait for converting a value into JSON.

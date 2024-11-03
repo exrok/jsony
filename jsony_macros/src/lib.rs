@@ -1,4 +1,3 @@
-#![allow(warnings)]
 extern crate proc_macro;
 mod ast;
 mod case;
@@ -84,6 +83,53 @@ pub fn array(input: TokenStream) -> TokenStream {
     template::array(input)
 }
 
+/// Templating macro for creating JSON objects
+///
+/// ```rust
+/// let _player: String = jsony::object!{
+///     name: "Jimmy",
+///     health: 100,
+///     inventory: [
+///         "Rock",
+///         "Helmet"
+///     ]
+/// };
+///
+/// let array_example: String = jsony::array![
+///     true,
+///     // Flatten arrays and loops
+///     ..[for i in 0..10; i]
+///     // Match Projections
+///     match 4 {
+///         0 => true,
+///         1 => {key: "value"},
+///         other => other,
+///     }
+/// ];
+/// println!("array_example:\n{array_example}")
+///
+/// let map: std::collections::BTreeMap::<&str, u32> = [
+///     ("alpha", 1),
+///     ("beta", 2),
+/// ].into_iter().collect();
+///
+/// let value = Some("data");
+/// let key = "hello";
+/// let map: std::collections::BTreeMap<&str, u32> =
+///     [("alpha", 1), ("beta", 2)].into_iter().collect();
+///
+/// let object_example: String = jsony::object! {
+///     // flaten objects value into object
+///     ..map,
+///
+///     [key]: "variable-key",
+///
+///     // Conditional field guards
+///     @[if let Some(data) = value]
+///     "data-len": data.len()
+/// };
+/// println!("object_example:\n{object_example}")
+/// ```
 #[proc_macro]
 pub fn object(input: TokenStream) -> TokenStream {
     template::object(input)

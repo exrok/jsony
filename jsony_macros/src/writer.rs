@@ -1,5 +1,5 @@
 mod cache;
-use proc_macro::{Delimiter, Group, Ident, Punct, Spacing, Span, TokenStream, TokenTree};
+use proc_macro::{Delimiter, Group, Ident, Punct, Span, TokenStream, TokenTree};
 
 enum IdentCacheEntry {
     Empty(&'static str),
@@ -55,22 +55,6 @@ impl RustWriter {
                 punct: cache::punct_cache_initial_state(),
             },
         }
-    }
-    pub fn tt_punct_alone(&mut self, chr: char) {
-        self.buf
-            .push(TokenTree::Punct(Punct::new(chr, Spacing::Alone)));
-    }
-    pub fn tt_ident_cloned(&mut self, ident: &Ident) {
-        self.buf.push(TokenTree::Ident(ident.clone()));
-    }
-
-    pub fn tt_punct_joint(&mut self, chr: char) {
-        self.buf
-            .push(TokenTree::Punct(Punct::new(chr, Spacing::Joint)));
-    }
-    pub fn tt_ident(&mut self, ident: &str) {
-        self.buf
-            .push(TokenTree::Ident(Ident::new(ident, self.cache.default_span)));
     }
     #[inline(never)]
     pub fn tt_group(&mut self, delimiter: Delimiter, from: usize) {

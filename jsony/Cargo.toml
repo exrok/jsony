@@ -1,11 +1,15 @@
 [package]
 name = "jsony"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 authors = ["Thomas Dagenais <exrok@i64.dev>"]
 license = "MIT"
 readme = "README.md"
-description = "An experimental fast compiling serialization and deserialization libary for json like formats."
+repository = "https://github.com/exrok/jsony"
+description = "An experimental fast compiling serialization and deserialization libary for JSON like formats."
+keywords = ["serialization"]
+categories = ["encoding"]
+rust-version = "1.82"
 
 [dependencies]
 # jsony_macros = { version = "0.0.1" }

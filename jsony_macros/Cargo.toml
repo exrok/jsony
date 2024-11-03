@@ -6,6 +6,7 @@ authors = ["Thomas Dagenais <exrok@i64.dev>"]
 license = "MIT"
 readme = "README.md"
 description = "proc-macro crate for jsony"
+rust-version = "1.82"
 
 [dependencies]
 

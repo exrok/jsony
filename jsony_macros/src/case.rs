@@ -1,7 +1,6 @@
-//! Initialy From serde: https://github.com/serde-rs/serde/blob/master/serde_derive/src/internals/case.rs
-//! Code to convert the Rust-styled field/variant (e.g. `my_field`, `MyType`) to the
-//! case of the source (e.g. `my-field`, `MY_FIELD`).
-
+// Initialy From serde: https://github.com/serde-rs/serde/blob/master/serde_derive/src/internals/case.rs
+// Code to convert the Rust-styled field/variant (e.g. `my_field`, `MyType`) to the
+// case of the source (e.g. `my-field`, `MY_FIELD`).
 use proc_macro::Literal;
 
 use crate::Error;
@@ -11,7 +10,6 @@ use std::fmt::{self, Debug, Display};
 
 /// The different possible ways to change case of fields in a struct, or variants in an enum.
 #[derive(Copy, Clone, PartialEq)]
-#[cfg_attr(feature = "debug", derive(Debug))]
 pub enum RenameRule {
     /// Don't apply a default rename rule.
     None,
@@ -114,14 +112,6 @@ impl RenameRule {
             ScreamingSnakeCase => field.to_ascii_uppercase(),
             KebabCase => field.replace('_', "-"),
             ScreamingKebabCase => ScreamingSnakeCase.apply_to_field(field).replace('_', "-"),
-        }
-    }
-
-    /// Returns the `RenameRule` if it is not `None`, `rule_b` otherwise.
-    pub fn or(self, rule_b: Self) -> Self {
-        match self {
-            None => rule_b,
-            _ => self,
         }
     }
 }

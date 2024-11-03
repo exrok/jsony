@@ -70,7 +70,7 @@ impl<'a, T: Default> Allocator<'a, T> {
             let tail = entries.add(self.inner.current_size);
             tail.write(<T as Default>::default());
             self.inner.current_size += 1;
-            return unsafe { &mut *tail };
+            return &mut *tail;
         }
     }
 }
