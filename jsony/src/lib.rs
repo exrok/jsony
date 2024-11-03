@@ -264,7 +264,18 @@ pub struct LazyValue {
     /// We'll parsing the head of the string is a next json value (possibly with additional whitespace)
     // Error are represented by empty string with pointer tagging
     // (why? to work around std:ops::Index only returning references)
-    raw: str,
+    pub(crate) raw: str,
+}
+
+impl std::fmt::Display for LazyValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.raw)
+    }
+}
+impl std::fmt::Debug for LazyValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", &self.raw)
+    }
 }
 
 /// # Lazy JSON parser
