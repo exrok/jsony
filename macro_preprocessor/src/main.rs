@@ -425,7 +425,7 @@ fn export_merged_blocks(files: &[&[u8]]) -> (Vec<u8>, Vec<Vec<u8>>) {
         static NAMES: &[&str] = &[__PLACEHOLDER__];
         pub fn ident_cache_initial_state() -> Box<[IdentCacheEntry; IDENT_SIZE]> {
             unsafe {
-                let mut cache =
+                let cache =
                     std::alloc::alloc(std::alloc::Layout::array::<IdentCacheEntry>(IDENT_SIZE).unwrap())
                         as *mut IdentCacheEntry;
                 for (i, &name) in NAMES.iter().enumerate() {

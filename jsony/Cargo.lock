@@ -20,7 +20,9 @@ dependencies = [
 
 [[package]]
 name = "jsony_macros"
-version = "0.0.1"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42cc3b773602006b50ece9c1db60a0a5fa7bcce37c2bc121d9db5378a4446b27"
 
 [[package]]
 name = "memchr"
