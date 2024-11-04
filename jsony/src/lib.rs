@@ -67,6 +67,9 @@ pub mod parser;
 pub mod strings;
 pub mod text;
 mod text_writer;
+
+mod third_party;
+
 pub use byte_writer::BytesWriter;
 use parser::JsonParentContext;
 use parser::MISSING_REQUIRED_FIELDS;
