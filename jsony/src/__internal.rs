@@ -23,6 +23,18 @@ pub const unsafe fn erase<'a>(
     unsafe { std::mem::transmute(input) }
 }
 
+type Foo = for<'b> unsafe fn(NonNull<()>, &mut Parser<'b>) -> Result<(), &'static DecodeError>;
+#[inline(always)]
+pub const unsafe fn erased_emplace_from_json<'a, T: crate::FromJson<'a>>() -> Foo {
+    std::mem::transmute(
+        <T as crate::FromJson<'a>>::emplace_from_json
+            as unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>,
+    )
+}
+pub unsafe fn erased_drop_in_place<M: Sized>(ptr: NonNull<()>) {
+    std::ptr::drop_in_place(ptr.as_ptr() as *mut M);
+}
+
 #[doc(hidden)]
 pub struct SkipFieldVisitor<F> {
     pub skipped_field: &'static str,

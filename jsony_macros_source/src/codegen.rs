@@ -418,10 +418,10 @@ fn binary_decode_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
     };
 }
 impl Ctx<'_> {
-    #[allow(non_snake_case)]
-    fn FromJson(&self, out: &mut RustWriter) {
-        splat!(out;  [~&self.crate_path]::FromJson<#[#self.lifetime]>)
-    }
+    // #[allow(non_snake_case)]
+    // fn FromJson(&self, out: &mut RustWriter) {
+    //     splat!(out;  [~&self.crate_path]::FromJson<#[#self.lifetime]>)
+    // }
 
     #[allow(non_snake_case)]
     fn FromBinary(&self, out: &mut RustWriter) {
@@ -437,9 +437,10 @@ fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) -> Result
            )
         }
     } else {
-        splat! { out; [~&ctx.crate_path]::__internal::erase(
-            <[~field.ty] as [ctx.FromJson(out)]>::emplace_from_json
-        ) }
+        splat! { out; [~&ctx.crate_path]::__internal::erased_emplace_from_json::<#[#ctx.lifetime], [~field.ty]>() }
+        // splat! { out; [~&ctx.crate_path]::__internal::erase(
+        //     <[~field.ty] as [ctx.FromJson(out)]>::emplace_from_json
+        // ) }
     }
     Ok(())
 }
@@ -564,9 +565,7 @@ fn struct_schema(
         for field in fields {
             splat!{
                 out;
-                std::mem::transmute(
-                    std::ptr::drop_in_place::<[~field.ty]> as unsafe fn(*mut [~field.ty])
-                ),
+                ::jsony::__internal::erased_drop_in_place::<[~field.ty]>,
             }
         }
     ]);
@@ -834,6 +833,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
 
     splat!(out;
        const _: () = {
+            [?(ctx.target.flattenable)
             const unsafe fn __schema_inner<#[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, DEF)]] >()
                 ~> ::jsony::__internal::ObjectSchema<#[#ctx.lifetime]>
                 [?(!ctx.target.where_clauses.is_empty() || !ctx.target.generic_field_types.is_empty())
@@ -843,18 +843,27 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                 }
              ]]
                 {
-                    ::jsony::__internal::ObjectSchema {
+                    ::jsony::__internal::ObjectSchema::<#[#ctx.lifetime]> {
                         inner: &const { [struct_schema(out, ctx, &ordered_fields, None)?] },
                         phantom: ::std::marker::PhantomData
                     }
                 }
+            ]
             [
                 let ts = if let Some(flatten_field) = flattening {
                     body_of_struct_from_json_with_flatten(out, ctx, flatten_field)
                 } else {
-                    token_stream!(out; __schema_inner::<
-                        #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
-                    >().decode(dst, parser, None))
+                    if ctx.target.flattenable {
+                        token_stream!(out; __schema_inner::<
+                            #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
+                        >().decode(dst, parser, None))
+                    } else {
+                        token_stream!(out;
+                        ::jsony::__internal::ObjectSchema::<#[#ctx.lifetime]> {
+                            inner: &const { [struct_schema(out, ctx, &ordered_fields, None)?] },
+                            phantom: ::std::marker::PhantomData
+                        }.decode(dst, parser, None))
+                    }
                 };
                 impl_from_json(out, ctx, ts)?;
                 if ctx.target.flattenable {

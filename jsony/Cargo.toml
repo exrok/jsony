@@ -12,8 +12,8 @@ categories = ["encoding"]
 rust-version = "1.82"
 
 [dependencies]
-jsony_macros = { version = "0.0.2" }
-#jsony_macros = { path = "../jsony_macros" }
+#jsony_macros = { version = "0.0.2" }
+jsony_macros = { path = "../jsony_macros" }
 itoa = "1"
 ryu = "1"
 memchr = "2.7.4"
