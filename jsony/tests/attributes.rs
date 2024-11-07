@@ -250,7 +250,7 @@ fn enum_variantions() {
     }
 
     assert_json_eq!(
-        { "Record": { "alpha": "abc" , "beta": 7 } },
+        { "Record": { "alpha": "abc", "beta": 7 } },
         ExtenallyTagged::Record { alpha: "abc", beta: 7 }
     );
 

@@ -155,9 +155,9 @@ impl std::fmt::Display for DecodeError {
 static INVALID_NUMERIC_LITERAL: DecodeError = DecodeError {
     message: "Invalid numeric literal",
 };
-static STRING_CONTAINS_ESCAPES: DecodeError = DecodeError {
-    message: "String contains escapes",
-};
+// static STRING_CONTAINS_ESCAPES: DecodeError = DecodeError {
+//     message: "String contains escapes",
+// };
 static STRING_CONTAINS_INVALID_ESCAPE_LITERALS: DecodeError = DecodeError {
     message: "String contains invalid escape literals",
 };
@@ -191,14 +191,10 @@ unsafe impl<'a> FromJson<'a> for &'a str {
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
-        match parser.read_string_unescaped() {
+        match parser.take_borrowed_string() {
             Ok(raw_str) => {
-                if let Ok(value) = crate::strings::escape_to_str(raw_str) {
-                    dest.cast::<&str>().write(value);
-                    return Ok(());
-                }
-                // todo make escape_to_str return proper erros
-                Err(&STRING_CONTAINS_ESCAPES)
+                dest.cast::<&str>().write(raw_str);
+                return Ok(());
             }
             Err(err) => Err(err),
         }
@@ -210,13 +206,10 @@ unsafe impl<'a> FromJson<'a> for String {
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
-        match parser.read_string_unescaped() {
+        match parser.take_string() {
             Ok(raw_str) => {
-                if let Ok(value) = crate::strings::escape_to_string(raw_str) {
-                    dest.cast::<String>().write(value);
-                    return Ok(());
-                }
-                Err(&STRING_CONTAINS_INVALID_ESCAPE_LITERALS)
+                dest.cast::<String>().write(String::from(raw_str));
+                Ok(())
             }
             Err(err) => Err(err),
         }
@@ -244,13 +237,10 @@ unsafe impl<'a> FromJson<'a> for Box<str> {
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
-        match parser.read_string_unescaped() {
+        match parser.take_string() {
             Ok(raw_str) => {
-                if let Ok(value) = crate::strings::escape_to_string(raw_str) {
-                    dest.cast::<Box<str>>().write(value.into());
-                    return Ok(());
-                }
-                Err(&STRING_CONTAINS_INVALID_ESCAPE_LITERALS)
+                dest.cast::<Box<str>>().write(raw_str.into());
+                Ok(())
             }
             Err(err) => Err(err),
         }
@@ -262,13 +252,10 @@ unsafe impl<'a> FromJson<'a> for Cow<'a, str> {
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
-        match parser.read_string_unescaped() {
+        match parser.take_cow_string() {
             Ok(raw_str) => {
-                if let Ok(value) = crate::strings::escape_to_string(raw_str) {
-                    dest.cast::<Cow<str>>().write(Cow::Owned(value));
-                    return Ok(());
-                }
-                Err(&STRING_CONTAINS_INVALID_ESCAPE_LITERALS)
+                dest.cast::<Cow<str>>().write(raw_str);
+                Ok(())
             }
             Err(err) => Err(err),
         }

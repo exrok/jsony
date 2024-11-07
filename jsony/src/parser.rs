@@ -803,6 +803,21 @@ impl<'j> Parser<'j> {
         }
     }
 
+    pub fn take_borrowed_string(&mut self) -> JsonResult<&'j str> {
+        if self.peek()? != Peek::String {
+            return Err(&EOF_WHILE_PARSING_STRING);
+        }
+        let value: *const str = self.read_seen_string()?;
+        let (value, ctx) = unsafe { self.unfreeze_with_context(value) };
+        if let Some(borrowed) = ctx.try_extend_lifetime(value) {
+            Ok(borrowed)
+        } else {
+            Err(&DecodeError {
+                message: "Unexpected escape in string",
+            })
+        }
+    }
+
     /// Reads and returns the next string value from the JSON input.
     ///
     /// This function advances the parser's cursor to the next non-whitespace character,
