@@ -1150,6 +1150,58 @@ impl<K: ToJson<Kind = AlwaysString>, V: ToJson, S> ToJson for HashMap<K, V, S> {
     }
 }
 
+impl<T1: ToJson> ToJson for (T1,) {
+    type Kind = AlwaysArray;
+
+    fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind {
+        output.start_json_array();
+        self.0.json_encode__jsony(output);
+        output.end_json_array()
+    }
+}
+
+impl<T1: ToJson, T2: ToJson> ToJson for (T1, T2) {
+    type Kind = AlwaysArray;
+
+    fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind {
+        output.start_json_array();
+        self.0.json_encode__jsony(output);
+        output.push_comma();
+        self.1.json_encode__jsony(output);
+        output.end_json_array()
+    }
+}
+
+impl<T1: ToJson, T2: ToJson, T3: ToJson> ToJson for (T1, T2, T3) {
+    type Kind = AlwaysArray;
+
+    fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind {
+        output.start_json_array();
+        self.0.json_encode__jsony(output);
+        output.push_comma();
+        self.1.json_encode__jsony(output);
+        output.push_comma();
+        self.2.json_encode__jsony(output);
+        output.end_json_array()
+    }
+}
+
+impl<T1: ToJson, T2: ToJson, T3: ToJson, T4: ToJson> ToJson for (T1, T2, T3, T4) {
+    type Kind = AlwaysArray;
+
+    fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind {
+        output.start_json_array();
+        self.0.json_encode__jsony(output);
+        output.push_comma();
+        self.1.json_encode__jsony(output);
+        output.push_comma();
+        self.2.json_encode__jsony(output);
+        output.push_comma();
+        self.3.json_encode__jsony(output);
+        output.end_json_array()
+    }
+}
+
 impl ToJson for bool {
     type Kind = AnyValue;
     fn json_encode__jsony(&self, output: &mut TextWriter) -> AnyValue {
