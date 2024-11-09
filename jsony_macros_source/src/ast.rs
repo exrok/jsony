@@ -212,6 +212,13 @@ pub enum EnumKind {
     Struct,
     None,
 }
+
+impl Copy for EnumKind {}
+impl Clone for EnumKind {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
 //@DELETE_START
 macro_rules! throw {
     ($literal: literal @ $span: expr, $($tt:tt)*) => {

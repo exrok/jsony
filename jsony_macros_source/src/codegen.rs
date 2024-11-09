@@ -1269,6 +1269,35 @@ fn enum_variant_from_json(
     Ok(())
 }
 
+fn stringly_enum_from_json(
+    out: &mut RustWriter,
+    ctx: &Ctx,
+    variants: &[EnumVariant],
+) -> Result<(), Error> {
+    let body = token_stream! {
+        out;
+        match parser.take_string() {
+            Ok(variant) => {
+                let value = match variant {
+                    [for (variant in variants) {
+                        [@variant_key_literal(ctx, variant).into()]
+                            => [#ctx.target.name]::[#variant.name],
+                    }]
+                    _ => {
+                        let unknown_variant = variant.to_string();
+                        parser.report_error(unknown_variant);
+                        return Err(&::jsony::parser::UNKNOWN_VARIANT);
+                    }
+                };
+                dst.cast::<[ctx.target_type(out)]>().write(value);
+            }
+            Err(err) => return Err(err),
+        }
+        Ok(())
+    };
+    impl_from_json(out, ctx, body)
+}
+
 fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
     if ctx.target.flattenable {
         throw!("Flattening enums not supported yet.")
@@ -1298,11 +1327,15 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
             return Ok(());
         }
         Tag::Default => {
-            for variants in variants {
-                if let EnumKind::None = variants.kind {
-                    mixed_strings_and_objects = true;
-                    break;
-                }
+            let mut kinds = [0usize, 0, 0];
+            for variant in variants {
+                kinds[variant.kind as usize] += 1;
+            }
+            let none_count = kinds[EnumKind::None as usize];
+            if none_count == variants.len() {
+                return stringly_enum_from_json(out, ctx, variants);
+            } else if none_count != 0 {
+                mixed_strings_and_objects = true;
             }
             None
         }
@@ -1412,7 +1445,8 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                                 }
                             }]
                             _ => {
-                                parser.report_error(variant.to_string());
+                                let unknown_variant = variant.to_string();
+                                parser.report_error(unknown_variant);
                                 return Err(&::jsony::parser::UNKNOWN_VARIANT);
                             }
                         };

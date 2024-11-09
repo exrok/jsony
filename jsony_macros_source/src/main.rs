@@ -113,18 +113,12 @@ fn main() {
     }
 
     util::print_pretty_and_copy(codegen::derive(tokens! {
-    #[derive(Jsony, Debug)]
-    #[jsony(ToJson, tag = "kind")]
-    enum Status<'a> {
-        Online,
-        Error {
-            #[jsony(default = i64::MAX)]
-            code: i64,
-            message: Cow<'a, str>,
-            #[jsony(flatten, via = Iterator)]
-            properties: Vec<(String, JsonItem<'a>)>,
-        },
-        Offline,
+    // #[derive(Clone, Copy, Debug, Jsony)]
+    #[jsony(Json)]
+    enum BuildProfile {
+        Debug,
+        Release,
+        ReleaseLTO,
     }
-            }));
+                }));
 }

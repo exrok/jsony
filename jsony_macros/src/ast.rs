@@ -1,5 +1,6 @@
 // mod template2;
 
+// #[derive(Clone, Copy, Debug, Jsony)]
 use crate::{case::RenameRule, util::Allocator, Error};
 use proc_macro::{Delimiter, Ident, Literal, Span, TokenStream, TokenTree};
 pub enum GenericKind {
@@ -178,6 +179,12 @@ pub enum EnumKind {
     Tuple,
     Struct,
     None,
+}
+impl Copy for EnumKind {}
+impl Clone for EnumKind {
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 fn kind_of_token(token: &TokenTree) -> &'static str {
     match token {
