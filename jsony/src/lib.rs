@@ -261,21 +261,64 @@ pub trait ToJson {
     fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind;
 }
 
-/// Lazy JSON Parsing
+/// Lazy JSON Parsing that has been validated
 #[repr(transparent)]
-pub struct LazyValue {
+pub struct RawJson {
+    pub(crate) raw: str,
+}
+
+impl RawJson {
+    pub fn as_str(&self) -> &str {
+        &self.raw
+    }
+}
+
+impl RawJson {
+    pub(crate) fn new_unchecked(raw: &str) -> &RawJson {
+        if raw.is_empty() {
+            unsafe { &*("null" as *const str as *const RawJson) }
+        } else {
+            unsafe { &*(raw as *const str as *const RawJson) }
+        }
+    }
+    pub(crate) fn new_boxed_unchecked(raw: Box<str>) -> Box<RawJson> {
+        if raw.is_empty() {
+            return Self::new_boxed_unchecked("null".into());
+        } else {
+            unsafe { Box::from_raw(Box::into_raw(raw) as *mut RawJson) }
+        }
+    }
+}
+
+impl std::fmt::Debug for RawJson {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (**self).fmt(f)
+    }
+}
+
+impl std::ops::Deref for RawJson {
+    type Target = MaybeJson;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*(self as *const RawJson as *const MaybeJson) }
+    }
+}
+
+/// Lazy JSON Parsing that may not be valid json
+#[repr(transparent)]
+pub struct MaybeJson {
     /// We'll parsing the head of the string is a next json value (possibly with additional whitespace)
     // Error are represented by empty string with pointer tagging
     // (why? to work around std:ops::Index only returning references)
     pub(crate) raw: str,
 }
 
-impl std::fmt::Display for LazyValue {
+impl std::fmt::Display for MaybeJson {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.raw)
     }
 }
-impl std::fmt::Debug for LazyValue {
+impl std::fmt::Debug for MaybeJson {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", &self.raw)
     }
@@ -297,8 +340,8 @@ impl std::fmt::Debug for LazyValue {
 /// let value: bool = object["key"]["inner"][1].parse().unwrap();
 /// assert_eq!(value, false);
 /// ```
-pub fn drill(input: &str) -> &LazyValue {
-    LazyValue::new(input)
+pub fn drill(input: &str) -> &MaybeJson {
+    MaybeJson::new(input)
 }
 
 struct JsonErrorInner {

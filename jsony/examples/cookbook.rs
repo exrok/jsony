@@ -1,4 +1,4 @@
-use jsony::{Jsony, LazyValue};
+use jsony::{Jsony, RawJson};
 
 /// The `LazyValue` type can be used defer parsing parts
 /// of a payload until later.
@@ -7,7 +7,7 @@ fn defered_parsing() -> Res<()> {
     #[jsony(Json)]
     struct Alpha<'a> {
         value: &'a str,
-        lazy: &'a LazyValue,
+        lazy: &'a RawJson,
     }
 
     let input = jsony::object! {
@@ -22,7 +22,6 @@ fn defered_parsing() -> Res<()> {
     };
 
     let alpha: Alpha = jsony::from_json(&input)?;
-
     assert_eq!(alpha.lazy["nested"]["data"].parse::<u32>()?, 42);
 
     let output = jsony::to_json(&alpha);

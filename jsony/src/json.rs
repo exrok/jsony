@@ -1,6 +1,6 @@
 // #[cfg(test)]
 // mod tests;
-use crate::{text::FromText, text_writer::TextWriter, FromJson, LazyValue, ToJson};
+use crate::{text::FromText, text_writer::TextWriter, FromJson, RawJson, ToJson};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -555,29 +555,33 @@ static ARRAY_LENGTH_MISMATCH: DecodeError = DecodeError {
     message: "Array length mismatch",
 };
 
-unsafe impl<'de> FromJson<'de> for &'de LazyValue {
-    unsafe fn emplace_from_json(
-        dest: NonNull<()>,
-        parser: &mut Parser<'de>,
-    ) -> Result<(), &'static DecodeError> {
+unsafe impl FromJson<'_> for Box<RawJson> {
+    fn json_decode(parser: &mut Parser<'_>) -> Result<Self, &'static DecodeError> {
         let start = parser.index;
         if let Err(err) = parser.skip_value() {
             return Err(err);
         }
         let raw = unsafe { std::str::from_utf8_unchecked(&parser.ctx.data[start..parser.index]) };
-        dest.cast::<&'de LazyValue>().write(LazyValue::new(raw));
-        Ok(())
+        Ok(RawJson::new_boxed_unchecked(raw.into()))
     }
 }
-impl ToJson for &'_ LazyValue {
+
+unsafe impl<'de> FromJson<'de> for &'de RawJson {
+    fn json_decode(parser: &mut Parser<'de>) -> Result<Self, &'static DecodeError> {
+        let start = parser.index;
+        if let Err(err) = parser.skip_value() {
+            return Err(err);
+        }
+        let raw = unsafe { std::str::from_utf8_unchecked(&parser.ctx.data[start..parser.index]) };
+        Ok(RawJson::new_unchecked(raw))
+    }
+}
+
+impl ToJson for &'_ RawJson {
     type Kind = AnyValue;
 
     fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind {
-        if self.is_error() {
-            output.push_str("null");
-        } else {
-            output.push_str(&self.raw);
-        }
+        output.push_str(&self.raw);
         AnyValue
     }
 }
