@@ -109,11 +109,11 @@ impl<'input> FormDecoder<'input> {
             ))
         }
     }
-    pub fn new(form: &'input [u8]) -> Self {
+    pub fn new(form: &'input str) -> Self {
         Self {
             buffer: Vec::new(),
             ctx: Ctx {
-                data: form,
+                data: form.as_bytes(),
                 error: None,
             },
             at: 0,
@@ -158,7 +158,7 @@ mod test {
     use super::*;
 
     #[track_caller]
-    fn assert_decodes(input: &[u8], names: &[&str], expected: &[Option<&str>]) {
+    fn assert_decodes(input: &str, names: &[&str], expected: &[Option<&str>]) {
         let mut fields = MaybeUninit::<[Option<&str>; 32]>::uninit();
         let mut decoder = FormDecoder::new(input);
         let result = decoder.extract_named_fields(&mut fields, names).unwrap();
@@ -168,37 +168,37 @@ mod test {
     #[test]
     fn form_decode() {
         assert_decodes(
-            b"k1=val1&k2=val2", //
+            "k1=val1&k2=val2", //
             &["k1", "k2"],
             &[Some("val1"), Some("val2")],
         );
         assert_decodes(
-            b"k1=val1&k2=val2", //
+            "k1=val1&k2=val2", //
             &["k2", "k1"],
             &[Some("val2"), Some("val1")],
         );
         assert_decodes(
-            b"k1=val1&k2=val2", //
+            "k1=val1&k2=val2", //
             &["k3", "k1"],
             &[None, Some("val1")],
         );
         assert_decodes(
-            b"k1=val1&k2=val2", //
+            "k1=val1&k2=val2", //
             &["k3"],
             &[None],
         );
         assert_decodes(
-            b"k1=val1&k2=val2", //
+            "k1=val1&k2=val2", //
             &["k3"],
             &[None],
         );
         assert_decodes(
-            b"k1=va%20l+ue&k2=val2", //
+            "k1=va%20l+ue&k2=val2", //
             &["k1"],
             &[Some("va l ue")],
         );
         assert_decodes(
-            b"k1=va%20l+ue&k+2%20=val2", //
+            "k1=va%20l+ue&k+2%20=val2", //
             &["k1", "k 2 "],
             &[Some("va l ue"), Some("val2")],
         );

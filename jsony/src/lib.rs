@@ -358,7 +358,7 @@ impl JsonError {
                 context: parser.ctx.error.take().map(|x| x.to_string()),
                 parent_context: parser.parent_context,
                 index: parser.index,
-                surrounding: surrounding(parser.index, parser.ctx.data),
+                surrounding: surrounding(parser.index, &parser.ctx.data),
             }),
         }
     }
@@ -487,7 +487,7 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
     unsafe fn inner_from_json<'a>(
         value: NonNull<()>,
         func: unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>,
-        json: &'a [u8],
+        json: &'a str,
         config: JsonParserConfig,
     ) -> Result<bool, JsonError> {
         let mut parser = Parser::new(json);
@@ -505,7 +505,7 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
         inner_from_json(
             NonNull::new_unchecked(value.as_mut_ptr()).cast(),
             T::emplace_from_json,
-            json.as_bytes(),
+            json,
             config,
         )
     } {
@@ -604,7 +604,7 @@ pub fn to_binary<T: ToBinary + ?Sized>(value: &T) -> Vec<u8> {
 }
 
 pub fn from_form_urlencoded<'a, T: TextSequenceFieldNames + FromTextSequence<'a>>(
-    form: &'a [u8],
+    form: &'a str,
 ) -> Result<T, &'static DecodeError> {
     let mut decoder = text::form_urlencoded::FormDecoder::new(form);
     let mut fields = MaybeUninit::<[Option<&str>; 32]>::uninit();

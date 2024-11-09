@@ -213,7 +213,7 @@ impl<'j> Parser<'j> {
         self.ctx.error = None;
     }
 
-    pub fn new(data: &'j [u8]) -> Self {
+    pub fn new(data: &'j str) -> Self {
         Self {
             ctx: Ctx::new(data),
             index: 0,
@@ -397,7 +397,10 @@ impl<'j> Parser<'j> {
         match crate::lazy_parser::object_index(&self.ctx.data[self.index..], key.as_bytes()) {
             Ok(value) => Ok(Some(Parser {
                 parent_context: JsonParentContext::None,
-                ctx: Ctx::new(self.ctx.data),
+                ctx: Ctx {
+                    data: self.ctx.data,
+                    error: None,
+                },
                 index: self.index + (self.ctx.data.len() - value.len()),
                 remaining_depth: self.remaining_depth,
                 scratch: Vec::new(),

@@ -5,16 +5,26 @@ pub const MAX_FIELDS: usize = 63;
 pub(crate) mod form_urlencoded;
 mod from_impl;
 
+use core::str;
 use std::borrow::Cow;
 
 #[derive(Clone)]
 pub struct Ctx<'a> {
+    // This is always a str, but storing as &str and then converting
+    // to `as_bytes()` reduces performance even in release mode.
     pub(crate) data: &'a [u8],
     pub(crate) error: Option<Cow<'a, str>>,
 }
 impl<'a> Ctx<'a> {
-    pub fn new(data: &'a [u8]) -> Self {
-        Self { data, error: None }
+    #[inline(always)]
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.data
+    }
+    pub fn new(data: &'a str) -> Self {
+        Self {
+            data: data.as_bytes(),
+            error: None,
+        }
     }
     pub fn static_error(&mut self, err: &'static str) {
         if let None = self.error {
@@ -54,7 +64,7 @@ mod test {
     #[test]
     fn form_decoder() {
         let mut fields = MaybeUninit::<[Option<&str>; 32]>::uninit();
-        let mut decoder = FormDecoder::new(b"foo=hello&billy=nice");
+        let mut decoder = FormDecoder::new("foo=hello&billy=nice");
         let lines = decoder
             .extract_named_fields(&mut fields, &["foo", "billy"])
             .unwrap();
