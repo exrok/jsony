@@ -372,3 +372,126 @@ fn enum_variantions() {
 
     assert_json_eq!(true, Untagged::Single(true));
 }
+
+#[test]
+fn skip() {
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Json)]
+    struct S1<'a> {
+        #[jsony(skip_if = |v| v.len() == 2)]
+        x: &'a str,
+        #[jsony(skip)]
+        y: &'a str,
+        #[jsony(skip, default = "z_default")]
+        z: &'a str,
+        #[jsony(ToJson skip, default = "u_default")]
+        u: &'a str,
+        #[jsony(FromJson skip, default = "w_default")]
+        w: &'a str,
+    }
+    assert_json_decode_eq!({
+        "x": "ab",
+        "y": 21, // since it is skipped it doesn't matter what type it is
+        "z": "ignore me too",
+        "u": "don't ignore me",
+        "w": "ignore me as well"
+    }, S1{
+        x: "ab",              // don't skip_if as only applies to `To` traits
+        y: "",                // skip with Default::default()
+        z: "z_default",       // skip with provided default
+        u: "don't ignore me", // don't skip as it was enabled only for `ToJson`
+        w: "w_default",       // skip as it was enabled for `FromJson`
+    });
+
+    assert_json_encode_eq!({
+        // "x": .., // was skipped since v.len() == 2
+        // "y": .., // was skipped unconditionally
+        // "z": .., // so was 'z'
+        // "u": .., // skipped as well since it is enabled for `ToJson`
+        "w": "don't skip me" // Not skipped since only enabled for `FromJson`
+    }, S1{
+        x: "ab",
+        y: "skip me",
+        z: "me as well",
+        u: "and also me",
+        w: "don't skip me",
+    });
+
+    assert_json_encode_eq!({
+        "x": "abc", // was not skipped since v.len() != 2
+        // "y": .., // was skipped unconditionally
+        // "z": .., // so was 'z'
+        // "u": .., // skipped as well since it is enabled for `ToJson`
+        "w": "don't skip me" // Not skipped since only enabled for `FromJson`
+    }, S1{
+        x: "abc",
+        y: "skip me",
+        z: "me as well",
+        u: "and also me",
+        w: "don't skip me",
+    });
+
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Json)]
+    enum E1<'a> {
+        V1 {
+            #[jsony(skip_if = |v| v.len() == 2)]
+            x: &'a str,
+            #[jsony(skip)]
+            y: &'a str,
+            #[jsony(skip, default = "z_default")]
+            z: &'a str,
+            #[jsony(ToJson skip, default = "u_default")]
+            u: &'a str,
+            #[jsony(FromJson skip, default = "w_default")]
+            w: &'a str,
+        },
+    }
+    assert_json_decode_eq!({
+        "V1": {
+            "x": "ab",
+            "y": 21, // since it is skipped it doesn't matter what type it is
+            "z": "ignore me too",
+            "u": "don't ignore me",
+            "w": "ignore me as well"
+        }
+    }, E1::V1{
+        x: "ab",              // don't skip_if as only applies to `To` traits
+        y: "",                // skip with Default::default()
+        z: "z_default",       // skip with provided default
+        u: "don't ignore me", // don't skip as it was enabled only for `ToJson`
+        w: "w_default",       // skip as it was enabled for `FromJson`
+    });
+
+    assert_json_encode_eq!({
+        "V1": {
+            // "x": .., // was skipped since v.len() == 2
+            // "y": .., // was skipped unconditionally
+            // "z": .., // so was 'z'
+            // "u": .., // skipped as well since it is enabled for `ToJson`
+            "w": "don't skip me" // Not skipped since only enabled for `FromJson`
+        }
+    }, E1::V1{
+        x: "ab",
+        y: "skip me",
+        z: "me as well",
+        u: "and also me",
+        w: "don't skip me",
+    });
+
+    assert_json_encode_eq!({
+        "V1": {
+            "x": "abc", // was not skipped since v.len() != 2
+            // "y": .., // was skipped unconditionally
+            // "z": .., // so was 'z'
+            // "u": .., // skipped as well since it is enabled for `ToJson`
+            "w": "don't skip me" // Not skipped since only enabled for `FromJson`
+        }
+    }, E1::V1{
+        x: "abc",
+        y: "skip me",
+        z: "me as well",
+        u: "and also me",
+        w: "don't skip me",
+    });
+}

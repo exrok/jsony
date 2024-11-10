@@ -599,34 +599,25 @@ fn struct_schema(
     Ok(())
 }
 
-fn body_of_struct_from_json_with_flatten(
-    out: &mut RustWriter,
-    ctx: &Ctx,
-    flatten_field: &Field,
-) -> TokenStream {
-    token_stream!(
-        out;
-        let mut flatten_visitor =
-            <[~flatten_field.ty] as ::jsony::json::FromJsonFieldVisitor>::new_field_visitor(
-                dst.byte_add(offset_of!([ctx.dead_target_type(out)], [#flatten_field.name])),
-                parser,
-            );
-        __schema_inner::<
-            #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
-        >().decode(dst, parser, Some(&mut flatten_visitor))
-    )
-}
 fn schema_ordered_fields<'a>(fields: &'a [Field<'a>]) -> Vec<&'a Field<'a>> {
     let mut buf = Vec::with_capacity(fields.len());
     for field in fields {
-        if field.flags & (Field::WITH_TO_JSON_DEFAULT | Field::WITH_TO_JSON_FLATTEN)
-            == Field::WITH_TO_JSON_DEFAULT
+        if field.flags
+            & (Field::WITH_FROM_JSON_DEFAULT
+                | Field::WITH_FROM_JSON_FLATTEN
+                | Field::WITH_FROM_JSON_SKIP)
+            == Field::WITH_FROM_JSON_DEFAULT
         {
             buf.push(field);
         }
     }
     for field in fields {
-        if field.flags & (Field::WITH_TO_JSON_DEFAULT | Field::WITH_TO_JSON_FLATTEN) == 0 {
+        if field.flags
+            & (Field::WITH_FROM_JSON_DEFAULT
+                | Field::WITH_FROM_JSON_FLATTEN
+                | Field::WITH_FROM_JSON_SKIP)
+            == 0
+        {
             buf.push(field);
         }
     }
@@ -636,7 +627,7 @@ fn schema_ordered_fields<'a>(fields: &'a [Field<'a>]) -> Vec<&'a Field<'a>> {
 fn required_bitset(ordered: &[&Field]) -> u64 {
     let mut defaults = 0;
     for field in ordered {
-        if field.flags & Field::WITH_TO_JSON_DEFAULT != 0 {
+        if field.flags & (Field::WITH_FROM_JSON_DEFAULT | Field::WITH_FROM_JSON_SKIP) != 0 {
             defaults += 1;
             continue;
         }
@@ -727,6 +718,20 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
     impl_to_json(out, kind, ctx, stream)
 }
 
+use TokenTree as Tok;
+
+/// If the attr value begins with `| ident |` then it `| ident: & ty |` will be
+/// written instead, otherwise it pass as is.
+fn with_injected_closure_arg_type(out: &mut RustWriter, attr_value: &[Tok], ty: &[Tok]) {
+    if let [Tok::Punct(bar1), Tok::Ident(binding), Tok::Punct(bar2), rest @ ..] = attr_value {
+        if bar1.as_char() == '|' && bar2.as_char() == '|' {
+            splat!(out; | [#binding]: &[~ty] | [~rest]);
+            return;
+        }
+    }
+    splat!(out; [~attr_value])
+}
+
 fn inner_struct_to_json(
     out: &mut RustWriter,
     ctx: &Ctx,
@@ -738,11 +743,42 @@ fn inner_struct_to_json(
     splat!(
         out;
         [for (i, field) in fields.iter().enumerate() {
-            if !first {
-                text.push(',');
-            }
+            let if_skip_body = if let Some(skip_fn) = field.skip(TO_JSON) {
+                if skip_fn.is_empty() {
+                    // Empty skip fn implies always skip
+                    continue;
+                }
+                if !first {
+                    text.push(',');
+                }
+                if !text.is_empty() {
+                    if text == "," {
+                        splat!(out; out.push_comma(););
+                    } else {
+                        splat!(out;
+                            out.push_str([
+                                out.buf.push(TokenTree::Literal(Literal::string(&text)));
+                            ]);
+                        );
+                    }
+                    text.clear();
+                }
+                splat!(out;
+                    if !([with_injected_closure_arg_type(out, skip_fn, &field.ty)])([if on_self {
+                        splat!(out; &self.[#field.name])
+                    } else {
+                        splat!(out; [#ctx.temp[i]])
+                    }])
+                );
+                Some(out.buf.len())
+            } else {
+                if !first {
+                    text.push(',');
+                }
+                None
+            };
             let flattened = field.flatten(TO_JSON);
-            first = flattened;
+            first = flattened || if_skip_body.is_some();
             if !flattened {
                 if let Err(err) = field_name_json(ctx, field, text) {
                     return Err(err)
@@ -775,34 +811,63 @@ fn inner_struct_to_json(
                             out.push_comma();
                         }
                     );
-                    continue;
+                }
+            } else {
+                if flattened {
+                    splat!(out;
+                        out.join_parent_json_value_with_next();
+                        let _: ::jsony::json::AlwaysObject =
+                    );
+                }
+                splat!(out; [
+                            if let Some(with) = field.with(TO_JSON) {
+                                splat!(out; [~with]::json_encode)
+                            } else {
+                                splat!(out; <[~field.ty] as ::jsony::ToJson>::json_encode__jsony)
+                            }
+                        ]([if on_self {
+                    splat!(out; &self.[#field.name])
+                } else {
+                    splat!(out; [#ctx.temp[i]])
+                }], out););
+                if flattened {
+                    splat!(out; out.join_object_with_next_value(););
                 }
             }
-            if flattened {
-                splat!(out;
-                    out.join_parent_json_value_with_next();
-                    let _: ::jsony::json::AlwaysObject =
-                );
-            }
-            splat!(out; [
-                        if let Some(with) = field.with(TO_JSON) {
-                            splat!(out; [~with]::json_encode)
-                        } else {
-                            splat!(out; <[~field.ty] as ::jsony::ToJson>::json_encode__jsony)
-                        }
-                    ]([if on_self {
-                splat!(out; &self.[#field.name])
-            } else {
-                splat!(out; [#ctx.temp[i]])
-            }], out););
-            if flattened {
-                splat!(out; out.join_object_with_next_value(););
+            if let Some(from) = if_skip_body {
+                if !flattened {
+                    splat!(out; out.push_comma(););
+                }
+                let inner = TokenTree::Group(Group::new(Delimiter::Brace, out.split_off_stream(from)));
+                out.buf.push(inner);
             }
 
         }]
     );
     Ok(())
 }
+
+fn field_default_from_json(out: &mut RustWriter, field: &Field) {
+    // todo optimize this.
+    splat!(
+        out; [
+            if let Some(explict_default) = field.default(FROM_JSON) {
+                splat!(
+                    out;
+                    {
+                        let __scope_jsony = | | -> [~field.ty] {
+                            return [~explict_default]
+                        };
+                        __scope_jsony()
+                    }
+                )
+            } else {
+                splat!( out; Default::default())
+            }
+        ]
+    );
+}
+
 fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     let mut text = String::new();
     let body = token_stream!(
@@ -817,8 +882,11 @@ fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(
 
 fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
     let mut flattening: Option<&Field> = None;
-
+    let mut has_skips = false;
     for field in fields {
+        if field.flags & Field::WITH_FROM_JSON_SKIP != 0 {
+            has_skips = true;
+        }
         if field.flatten(FROM_JSON) {
             if flattening.is_some() {
                 return Err(Error::span_msg(
@@ -850,23 +918,62 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                 }
             ]
             [
-                let ts = if let Some(flatten_field) = flattening {
-                    body_of_struct_from_json_with_flatten(out, ctx, flatten_field)
+                let start = out.buf.len();
+                if let Some(flatten_field) = flattening {
+                    splat!(out;
+                        let mut __flatten_visitor_jsony =
+                            <[~flatten_field.ty] as ::jsony::json::FromJsonFieldVisitor>::new_field_visitor(
+                                dst.byte_add(offset_of!([ctx.dead_target_type(out)], [#flatten_field.name])),
+                                parser,
+                            );
+                    )
+                }
+                if has_skips {
+                    splat!(out; let __result = );
+                }
+                if ctx.target.flattenable {
+                    splat!(out; __schema_inner::<
+                        #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
+                    >())
                 } else {
-                    if ctx.target.flattenable {
-                        token_stream!(out; __schema_inner::<
-                            #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
-                        >().decode(dst, parser, None))
-                    } else {
-                        token_stream!(out;
-                        ::jsony::__internal::ObjectSchema::<#[#ctx.lifetime]> {
-                            inner: &const { [struct_schema(out, ctx, &ordered_fields, None)?] },
-                            phantom: ::std::marker::PhantomData
-                        }.decode(dst, parser, None))
-                    }
-                };
+                    splat!(out;
+                    ::jsony::__internal::ObjectSchema::<#[#ctx.lifetime]> {
+                        inner: &const { [struct_schema(out, ctx, &ordered_fields, None)?] },
+                        phantom: ::std::marker::PhantomData
+                    })
+                }
+                splat!(out; .decode(dst, parser, [if flattening.is_some() {
+                    splat!(out; Some(&mut __flatten_visitor_jsony))
+                } else {
+                    splat!(out; None)
+                }]));
+                if has_skips {
+                    splat!(out;
+                        ; //<-- close off let stmt
+                        if let Err(err) = __result {
+                            return Err(err)
+                        }
+                        [for field in fields {
+                            if field.flags & Field::WITH_FROM_JSON_SKIP == 0 {
+                                continue;
+                            }
+                            splat!(
+                                out;
+                                dst.byte_add(::std::mem::offset_of!([ctx.dead_target_type(out)], [#field.name]))
+                                    .cast::<[~field.ty]>()
+                                    .write([field_default_from_json(out, field)]);
+                            )
+                        }]
+
+                        Ok(())
+                    );
+                }
+                let ts = out.split_off_stream(start);
                 impl_from_json(out, ctx, ts)?;
                 if ctx.target.flattenable {
+                    if has_skips {
+                        throw!("Flattenable does not yet support skipped fields")
+                    }
                     let body = token_stream!(
                         out;
                         jsony::__internal::DynamicFieldDecoder {
@@ -1158,6 +1265,12 @@ fn enum_variant_from_json_struct(
                         [#field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
                     }]
                     [#flatten_field.name]: temp_flatten.assume_init(),
+                    [for field in variant.fields {
+                        if field.flags & Field::WITH_FROM_JSON_SKIP == 0 {
+                            continue;
+                        }
+                        splat!(out; [#field.name]: [field_default_from_json(out, field)],)
+                    }]
                 });
                 [?(untagged) break #success]
             }
@@ -1183,6 +1296,12 @@ fn enum_variant_from_json_struct(
                 dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name] {
                     [for ((i, field) in ordered_fields.iter().enumerate()) {
                         [#field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
+                    }]
+                    [for field in variant.fields {
+                        if field.flags & Field::WITH_FROM_JSON_SKIP == 0 {
+                            continue;
+                        }
+                        splat!(out; [#field.name]: [field_default_from_json(out, field)],)
                     }]
                 });
                 [?(untagged) break #success]

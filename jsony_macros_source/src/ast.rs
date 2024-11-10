@@ -40,6 +40,7 @@ struct FieldAttr {
 enum FieldAttrInner {
     Rename(Literal),
     Flatten,
+    Skip(Vec<TokenTree>),
     Via(Via),
     Default(Vec<TokenTree>),
     With(Vec<TokenTree>),
@@ -125,6 +126,17 @@ impl<'a> EnumVariant<'a> {
 }
 
 impl<'a> Field<'a> {
+    pub fn skip(&self, for_trait: TraitSet) -> Option<&[TokenTree]> {
+        // todo optimize via flags
+        for attr in &self.attr.attrs {
+            if attr.enabled & for_trait != 0 {
+                if let FieldAttrInner::Skip(skip) = &attr.inner {
+                    return Some(skip);
+                }
+            }
+        }
+        None
+    }
     pub fn with(&self, for_trait: TraitSet) -> Option<&[TokenTree]> {
         // todo optimize via flags
         for attr in &self.attr.attrs {
@@ -184,8 +196,11 @@ impl<'a> Field<'a> {
     pub const GENERIC: u32 = 1u32 << 0;
     pub const IN_TUPLE: u32 = 1u32 << 1;
     pub const WITH_TO_JSON_FLATTEN: u32 = 1u32 << 2;
-    // pub const WITH_FROM_JSON_FLATTEN: u32 = 1u32 << 3;
+    pub const WITH_FROM_JSON_FLATTEN: u32 = 1u32 << 3;
     pub const WITH_TO_JSON_DEFAULT: u32 = 1u32 << 4;
+    pub const WITH_FROM_JSON_DEFAULT: u32 = 1u32 << 5;
+    pub const WITH_TO_JSON_SKIP: u32 = 1u32 << 6;
+    pub const WITH_FROM_JSON_SKIP: u32 = 1u32 << 7;
     // pub const WITH_DEFAULT: u32 = 1u32 << 5;
     #[allow(dead_code)]
     pub fn is(&self, flags: u32) -> bool {
@@ -689,6 +704,30 @@ fn parse_single_field_attr(
             });
             5u64 * TRAIT_COUNT
         }
+        "skip" => {
+            if !value.is_empty() {
+                throw!("flatten doesn't take any arguments" @ ident.span())
+            }
+            attrs.attrs.push(FieldAttr {
+                enabled: trait_set,
+                span: ident.span(),
+                inner: FieldAttrInner::Skip(Vec::new()),
+            });
+            6u64 * TRAIT_COUNT
+        }
+        "skip_if" => {
+            if value.is_empty() {
+                throw!("Unexpected a function specifying skip criteria" @ ident.span())
+            }
+            // only supports for TO_JSON
+            trait_set &= TO_JSON;
+            attrs.attrs.push(FieldAttr {
+                enabled: trait_set & TO_JSON,
+                span: ident.span(),
+                inner: FieldAttrInner::Skip(std::mem::take(value)),
+            });
+            6u64 * TRAIT_COUNT
+        }
         _ => throw!("Unknown attr field" @ ident.span()),
     };
     let mask = (trait_set as u64) << offset;
@@ -1007,6 +1046,7 @@ fn flags_from_attr(attr: &Option<&mut FieldAttrs>) -> u32 {
             match &attr.inner {
                 FieldAttrInner::Flatten => f |= ((attr.enabled & 0b11) << 2) as u32,
                 FieldAttrInner::Default(..) => f |= ((attr.enabled & 0b11) << 4) as u32,
+                FieldAttrInner::Skip(..) => f |= ((attr.enabled & 0b11) << 6) as u32,
                 _ => (),
             }
         }
