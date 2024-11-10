@@ -49,7 +49,7 @@ impl RustWriter {
         RustWriter {
             buf: Vec::new(),
             cache: Cache {
-                default_span: Span::call_site(),
+                default_span: Span::mixed_site(),
                 ident: cache::ident_cache_initial_state(),
                 punct: cache::punct_cache_initial_state(),
             },
