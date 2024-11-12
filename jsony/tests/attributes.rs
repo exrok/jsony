@@ -494,4 +494,30 @@ fn skip() {
         u: "and also me",
         w: "don't skip me",
     });
+
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Binary)]
+    struct Binary<'a> {
+        #[jsony(skip)]
+        a: &'a str,
+        #[jsony(skip, default = "foo")]
+        b: &'a str,
+        c: u32,
+    }
+
+    let input = Binary {
+        a: "test1",
+        b: "test2",
+        c: 32,
+    };
+    let encoded = jsony::to_binary(&input);
+    let decoded: Binary = jsony::from_binary(&encoded).unwrap();
+    assert_eq!(
+        decoded,
+        Binary {
+            a: "",
+            b: "foo",
+            c: 32
+        }
+    )
 }

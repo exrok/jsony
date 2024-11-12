@@ -166,12 +166,14 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// These are `jsony` attributes that appear above a field inside a struct or enum variant.
 ///
 /// | Format | Supported Traits | Description |
-/// |--------|------------------|-------------|
+/// |-------------------|--------|---------------------------------------------------------------------------------|
 /// | `default [= ...]` | `From` | Use `Default::default()` or provided expression if field is missing.
-/// | `flatten` | `Json` | Flatten the contents of the field into the container it is defined in.
-/// | `rename = "..."` | `Json` | Use provided string as field name.
-/// | `via = ...` | All | Implement conversion through provided trait.
-/// | `with = ...` | All | Use methods from specified module instead of trait. [read more](#jsonywith---on-fields)
+/// | `flatten`         | `Json` | Flatten the contents of the field into the container it is defined in.
+/// | `rename = "..."`  | `Json` | Use provided string as field name.
+/// | `via = ...`       | All    | Implement conversion through provided trait.
+/// | `skip`            | All    | Omit field while serializing, use default value when deserializing.
+/// | `skip_if = ...`   | ToJson | Omit field while serializing if provided function returns true.
+/// | `with = ...`      | All    | Use methods from specified module instead of trait. [read more](#jsonywith---on-fields)
 ///
 /// ## Format Aliases
 /// In the container attributes to specify the traits to derive and on the prefix of
@@ -246,12 +248,37 @@ pub fn object(input: TokenStream) -> TokenStream {
 ///
 /// The possible values are "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE", "kebab-case", "SCREAMING-KEBAB-CASE".
 ///
+/// #### `#[jsony(skip)]`
+///
+/// Omit the field while serializing and use the default value when deserializing. If no default value is specified with `default` then
+/// `Default::default()` is used.
+///
+/// `skip` is useful when you need a field on the rust side that isn't present in the serialized data format.
+///
+/// #### `#[jsony(skip_if = ...)]`
+///
+/// Omit the field if the provided predicate function return true. The predicate function can be specified
+/// by a path or inline using closure syntax. The predicate function will provided the current field value
+/// via reference.
+///
+/// ```ignore
+/// #[derive(Jsony)]
+/// #[jsony(ToString)]
+/// struct Example {
+///     #[jsony(skip_if = str::is_empty)]
+///     value: String,
+///     #[jsony(skip_if = |s| s == u32::MAX)]
+///     sentinel: u32
+/// }
+/// ```
+///
+///
 /// #### Default enum representation for JSON
 ///
 /// <table width="100%">
 /// <tr><td width="47%">Enum</td><td>JSON for Example::Alpha</td><td>JSON for Example::Beta</td></tr><tr><td>
 ///
-/// ```rust
+/// ```ignore
 /// #[derive(Jsony)]
 /// enum Example {
 ///     Alpha {

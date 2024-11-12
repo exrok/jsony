@@ -1,6 +1,6 @@
 use crate::ast::{
     self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttrs, Generic,
-    GenericKind, Tag, Via, FROM_BINARY, FROM_JSON, TO_BINARY, TO_JSON,
+    GenericKind, Tag, TraitSet, Via, FROM_BINARY, FROM_JSON, TO_BINARY, TO_JSON,
 };
 use crate::case::RenameRule;
 use crate::util::MemoryPool;
@@ -468,6 +468,9 @@ fn binary_encode_field(
     field: &Field,
     place: &dyn Fn(&mut RustWriter),
 ) {
+    if field.flags & Field::WITH_TO_BINARY_SKIP != 0 {
+        return;
+    }
     {
         {
             if let Some(path) = field.with(TO_BINARY) {
@@ -497,6 +500,10 @@ fn binary_encode_field(
     };
 }
 fn binary_decode_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
+    if field.flags & Field::WITH_FROM_BINARY_SKIP != 0 {
+        field_from_default(out, field, FROM_BINARY);
+        return;
+    }
     {
         {
             if let Some(path) = field.with(FROM_BINARY) {
@@ -946,11 +953,11 @@ fn with_injected_closure_arg_type(out: &mut RustWriter, attr_value: &[Tok], ty: 
     if let [Tok::Punct(bar1), Tok::Ident(binding), Tok::Punct(bar2), rest @ ..] = attr_value {
         if bar1.as_char() == '|' && bar2.as_char() == '|' {
             {
-                out.blit_punct(11);
+                out.blit_punct(12);
                 out.buf.push(TokenTree::from(binding.clone()));
                 out.blit(12, 2);
                 out.buf.extend_from_slice(ty);
-                out.blit_punct(11);
+                out.blit_punct(12);
                 out.buf.extend_from_slice(rest);
             };
             return;
@@ -1166,10 +1173,10 @@ fn inner_struct_to_json(
     };
     Ok(())
 }
-fn field_default_from_json(out: &mut RustWriter, field: &Field) {
+fn field_from_default(out: &mut RustWriter, field: &Field, set: TraitSet) {
     {
         {
-            if let Some(explict_default) = field.default(FROM_JSON) {
+            if let Some(explict_default) = field.default(set) {
                 {
                     {
                         let at = out.buf.len();
@@ -1409,7 +1416,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                                     {
                                         let at = out.buf.len();
                                         {
-                                            field_default_from_json(out, field)
+                                            field_from_default(out, field, FROM_JSON)
                                         };
                                         out.tt_group(Delimiter::Parenthesis, at);
                                     };
@@ -1907,7 +1914,7 @@ fn enum_variant_from_json_struct(
                                     out.buf.push(TokenTree::from(field.name.clone()));
                                     out.blit_punct(9);
                                     {
-                                        field_default_from_json(out, field)
+                                        field_from_default(out, field, FROM_JSON)
                                     };
                                     out.blit_punct(2);
                                 }
@@ -2022,7 +2029,7 @@ fn enum_variant_from_json_struct(
                                     out.buf.push(TokenTree::from(field.name.clone()));
                                     out.blit_punct(9);
                                     {
-                                        field_default_from_json(out, field)
+                                        field_from_default(out, field, FROM_JSON)
                                     };
                                     out.blit_punct(2);
                                 }

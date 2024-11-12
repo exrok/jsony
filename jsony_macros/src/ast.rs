@@ -169,12 +169,11 @@ impl<'a> Field<'a> {
 impl<'a> Field<'a> {
     pub const GENERIC: u32 = 1u32 << 0;
     pub const IN_TUPLE: u32 = 1u32 << 1;
-    pub const WITH_TO_JSON_FLATTEN: u32 = 1u32 << 2;
     pub const WITH_FROM_JSON_FLATTEN: u32 = 1u32 << 3;
-    pub const WITH_TO_JSON_DEFAULT: u32 = 1u32 << 4;
     pub const WITH_FROM_JSON_DEFAULT: u32 = 1u32 << 5;
-    pub const WITH_TO_JSON_SKIP: u32 = 1u32 << 6;
     pub const WITH_FROM_JSON_SKIP: u32 = 1u32 << 7;
+    pub const WITH_TO_BINARY_SKIP: u32 = 1u32 << 8;
+    pub const WITH_FROM_BINARY_SKIP: u32 = 1u32 << 9;
     #[allow(dead_code)]
     pub fn is(&self, flags: u32) -> bool {
         self.flags & flags != 0
@@ -1044,10 +1043,11 @@ fn flags_from_attr(attr: &Option<&mut FieldAttrs>) -> u32 {
     let mut f = 0;
     if let Some(attr) = attr {
         for attr in &attr.attrs {
+            let enabled = attr.enabled as u32;
             match &attr.inner {
-                FieldAttrInner::Flatten => f |= ((attr.enabled & 0b11) << 2) as u32,
-                FieldAttrInner::Default(..) => f |= ((attr.enabled & 0b11) << 4) as u32,
-                FieldAttrInner::Skip(..) => f |= ((attr.enabled & 0b11) << 6) as u32,
+                FieldAttrInner::Flatten => f |= (enabled & 0b11) << 2,
+                FieldAttrInner::Default(..) => f |= (enabled & 0b11) << 4,
+                FieldAttrInner::Skip(..) => f |= (enabled & 0b1111) << 6,
                 _ => (),
             }
         }

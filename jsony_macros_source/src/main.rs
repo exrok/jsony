@@ -113,12 +113,15 @@ fn main() {
     }
 
     util::print_pretty_and_copy(codegen::derive(tokens! {
-    // #[derive(Clone, Copy, Debug, Jsony)]
-    #[jsony(Json)]
-    enum BuildProfile {
-        Debug,
-        Release,
-        ReleaseLTO,
+        // #[derive(Clone, Copy, Debug, Jsony)]
+
+    #[derive(Jsony)]
+    #[jsony(Binary)]
+    struct Foo {
+        #[jsony(skip)]
+        billy: String,
     }
-                }));
+
+
+        }));
 }

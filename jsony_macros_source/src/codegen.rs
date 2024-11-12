@@ -1,6 +1,6 @@
 use crate::ast::{
     self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttrs, Generic,
-    GenericKind, Tag, Via, FROM_BINARY, FROM_JSON, TO_BINARY, TO_JSON,
+    GenericKind, Tag, TraitSet, Via, FROM_BINARY, FROM_JSON, TO_BINARY, TO_JSON,
 };
 use crate::case::RenameRule;
 use crate::util::MemoryPool;
@@ -387,6 +387,9 @@ fn binary_encode_field(
     field: &Field,
     place: &dyn Fn(&mut RustWriter),
 ) {
+    if field.flags & Field::WITH_TO_BINARY_SKIP != 0 {
+        return;
+    }
     splat! {
         output;
         [
@@ -403,6 +406,10 @@ fn binary_encode_field(
 }
 
 fn binary_decode_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
+    if field.flags & Field::WITH_FROM_BINARY_SKIP != 0 {
+        field_from_default(out, field, FROM_BINARY);
+        return;
+    }
     splat! {
         out;
         [
@@ -847,11 +854,11 @@ fn inner_struct_to_json(
     Ok(())
 }
 
-fn field_default_from_json(out: &mut RustWriter, field: &Field) {
+fn field_from_default(out: &mut RustWriter, field: &Field, set: TraitSet) {
     // todo optimize this.
     splat!(
         out; [
-            if let Some(explict_default) = field.default(FROM_JSON) {
+            if let Some(explict_default) = field.default(set) {
                 splat!(
                     out;
                     {
@@ -961,7 +968,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                                 out;
                                 dst.byte_add(::std::mem::offset_of!([ctx.dead_target_type(out)], [#field.name]))
                                     .cast::<[~field.ty]>()
-                                    .write([field_default_from_json(out, field)]);
+                                    .write([field_from_default(out, field, FROM_JSON)]);
                             )
                         }]
 
@@ -1269,7 +1276,7 @@ fn enum_variant_from_json_struct(
                         if field.flags & Field::WITH_FROM_JSON_SKIP == 0 {
                             continue;
                         }
-                        splat!(out; [#field.name]: [field_default_from_json(out, field)],)
+                        splat!(out; [#field.name]: [field_from_default(out, field, FROM_JSON)],)
                     }]
                 });
                 [?(untagged) break #success]
@@ -1301,7 +1308,7 @@ fn enum_variant_from_json_struct(
                         if field.flags & Field::WITH_FROM_JSON_SKIP == 0 {
                             continue;
                         }
-                        splat!(out; [#field.name]: [field_default_from_json(out, field)],)
+                        splat!(out; [#field.name]: [field_from_default(out, field, FROM_JSON)],)
                     }]
                 });
                 [?(untagged) break #success]
