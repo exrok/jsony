@@ -143,13 +143,15 @@ impl<'a> BytesWriter<'a> {
         if let Backing::Borrowed { .. } = this.backing {
             return this.buffer_slice().into();
         }
+        // todo document safety
         return unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) };
     }
     pub fn owned_into_vec(self) -> Vec<u8> {
-        let this = ManuallyDrop::new(self);
+        let mut this = ManuallyDrop::new(self);
         if let Backing::Owned = this.backing {
             return unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) };
         } else {
+            unsafe { ManuallyDrop::drop(&mut this) };
             panic!("Expected write buffer to backed by an owned allocation");
         }
     }
@@ -164,10 +166,11 @@ impl<'a> BytesWriter<'a> {
                 std::slice::from_raw_parts(bytes.as_ptr().add(*offset), len - *offset)
             };
         }
+        unsafe { ManuallyDrop::drop(&mut this) };
         panic!("Expected write buffer to backed by a Vec<u8>");
     }
     pub unsafe fn into_cow_utf8_unchecked(self) -> Cow<'a, str> {
-        let this = ManuallyDrop::new(self);
+        let mut this = ManuallyDrop::new(self);
         let data = this.data;
         let len = this.len;
         let capacity = this.capacity;
@@ -183,12 +186,13 @@ impl<'a> BytesWriter<'a> {
                 });
             }
             _ => {
+                unsafe { ManuallyDrop::drop(&mut this) };
                 panic!("Expected Borrowed or owneded Instance");
             }
         }
     }
     pub fn into_cow(self) -> Cow<'a, [u8]> {
-        let this = ManuallyDrop::new(self);
+        let mut this = ManuallyDrop::new(self);
         let data = this.data;
         let len = this.len;
         let capacity = this.capacity;
@@ -200,14 +204,14 @@ impl<'a> BytesWriter<'a> {
                 return Cow::Borrowed(unsafe { std::slice::from_raw_parts(data, len) });
             }
             _ => {
+                unsafe { ManuallyDrop::drop(&mut this) };
                 panic!("Expected Borrowed or owneded Instance");
             }
         }
     }
     pub fn into_write_finish(mut self) -> Result<usize, std::io::Error> {
         self.flush();
-        let mut this = ManuallyDrop::new(self);
-        match &mut this.backing {
+        match &mut self.backing {
             Backing::Write { written, error, .. } => {
                 if let Some(error) = error.take() {
                     return Err(error);

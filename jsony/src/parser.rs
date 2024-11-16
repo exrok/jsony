@@ -116,17 +116,14 @@ static EXPECTED_OBJECT_COMMA_OR_END: DecodeError = DecodeError {
     message: "Expected list comma or end",
 };
 
-static EOF_WHILE_PARSING_VALUE: DecodeError = DecodeError {
+pub(crate) static EOF_WHILE_PARSING_VALUE: DecodeError = DecodeError {
     message: "EOF while parsing value",
 };
 static EOF_WHILE_PARSING_OBJECT: DecodeError = DecodeError {
     message: "EOF while parsing object",
 };
 
-static EXPECTED_STRING: DecodeError = DecodeError {
-    message: "Expected String",
-};
-static EOF_WHILE_PARSING_STRING: DecodeError = DecodeError {
+pub(crate) static EOF_WHILE_PARSING_STRING: DecodeError = DecodeError {
     message: "EOF while parsing string",
 };
 static EXPECTED_COLON: DecodeError = DecodeError {
@@ -242,14 +239,9 @@ impl<'j> Parser<'j> {
             }
         }
     }
-    #[allow(dead_code)]
     pub fn slice(&self, range: Range<usize>) -> Option<&[u8]> {
         self.ctx.data.get(range)
     }
-
-    // pub fn current_position(&self) -> LinePosition {
-    //     LinePosition::find(self.ctx.data, self.index)
-    // }
 
     pub fn peek(&mut self) -> JsonResult<Peek> {
         if let Some(next) = self.eat_whitespace() {
@@ -376,7 +368,10 @@ impl<'j> Parser<'j> {
                 Ok(())
             }
             Peek::String => {
-                self.read_seen_string_unescaped()?;
+                // Safety: since self.peek == Peek::String
+                unsafe {
+                    self.read_seen_string()?;
+                }
                 Ok(())
             }
             Peek::Minus | Peek(b'0'..b':') => {
@@ -385,13 +380,8 @@ impl<'j> Parser<'j> {
             }
             _ => Err(&TODO_ERROR),
         }
-        // if let Some(value) = lazy_parser::expr_end(&self.ctx.data[self.index..]) {
-        //     self.index += value;
-        //     Ok(())
-        // } else {
-        //     Err(&TODO_ERROR)
-        // }
     }
+
     // todo should make this fuzzy and optimzied
     pub fn index_into_next_object(&self, key: &str) -> JsonResult<Option<Parser<'j>>> {
         match crate::lazy_parser::object_index(&self.ctx.data[self.index..], key.as_bytes()) {
@@ -483,16 +473,29 @@ impl<'j> Parser<'j> {
         };
         loop {
             if current_field_name == tag {
-                match self.read_string_unescaped() {
+                match unsafe { self.read_seen_string() } {
                     Ok(value) => {
+                        // TODO: refactor this to avoid unsafe
+                        // We should be able to skip through JSON without the scratch buffer
+                        let value = value as *const str;
                         if let Some(content_index) = content_index {
                             self.index = content_index;
-                            return Ok((value, true));
+                            return Ok((unsafe { &*value }, true));
+                        }
+                        let mut key_buffer: Option<Vec<u8>> = None;
+                        if self.scratch.as_ptr() == value as *const u8 {
+                            key_buffer = Some(std::mem::take(&mut self.scratch));
                         }
                         loop {
                             match self.object_step() {
                                 Ok(Some(name)) => {
                                     if name == content {
+                                        let value = if let Some(buffer) = key_buffer {
+                                            self.scratch = buffer;
+                                            unsafe { std::str::from_utf8_unchecked(&self.scratch) }
+                                        } else {
+                                            unsafe { &*value }
+                                        };
                                         return Ok((value, true));
                                     }
                                     if let Err(err) = self.skip_value() {
@@ -500,10 +503,13 @@ impl<'j> Parser<'j> {
                                     }
                                 }
                                 Ok(None) => {
+                                    let value = if let Some(buffer) = key_buffer {
+                                        self.scratch = buffer;
+                                        unsafe { std::str::from_utf8_unchecked(&self.scratch) }
+                                    } else {
+                                        unsafe { &*value }
+                                    };
                                     return Ok((value, false));
-                                    // return Err(&DecodeError {
-                                    //     message: "Missing content field",
-                                    // });
                                 }
                                 Err(err) => {
                                     return Err(err);
@@ -536,7 +542,7 @@ impl<'j> Parser<'j> {
             }
         }
     }
-    pub fn tag_query_next_object(&mut self, tag: &str) -> JsonResult<&'j str> {
+    pub fn tag_query_next_object<'a>(&'a mut self, tag: &str) -> JsonResult<&'a str> {
         if self.peek()? != Peek::Object {
             return Err(&EOF_WHILE_PARSING_OBJECT);
         }
@@ -553,11 +559,14 @@ impl<'j> Parser<'j> {
         };
         loop {
             if current_field_name == tag {
-                match self.read_string_unescaped() {
+                match self.take_string() {
                     Ok(value) => {
+                        let frozen = value as *const str;
                         self.index = initial_index;
                         self.remaining_depth = initial_remaining_depth;
-                        return Ok(value);
+                        // Saftey: Since we do not modify the buffer this is fine
+                        // -- todo: refactor to remove such unsafety
+                        return Ok(unsafe { &*frozen });
                     }
                     Err(err) => {
                         return Err(err);
@@ -602,8 +611,7 @@ impl<'j> Parser<'j> {
                     if self.remaining_depth < 0 {
                         return Err(&RECURSION_LIMIT_EXCEEDED);
                     }
-                    // self.read_seen_unescaped_object_key().map(Some)
-                    self.read_seen_object_key().map(Some)
+                    unsafe { self.read_seen_object_key().map(Some) }
                 }
                 b'}' => {
                     self.index += 1;
@@ -646,7 +654,7 @@ impl<'j> Parser<'j> {
                 b',' => {
                     self.index += 1;
                     match self.eat_whitespace() {
-                        Some(b'"') => self.read_seen_object_key().map(Some),
+                        Some(b'"') => unsafe { self.read_seen_object_key().map(Some) },
                         Some(b'}') => Err(&TRAILING_COMMA),
                         Some(_) => Err(&KEY_MUST_BE_A_STRING),
                         None => Err(&EOF_WHILE_PARSING_VALUE),
@@ -698,18 +706,6 @@ impl<'j> Parser<'j> {
 
         let rest = &self.ctx.data[self.index..];
 
-        // if !forbid_control_characters {
-        //     self.index += memchr::memchr2(b'"', b'\\', rest).unwrap_or(rest.len());
-        //     return;
-        // }
-
-        // We wish to find the first byte in range 0x00..=0x1F or " or \. Ideally, we'd use
-        // something akin to memchr3, but the memchr crate does not support this at the moment.
-        // Therefore, we use a variation on Mycroft's algorithm [1] to provide performance better
-        // than a naive loop. It runs faster than equivalent two-pass memchr2+SWAR code on
-        // benchmarks and it's cross-platform, so probably the right fit.
-        // [1]: https://groups.google.com/forum/#!original/comp.lang.c/2HtQXvg7iKc/xOJeipH6KLMJ
-
         // #[cfg(fast_arithmetic = "64")]
         type Chunk = u64;
         // #[cfg(fast_arithmetic = "32")]
@@ -718,29 +714,6 @@ impl<'j> Parser<'j> {
         const STEP: usize = size_of::<Chunk>();
         const ONE_BYTES: Chunk = Chunk::MAX / 255; // 0x0101...01
 
-        // unsafe {
-        //     //saftey nned to check empty
-        //     let mut head = self.ctx.data.as_ptr().add(self.index) as *const u64;
-        //     let end = self.ctx.data.as_ptr().add(self.ctx.data.len()).sub(8) as *const u64;
-        //     while head < end {
-        //         let chars = head.read_unaligned();
-        //         let contains_ctrl = chars.wrapping_sub(ONE_BYTES * 0x20) & !chars;
-        //         let chars_quote = chars ^ (ONE_BYTES * Chunk::from(b'"'));
-        //         let contains_quote = chars_quote.wrapping_sub(ONE_BYTES) & !chars_quote;
-        //         let chars_backslash = chars ^ (ONE_BYTES * Chunk::from(b'\\'));
-        //         let contains_backslash = chars_backslash.wrapping_sub(ONE_BYTES) & !chars_backslash;
-        //         let masked =
-        //             (contains_ctrl | contains_quote | contains_backslash) & (ONE_BYTES << 7);
-        //         if masked != 0 {
-        //             // SAFETY: chunk is in-bounds for slice
-        //             self.index = unsafe { (head as *const u8).offset_from(self.ctx.data.as_ptr()) }
-        //                 as usize
-        //                 + masked.trailing_zeros() as usize / 8;
-        //             return;
-        //         }
-        //         head = head.add(1);
-        //     }
-        // }
         for chunk in rest.chunks_exact(STEP) {
             let chars = Chunk::from_le_bytes(chunk.try_into().unwrap());
             let contains_ctrl = chars.wrapping_sub(ONE_BYTES * 0x20) & !chars;
@@ -756,30 +729,6 @@ impl<'j> Parser<'j> {
                 return;
             }
         }
-        // unsafe {
-        //     //saftey nned to check empty
-        //     let mut head = self.ctx.data.as_ptr().add(self.index) as *const u64;
-        //     let end = self.ctx.data.as_ptr().add(self.ctx.data.len()).sub(8) as *const u64;
-        //     while head < end {
-        // read unalign only works on LE
-        //         let chars = head.read_unaligned();
-        //         let contains_ctrl = chars.wrapping_sub(ONE_BYTES * 0x20) & !chars;
-        //         let chars_quote = chars ^ (ONE_BYTES * Chunk::from(b'"'));
-        //         let contains_quote = chars_quote.wrapping_sub(ONE_BYTES) & !chars_quote;
-        //         let chars_backslash = chars ^ (ONE_BYTES * Chunk::from(b'\\'));
-        //         let contains_backslash = chars_backslash.wrapping_sub(ONE_BYTES) & !chars_backslash;
-        //         let masked =
-        //             (contains_ctrl | contains_quote | contains_backslash) & (ONE_BYTES << 7);
-        //         if masked != 0 {
-        //             // SAFETY: chunk is in-bounds for slice
-        //             self.index = unsafe { (head as *const u8).offset_from(self.ctx.data.as_ptr()) }
-        //                 as usize
-        //                 + masked.trailing_zeros() as usize / 8;
-        //             return;
-        //         }
-        //         head = head.add(1);
-        //     }
-        // }
 
         self.index += rest.len() / STEP * STEP;
         self.skip_to_escape_slow();
@@ -796,7 +745,7 @@ impl<'j> Parser<'j> {
         if self.peek()? != Peek::String {
             return Err(&EOF_WHILE_PARSING_STRING);
         }
-        let value: *const str = self.read_seen_string()?;
+        let value: *const str = unsafe { self.read_seen_string()? };
         let (value, ctx) = unsafe { self.unfreeze_with_context(value) };
         if let Some(borrowed) = ctx.try_extend_lifetime(value) {
             Ok(Cow::Borrowed(borrowed))
@@ -810,7 +759,7 @@ impl<'j> Parser<'j> {
         if self.peek()? != Peek::String {
             return Err(&EOF_WHILE_PARSING_STRING);
         }
-        let value: *const str = self.read_seen_string()?;
+        let value: *const str = unsafe { self.read_seen_string()? };
         let (value, ctx) = unsafe { self.unfreeze_with_context(value) };
         if let Some(borrowed) = ctx.try_extend_lifetime(value) {
             Ok(borrowed)
@@ -833,10 +782,12 @@ impl<'j> Parser<'j> {
         if self.peek()? != Peek::String {
             return Err(&EOF_WHILE_PARSING_STRING);
         }
-        self.read_seen_string()
+        unsafe { self.read_seen_string() }
     }
 
-    pub fn read_seen_string(&mut self) -> JsonResult<&str> {
+    /// Safety: Parser must be at a valid stream typically this inforced by
+    /// calling the function immediately after `Parser::peak(..) == Peek::String`
+    pub unsafe fn read_seen_string(&mut self) -> JsonResult<&str> {
         debug_assert_eq!(self.ctx.data[self.index], b'"');
         self.index += 1;
         let mut start = self.index;
@@ -869,7 +820,6 @@ impl<'j> Parser<'j> {
                     match crate::strings::parse_escape(
                         self.index,
                         &self.ctx.data,
-                        true,
                         &mut self.scratch,
                     ) {
                         Ok(index) => {
@@ -892,42 +842,6 @@ impl<'j> Parser<'j> {
             }
         }
     }
-    pub fn read_seen_string_unescaped(&mut self) -> JsonResult<&'j str> {
-        debug_assert_eq!(self.ctx.data[self.index], b'"');
-        self.index += 1;
-        let start = self.index;
-        loop {
-            self.skip_to_escape();
-            if self.index == self.ctx.data.len() {
-                return Err(&EOF_WHILE_PARSING_STRING);
-            }
-            // match unsafe { self.ctx.data.get_unchecked(self.indexl } {
-            match self.ctx.data[self.index] {
-                b'"' => {
-                    break;
-                }
-                b'\\' => {
-                    self.index += 1;
-                    continue;
-                }
-                _ => {
-                    return Err(&DecodeError {
-                        message: "Control character detected in json",
-                    })
-                }
-            }
-        }
-        let output = unsafe { std::str::from_utf8_unchecked(&self.ctx.data[start..self.index]) };
-        self.index += 1;
-        Ok(output)
-    }
-
-    pub fn read_string_unescaped(&mut self) -> JsonResult<&'j str> {
-        if self.eat_whitespace() != Some(b'"') {
-            return Err(&EXPECTED_STRING);
-        }
-        self.read_seen_string_unescaped()
-    }
 
     pub fn consume_numeric_literal(&mut self) -> JsonResult<&'j str> {
         let (output, index) = extract_numeric_literal(self.ctx.data, self.index)?;
@@ -945,9 +859,9 @@ impl<'j> Parser<'j> {
         &*frozen
     }
 
-    fn read_seen_object_key(&mut self) -> JsonResult<&'j str> {
+    unsafe fn read_seen_object_key(&mut self) -> JsonResult<&'j str> {
         debug_assert_eq!(self.ctx.data[self.index], b'"');
-        let key = self.read_seen_string()? as *const str;
+        let key = unsafe { self.read_seen_string() }? as *const str;
 
         if let Some(next) = self.eat_whitespace() {
             if next == b':' {

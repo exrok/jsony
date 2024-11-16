@@ -2704,7 +2704,12 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                     out.blit(1010, 12);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit(1022, 7);
+                out.blit(1022, 4);
+                {
+                    let at = out.buf.len();
+                    out.blit(1026, 4);
+                    out.tt_group(Delimiter::Brace, at);
+                };
                 {
                     let at = out.buf.len();
                     out.blit_ident(157);
@@ -2763,7 +2768,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                             out.blit_ident(154);
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
-                        out.blit(1029, 3);
+                        out.blit(1030, 3);
                         {
                             let at = out.buf.len();
                             out.tt_group_empty(Delimiter::Parenthesis);
@@ -2974,7 +2979,7 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                             out.blit(612, 2);
                             {
                                 let at = out.buf.len();
-                                out.blit(1032, 3);
+                                out.blit(1033, 3);
                                 {
                                     let at = out.buf.len();
                                     out.buf.push(TokenTree::from(
@@ -3016,7 +3021,7 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                             out.blit(612, 2);
                             {
                                 let at = out.buf.len();
-                                out.blit(1032, 3);
+                                out.blit(1033, 3);
                                 {
                                     let at = out.buf.len();
                                     out.buf.push(TokenTree::from(
@@ -3044,7 +3049,7 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                             out.blit(612, 2);
                             {
                                 let at = out.buf.len();
-                                out.blit(1032, 3);
+                                out.blit(1033, 3);
                                 {
                                     let at = out.buf.len();
                                     out.buf.push(TokenTree::from(
@@ -3072,7 +3077,7 @@ fn enum_from_binary(
 ) -> Result<(), Error> {
     let body = {
         let len = out.buf.len();
-        out.blit(1035, 5);
+        out.blit(1036, 5);
         {
             let at = out.buf.len();
             {

@@ -1562,7 +1562,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
             out;
             match parser.peek() {
                 Ok(::jsony::parser::Peek::Object) => [@TokenTree::Group(Group::new(Delimiter::Brace, body))],
-                Ok(::jsony::parser::Peek::String) => match parser.read_seen_string_unescaped() {
+                Ok(::jsony::parser::Peek::String) => match unsafe {parser.read_seen_string()} {
                     Ok(variant) => {
                         let value = match variant {
                             [for variant in variants {

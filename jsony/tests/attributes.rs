@@ -86,7 +86,7 @@ mod from_str {
     where
         <T as FromStr>::Err: std::fmt::Display,
     {
-        match T::from_str(parser.read_seen_string()?) {
+        match T::from_str(parser.take_string()?) {
             Ok(value) => Ok(value),
             Err(err) => {
                 parser.report_error(format!("FromStr failed: {err}"));

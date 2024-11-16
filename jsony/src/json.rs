@@ -485,20 +485,18 @@ unsafe impl<'a> FromJson<'a> for char {
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
-        match parser.read_string_unescaped() {
+        match parser.read_seen_string() {
             Ok(raw_str) => {
-                if let Ok(value) = crate::strings::escape_to_str(raw_str) {
-                    let mut chars = value.chars();
-                    let ch = chars.next();
-                    if chars.next().is_some() {
-                        return Err(&DecodeError {
-                            message: "Expected a single char",
-                        });
-                    }
-                    if let Some(ch) = ch {
-                        dest.cast::<char>().write(ch);
-                        return Ok(());
-                    }
+                let mut chars = raw_str.chars();
+                let ch = chars.next();
+                if chars.next().is_some() {
+                    return Err(&DecodeError {
+                        message: "Expected a single char",
+                    });
+                }
+                if let Some(ch) = ch {
+                    dest.cast::<char>().write(ch);
+                    return Ok(());
                 }
                 Err(&STRING_CONTAINS_INVALID_ESCAPE_LITERALS)
             }
@@ -577,7 +575,7 @@ unsafe impl<'de> FromJson<'de> for &'de RawJson {
     }
 }
 
-impl ToJson for &'_ RawJson {
+impl ToJson for RawJson {
     type Kind = AnyValue;
 
     fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind {

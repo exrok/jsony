@@ -15,97 +15,72 @@
 //! assert_eq!(json["a"]["name_of_missing_key"][0]["c"].key_error(), Some("name_of_missing_key"));
 //! ```
 
-use crate::MaybeJson;
+use crate::{
+    json::DecodeError,
+    parser::EOF_WHILE_PARSING_VALUE,
+    strings::{skip_json_string_and_eq, skip_json_string_and_validate},
+    MaybeJson,
+};
 use memchr::memchr;
 
 use crate::{from_json_with_config, FromJson, JsonError, JsonParserConfig};
-// use serde::de::Error;
 
-#[inline(always)]
-pub fn index_of_string_end2(s: &[u8]) -> Option<usize> {
-    unsafe {
-        let start = s.as_ptr().add(1);
-        let end = s.as_ptr().add(s.len() - 1);
-        #[cfg(target_arch = "x86_64")]
-        let searcher = memchr::arch::x86_64::sse2::memchr::One::new_unchecked(b'"');
-        #[cfg(not(target_arch = "x86_64"))]
-        let searcher = memchr::arch::all::memchr::One::new(b'"');
-        'outer: while let Some(found) = searcher.find_raw(start, end) {
-            if *found.sub(1) == b'\\' {
-                let mut mx = found.sub(2);
-                let mut escaped = true;
-                loop {
-                    if *mx != b'\\' {
-                        if escaped {
-                            continue 'outer;
-                        } else {
-                            break;
-                        }
-                    }
-                    mx = mx.sub(1);
-                    escaped ^= true;
-                }
-            }
-            return Some((found.offset_from(start) + 1) as usize);
-        }
-        None
-    }
-}
-
-fn index_after_value(s: &[u8]) -> Option<usize> {
+fn index_after_value(s: &[u8]) -> Result<usize, ErrorCode> {
     let mut depth = 1;
     let mut i = 0;
     while let Some(ch) = s.get(i) {
         i += 1;
         match ch {
-            b'"' => i += index_of_string_end2(&s[i - 1..])?,
+            b'"' => {
+                i = skip_json_string_and_validate(i, s).map_err(|_| ErrorCode::InvalidString)?
+            }
             b'{' | b'[' => depth += 1,
             b'}' | b']' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(i);
+                    return Ok(i);
                 }
             }
             _ => (),
         }
     }
-    None
+    Err(ErrorCode::Eof)
 }
 
-pub fn expr_end(s: &[u8]) -> Option<usize> {
+pub fn expr_end(s: &[u8]) -> Result<usize, ErrorCode> {
     let mut i = 0;
-    while s.get(i)?.is_ascii_whitespace() {
+    while s.get(i).ok_or(ErrorCode::Eof)?.is_ascii_whitespace() {
         i += 1;
     }
     let ch = s[i];
     i += 1;
     match ch {
-        b'"' => Some(i + index_of_string_end2(&s[i - 1..])?),
-        b'{' | b'[' => Some(i + index_after_value(&s[i..])?),
+        b'"' => skip_json_string_and_validate(i, s).map_err(|_| ErrorCode::InvalidString),
+        b'{' | b'[' => Ok(i + index_after_value(&s[i..])?),
         _ => {
-            let v = memchr::memchr3(b',', b']', b'}', &s[i..])?;
-            Some(v + i)
+            let v = memchr::memchr3(b',', b']', b'}', &s[i..]).ok_or(ErrorCode::Eof)?;
+            Ok(v + i)
         }
     }
 }
 
-fn index_of_next_value_in_array(s: &[u8]) -> Option<usize> {
+fn index_of_next_value_in_array(s: &[u8]) -> Result<usize, ErrorCode> {
     let mut i = 0;
-    while s.get(i)?.is_ascii_whitespace() {
+    while s.get(i).ok_or(ErrorCode::Eof)?.is_ascii_whitespace() {
         i += 1;
     }
     let ch = s[i];
     i += 1;
     match ch {
-        b'"' => i += index_of_string_end2(&s[i - 1..])?,
+        b'"' => i = skip_json_string_and_validate(i, s).map_err(|_| ErrorCode::InvalidString)?,
         b'{' | b'[' => i += index_after_value(&s[i..])?,
         _ => {}
     }
-    i += memchr::memchr2(b',', b']', &s[i..])?;
+    i += memchr::memchr2(b',', b']', &s[i..]).ok_or(ErrorCode::Eof)?;
     if s[i] == b']' {
-        return None;
+        return Err(ErrorCode::OutOfBoundsArrayAccess);
     }
-    Some(i + 1)
+    Ok(i + 1)
 }
 
 // Return remaining bytes starting with value at the provided index if the bytes
@@ -121,7 +96,7 @@ fn array_index(bytes: &[u8], mut index: usize) -> Result<&[u8], ErrorCode> {
     }
     i += 1;
     while index > 0 {
-        i += index_of_next_value_in_array(&bytes[i..]).ok_or(ErrorCode::OutOfBoundsArrayAccess)?;
+        i += index_of_next_value_in_array(&bytes[i..])?;
         index -= 1;
     }
     while bytes.get(i).ok_or(ErrorCode::Eof)?.is_ascii_whitespace() {
@@ -147,19 +122,15 @@ pub(crate) fn object_index<'a>(bytes: &'a [u8], key: &[u8]) -> Result<&'a [u8], 
     i += 1;
     while let Some(offset) = memchr(b'"', bytes.get(i..).ok_or(ErrorCode::Eof)?) {
         i += offset + 1;
-        let key_start = i;
-        i += index_of_string_end2(&bytes[key_start - 1..]).ok_or(ErrorCode::Eof)?;
-        let key_stop = i - 1;
-        i += memchr(b':', &bytes[i..]).ok_or(ErrorCode::Eof)? + 1;
+        let Ok((ni, matches)) = skip_json_string_and_eq(i, &bytes, key) else {
+            return Err(ErrorCode::Eof);
+        };
+        i = ni + memchr(b':', &bytes[ni..]).ok_or(ErrorCode::Eof)? + 1;
         let expr_start = i;
-        {
-            let k = (key_start, key_stop);
-            // let v = (expr_start);
-            if key == &bytes[k.0..k.1] {
-                return Ok(&bytes[expr_start..]);
-            }
+        if matches {
+            return Ok(&bytes[expr_start..]);
         }
-        i += expr_end(&bytes[i..]).ok_or(ErrorCode::Eof)?;
+        i += expr_end(&bytes[i..])?;
     }
     Err(ErrorCode::MissingObjectKey)
 }
@@ -190,14 +161,7 @@ impl std::ops::Index<usize> for MaybeJson {
             return self;
         }
         match array_index(self.raw.as_bytes(), index) {
-            Ok(value) => {
-                // println!(
-                //     "[{:?}] => {}",
-                //     index,
-                //     value[..value.len().min(50)].escape_ascii()
-                // );
-                MaybeJson::new(unsafe { std::str::from_utf8_unchecked(value) })
-            }
+            Ok(value) => MaybeJson::new(unsafe { std::str::from_utf8_unchecked(value) }),
             Err(err) => err.as_value(),
         }
     }
@@ -211,6 +175,7 @@ pub enum ErrorCode {
     OutOfBoundsArrayAccess = 3,
     ExpectedObject = 4,
     ExpectedArray = 5,
+    InvalidString = 6,
 }
 
 impl ErrorCode {
@@ -228,8 +193,8 @@ impl ErrorCode {
 
 impl MaybeJson {
     pub fn parse<'a, T: FromJson<'a>>(&'a self) -> Result<T, JsonError> {
-        if self.is_error() {
-            todo!();
+        if let Some(error) = self.json_error() {
+            return Err(error);
         }
         from_json_with_config::<'a, T>(
             &self.raw,
@@ -242,12 +207,42 @@ impl MaybeJson {
             },
         )
     }
+    pub fn json_error(&self) -> Option<JsonError> {
+        let Some(error) = self.error_code() else {
+            return None;
+        };
+        let mut context: Option<String> = None;
+        let simple_error: &'static DecodeError = match error {
+            ErrorCode::Eof => &EOF_WHILE_PARSING_VALUE,
+            ErrorCode::OutOfBoundsArrayAccess => &DecodeError {
+                message: "Out of bounds array access",
+            },
+            ErrorCode::ExpectedObject => &DecodeError {
+                message: "Expected Object",
+            },
+            ErrorCode::ExpectedArray => &DecodeError {
+                message: "Expected Array",
+            },
+            ErrorCode::InvalidString => &DecodeError {
+                message: "Invalid String",
+            },
+            ErrorCode::MissingObjectKey => {
+                if let Some(key) = self.key_error() {
+                    context = Some(key.to_string());
+                };
+                &DecodeError {
+                    message: "Missing Key in object",
+                }
+            }
+        };
+        Some(JsonError::new(simple_error, context))
+    }
     pub fn error_code(&self) -> Option<ErrorCode> {
         if !self.is_error() {
             return None;
         }
         let tagged = self.raw.as_ptr() as usize;
-        if (1..=5).contains(&tagged) {
+        if (1..=6).contains(&tagged) {
             unsafe { Some(std::mem::transmute::<u8, ErrorCode>(tagged as u8)) }
         } else if tagged > 0xC000_0000_0000_0000 {
             Some(ErrorCode::MissingObjectKey)
@@ -346,6 +341,7 @@ impl MaybeJson {
             ErrorCode::OutOfBoundsArrayAccess => "Index larger than array",
             ErrorCode::ExpectedObject => "Expected an object but found something else",
             ErrorCode::ExpectedArray => "Expected an array but found something else",
+            ErrorCode::InvalidString => "Invalid string",
         };
 
         Some(message.into())
@@ -355,6 +351,14 @@ impl MaybeJson {
 #[cfg(test)]
 mod test {
     use super::*;
+    #[test]
+    fn keys_with_escapes() {
+        let input = r#"{"v\r\f\n\t\"\\": 23, "\u0031\u0032\u0033": 41}"#;
+        let json = MaybeJson::new(input);
+        assert_eq!(23u32, json["v\r\x0C\n\t\"\\"].parse().unwrap());
+        assert_eq!(41u32, json["123"].parse().unwrap());
+    }
+
     #[test]
     fn arrays() {
         let value = MaybeJson::new(stringify!([

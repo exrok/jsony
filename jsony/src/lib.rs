@@ -385,6 +385,19 @@ impl JsonError {
             }),
         }
     }
+
+    pub(crate) fn new(error: &'static DecodeError, context: Option<String>) -> JsonError {
+        JsonError {
+            inner: Box::new(JsonErrorInner {
+                error,
+                context,
+                parent_context: JsonParentContext::None,
+                index: 0,
+                surrounding: [0; 24],
+            }),
+        }
+    }
+
     fn extract(error: &'static DecodeError, parser: &mut Parser) -> JsonError {
         fn surrounding(at: usize, text: &[u8]) -> [u8; 24] {
             let mut s: [u8; 24] = [0; 24];
