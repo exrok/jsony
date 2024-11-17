@@ -141,7 +141,7 @@ pub unsafe trait FromJsonFieldVisitor<'a> {
     unsafe fn new_field_visitor(ptr: NonNull<()>, parser: &Parser<'a>) -> Self::Vistor;
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DecodeError {
     pub message: &'static str,
 }

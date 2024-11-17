@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use jsony::{from_json, Jsony};
+use jsony::{from_json, parser::TRAILING_COMMA, JsonParserConfig, Jsony};
 
 macro_rules! obj {
     ($($tt:tt)*) => {
@@ -220,5 +220,51 @@ fn escapes() {
         from_json::<Object>(r#"{ "ke\u0079": "" }"#).unwrap(),
         obj(""),
         "Should decoded needless escaped text"
+    );
+}
+
+#[test]
+fn trailing_commas() {
+    assert_eq!(
+        jsony::from_json::<Vec<bool>>(arr![true, false,])
+            .err()
+            .unwrap()
+            .decoding_error(),
+        &TRAILING_COMMA
+    );
+    assert_eq!(
+        jsony::from_json_with_config::<Vec<bool>>(
+            arr![true, false,],
+            JsonParserConfig {
+                allow_trailing_commas: true,
+                ..Default::default()
+            }
+        )
+        .unwrap(),
+        vec![true, false]
+    );
+
+    #[derive(Jsony, Debug, PartialEq, Eq)]
+    struct Example<'a> {
+        value: &'a str,
+    }
+
+    assert_eq!(
+        jsony::from_json::<Example>(obj! { "value": "hello", })
+            .err()
+            .unwrap()
+            .decoding_error(),
+        &TRAILING_COMMA
+    );
+    assert_eq!(
+        jsony::from_json_with_config::<Example>(
+            obj! { "value": "hello", },
+            JsonParserConfig {
+                allow_trailing_commas: true,
+                ..Default::default()
+            }
+        )
+        .unwrap(),
+        Example { value: "hello" }
     );
 }

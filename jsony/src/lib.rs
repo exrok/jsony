@@ -548,6 +548,7 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
     ) -> Result<bool, JsonError> {
         let mut parser = Parser::new(json);
         parser.remaining_depth = config.recursion_limit;
+        parser.allow_trailing_commas = config.allow_trailing_commas;
         match unsafe { func(value, &mut parser) } {
             Ok(()) => {
                 let _ = parser.peek();

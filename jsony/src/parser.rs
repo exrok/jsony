@@ -73,6 +73,7 @@ pub struct Parser<'j> {
     pub index: usize,
     pub(crate) parent_context: JsonParentContext,
     pub remaining_depth: i32,
+    pub allow_trailing_commas: bool,
     pub scratch: Vec<u8>,
 }
 
@@ -108,7 +109,7 @@ static TODO_ERROR: DecodeError = DecodeError {
 static TRAILING_CHARACTERS: DecodeError = DecodeError {
     message: "Trailing characters",
 };
-static TRAILING_COMMA: DecodeError = DecodeError {
+pub static TRAILING_COMMA: DecodeError = DecodeError {
     message: "Trailing Comma",
 };
 
@@ -216,6 +217,7 @@ impl<'j> Parser<'j> {
             index: 0,
             parent_context: JsonParentContext::None,
             remaining_depth: DEFAULT_DEPTH_LIMIT,
+            allow_trailing_commas: false,
             scratch: Vec::new(),
         }
     }
@@ -308,7 +310,13 @@ impl<'j> Parser<'j> {
                     self.index += 1;
                     let next = self.array_peek()?;
                     if next.is_none() {
-                        Err(&TRAILING_COMMA)
+                        if self.allow_trailing_commas {
+                            self.index += 1;
+                            self.remaining_depth += 1;
+                            Ok(None)
+                        } else {
+                            Err(&TRAILING_COMMA)
+                        }
                     } else {
                         Ok(next)
                     }
@@ -393,6 +401,7 @@ impl<'j> Parser<'j> {
                 },
                 index: self.index + (self.ctx.data.len() - value.len()),
                 remaining_depth: self.remaining_depth,
+                allow_trailing_commas: self.allow_trailing_commas,
                 scratch: Vec::new(),
             })),
             Err(_) => Err(&TODO_ERROR),
@@ -631,7 +640,15 @@ impl<'j> Parser<'j> {
                     self.index += 1;
                     match self.eat_whitespace() {
                         Some(b'"') => Ok(Some(())),
-                        Some(b'}') => Err(&TRAILING_COMMA),
+                        Some(b'}') => {
+                            if self.allow_trailing_commas {
+                                self.index += 1;
+                                self.remaining_depth += 1;
+                                Ok(None)
+                            } else {
+                                Err(&TRAILING_COMMA)
+                            }
+                        }
                         Some(_) => Err(&KEY_MUST_BE_A_STRING),
                         None => Err(&EOF_WHILE_PARSING_VALUE),
                     }
@@ -655,7 +672,15 @@ impl<'j> Parser<'j> {
                     self.index += 1;
                     match self.eat_whitespace() {
                         Some(b'"') => unsafe { self.read_seen_object_key().map(Some) },
-                        Some(b'}') => Err(&TRAILING_COMMA),
+                        Some(b'}') => {
+                            if self.allow_trailing_commas {
+                                self.index += 1;
+                                self.remaining_depth += 1;
+                                Ok(None)
+                            } else {
+                                Err(&TRAILING_COMMA)
+                            }
+                        }
                         Some(_) => Err(&KEY_MUST_BE_A_STRING),
                         None => Err(&EOF_WHILE_PARSING_VALUE),
                     }
