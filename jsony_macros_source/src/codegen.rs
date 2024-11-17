@@ -1317,6 +1317,22 @@ fn enum_variant_from_json_struct(
     };
     Ok(())
 }
+
+fn other_variant_key(out: &mut RustWriter, field: &Field) {
+    splat!(out;
+        let erased = unsafe {
+            &*(variant as *const str)
+        };
+        let other_tag = match <[~field.ty] as ::jsony::text::FromText>::from_text(
+            &mut parser.ctx,
+            erased
+        ) {
+            Ok(value) => value,
+            Err(err) => return Err(err)
+        };
+    );
+}
+
 fn enum_variant_from_json(
     out: &mut RustWriter,
     ctx: &Ctx,
@@ -1400,6 +1416,15 @@ fn stringly_enum_from_json(
     ctx: &Ctx,
     variants: &[EnumVariant],
 ) -> Result<(), Error> {
+    let mut other: Option<&EnumVariant> = None;
+    for variant in variants {
+        if variant.attr.has_other() {
+            if other.is_some() {
+                throw!("Only one other variant is currently supported." @ variant.name.span())
+            }
+            other = Some(variant);
+        }
+    }
     let body = token_stream! {
         out;
         match parser.take_string() {
@@ -1409,11 +1434,7 @@ fn stringly_enum_from_json(
                         [@variant_key_literal(ctx, variant).into()]
                             => [#ctx.target.name]::[#variant.name],
                     }]
-                    _ => {
-                        let unknown_variant = variant.to_string();
-                        parser.report_error(unknown_variant);
-                        return Err(&::jsony::parser::UNKNOWN_VARIANT);
-                    }
+                    [try enum_from_json_unknown_variant(out, ctx, other, true)]
                 };
                 dst.cast::<[ctx.target_type(out)]>().write(value);
             }
@@ -1422,6 +1443,68 @@ fn stringly_enum_from_json(
         Ok(())
     };
     impl_from_json(out, ctx, body)
+}
+
+fn enum_from_json_unknown_variant(
+    out: &mut RustWriter,
+    ctx: &Ctx,
+    other: Option<&EnumVariant>,
+    stringly: bool,
+) -> Result<(), Error> {
+    splat!(out;
+        _ => {
+            [
+                if let Some(other) = &other {
+                    match other.fields {
+                        [] => (),
+                        [field] => other_variant_key(out, field),
+                        [_f1, f2, ..] => {
+                            throw!("Other variants may only have upto a single field" @ f2.name.span())
+                        }
+                    }
+                    if !stringly {
+                        let start = out.buf.len();
+                        splat!(
+                            out;
+                            if let Err(err) = parser.skip_value() {
+                                return Err(err)
+                            }
+                        );
+                        if ctx.target.content.is_some() {
+                            let skipbody = out.split_off_stream(start);
+                            splat!(out; if at_content [@TokenTree::Group(Group::new(Delimiter::Brace, skipbody))])
+                        }
+                    }
+                    let start = out.buf.len();
+                    splat!(
+                        out;
+                        [#ctx.target.name]::[#other.name]
+                        [if let [field] = other.fields {
+                            match other.kind {
+                                EnumKind::Tuple => splat!(out; (other_tag)),
+                                EnumKind::Struct => splat!(out; {[#field.name]: other_tag}),
+                                EnumKind::None => (),
+                            }
+                        }]
+                    );
+                    if !stringly {
+                        let value = out.split_off_stream(start);
+                        splat!(out; dst.cast::<[ctx.target_type(out)]>().write [
+                            @TokenTree::Group(Group::new(Delimiter::Parenthesis, value))
+                        ];)
+                    }
+                } else {
+                    splat!(
+                        out;
+                        let variant = variant.to_string();
+                        parser.report_error(variant);
+                        return Err(&::jsony::parser::UNKNOWN_VARIANT);
+                    )
+                }
+            ]
+        }
+    );
+    Ok(())
 }
 
 fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
@@ -1466,6 +1549,15 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
             None
         }
     };
+    let mut other: Option<&EnumVariant> = None;
+    for variant in variants {
+        if variant.attr.has_other() {
+            if other.is_some() {
+                throw!("Only one other variant is currently supported." @ variant.name.span())
+            }
+            other = Some(variant);
+        }
+    }
     let mut body = token_stream! { out;
         [
             if let Some(tag) = inline_tag {
@@ -1519,18 +1611,16 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                         continue;
                     }
                 }
+                if other.is_some() && variant.attr.has_other() {
+                    continue;
+                }
 
                 splat!(out;
                     [@variant_key_literal(ctx, variant).into()]
                         => [try enum_variant_from_json(out, ctx, variant, false)],
                 );
             }]
-
-            _ => {
-                let variant = variant.to_string();
-                parser.report_error(variant);
-                return Err(&::jsony::parser::UNKNOWN_VARIANT);
-            }
+            [try enum_from_json_unknown_variant(out, ctx, other, false)]
         }
         [
             if let Some(_) = inline_tag {
@@ -1570,11 +1660,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                                     splat!(out; [@variant_key_literal(ctx, variant).into()] => [#ctx.target.name]::[#variant.name],);
                                 }
                             }]
-                            _ => {
-                                let unknown_variant = variant.to_string();
-                                parser.report_error(unknown_variant);
-                                return Err(&::jsony::parser::UNKNOWN_VARIANT);
-                            }
+                            [try enum_from_json_unknown_variant(out, ctx, other, true)]
                         };
                         dst.cast::<[ctx.target_type(out)]>().write(value);
                         return Ok(());

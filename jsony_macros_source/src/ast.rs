@@ -51,6 +51,11 @@ pub struct FieldAttrs {
     attrs: Vec<FieldAttr>,
     flags: u64,
 }
+impl FieldAttrs {
+    pub fn has_other(&self) -> bool {
+        self.flags & (0b1111 << (7u64 * TRAIT_COUNT)) != 0
+    }
+}
 
 #[allow(clippy::derivable_impls)]
 impl Default for FieldAttrs {
@@ -729,6 +734,14 @@ fn parse_single_field_attr(
                 inner: FieldAttrInner::Skip(std::mem::take(value)),
             });
             6u64 * TRAIT_COUNT
+        }
+        "other" => {
+            if !value.is_empty() {
+                throw!("other doesn't take any arguments" @ ident.span())
+            }
+            // Note: Currently this value used for `has_other` and must be changed there.
+            // Todo use less error prone mechanism to store this.
+            7u64 * TRAIT_COUNT
         }
         _ => throw!("Unknown attr field" @ ident.span()),
     };

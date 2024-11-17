@@ -1,7 +1,5 @@
 // mod template2;
 
-// #[derive(Clone, Copy, Debug, Jsony)]
-
 use crate::{case::RenameRule, util::Allocator, Error};
 use proc_macro::{Delimiter, Ident, Literal, Span, TokenStream, TokenTree};
 pub enum GenericKind {
@@ -40,6 +38,11 @@ enum FieldAttrInner {
 pub struct FieldAttrs {
     attrs: Vec<FieldAttr>,
     flags: u64,
+}
+impl FieldAttrs {
+    pub fn has_other(&self) -> bool {
+        self.flags & (0b1111 << (7u64 * TRAIT_COUNT)) != 0
+    }
 }
 #[allow(clippy::derivable_impls)]
 impl Default for FieldAttrs {
@@ -722,6 +725,15 @@ fn parse_single_field_attr(
                 inner: FieldAttrInner::Skip(std::mem::take(value)),
             });
             6u64 * TRAIT_COUNT
+        }
+        "other" => {
+            if !value.is_empty() {
+                return Err(Error::span_msg(
+                    "other doesn't take any arguments",
+                    ident.span(),
+                ));
+            }
+            7u64 * TRAIT_COUNT
         }
         _ => return Err(Error::span_msg("Unknown attr field", ident.span())),
     };

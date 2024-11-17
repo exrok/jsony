@@ -33,6 +33,16 @@ macro_rules! assert_json_decode_eq {
     };
 }
 
+macro_rules! assert_json_decode_eq_typed {
+    ($ty:ty, $json:tt, $($input:tt)* ) => {
+        assert_eq!(
+            $($input)*,
+            jsony::from_json::<$ty>(compact_stringify!($json)).unwrap(),
+            "JSON Decoding to match input"
+        )
+    };
+}
+
 macro_rules! assert_json_eq {
     ($json:tt, $($input:tt)* ) => {
         assert_json_decode_eq!($json, $($input)*);
@@ -520,4 +530,150 @@ fn skip() {
             c: 32
         }
     )
+}
+
+#[test]
+fn other_variant() {
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    enum Stringly {
+        Alpha,
+        #[jsony(other)]
+        Other,
+        Beta,
+    }
+
+    assert_json_decode_eq_typed!(
+        Vec<Stringly>,
+        ["Alpha", "Unknown", "Beta"],
+        vec![Stringly::Alpha, Stringly::Other, Stringly::Beta]
+    );
+
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    enum StringlyCapture<'a> {
+        Alpha,
+        #[jsony(other)]
+        Other(&'a str),
+        Beta,
+    }
+
+    assert_json_decode_eq_typed!(
+        Vec<StringlyCapture>,
+        ["Alpha", "Unknown", "Beta"],
+        vec![
+            StringlyCapture::Alpha,
+            StringlyCapture::Other("Unknown"),
+            StringlyCapture::Beta
+        ]
+    );
+
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    enum StringlyCaptureStruct<'a> {
+        Alpha,
+        #[jsony(other)]
+        Other {
+            field: &'a str,
+        },
+        Beta,
+    }
+
+    assert_json_decode_eq_typed!(
+        Vec<StringlyCaptureStruct>,
+        ["Alpha", "Unknown", "Beta"],
+        vec![
+            StringlyCaptureStruct::Alpha,
+            StringlyCaptureStruct::Other { field: "Unknown" },
+            StringlyCaptureStruct::Beta
+        ]
+    );
+
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    enum MixedCaptureStruct<'a> {
+        Alpha {
+            value: &'a str,
+        },
+        #[jsony(other)]
+        Other {
+            field: &'a str,
+        },
+        Beta,
+    }
+
+    assert_json_decode_eq_typed!(
+        Vec<MixedCaptureStruct>,
+        [{"Alpha": {"value": "Val"}}, "Unknown", "Beta"],
+        vec![
+            MixedCaptureStruct::Alpha{value: "Val"},
+            MixedCaptureStruct::Other { field: "Unknown" },
+            MixedCaptureStruct::Beta
+        ]
+    );
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    #[jsony(tag = "kind")]
+    enum TaggedCapture<'a> {
+        Alpha {
+            value: &'a str,
+        },
+        Beta,
+        #[jsony(other)]
+        Other {
+            field: &'a str,
+        },
+    }
+
+    assert_json_decode_eq_typed!(
+        Vec<TaggedCapture>,
+        [
+            {"kind": "Alpha", "value": "Val"},
+            {"kind": "Unknown", "field_to_ignore": [{}, true]},
+            {"field_to_ignore": [{}, true], "kind": "Unknown"},
+            {"kind": "Beta"}
+        ],
+        vec![
+            TaggedCapture::Alpha{value: "Val"},
+            TaggedCapture::Other { field: "Unknown" },
+            TaggedCapture::Other { field: "Unknown" },
+            TaggedCapture::Beta
+        ]
+    );
+    assert_json_decode_eq_typed!(
+        Vec<TaggedCapture>,
+        [
+            {"kind": "Alpha", "value": "Val"},
+            {"kind": "Unknown"},
+            {"kind": "Beta"}
+        ],
+        vec![
+            TaggedCapture::Alpha{value: "Val"},
+            TaggedCapture::Other { field: "Unknown" },
+            TaggedCapture::Beta
+        ]
+    );
+
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    #[jsony(tag = "kind", content = "data")]
+    enum ContentCapture<'a> {
+        Alpha {
+            value: &'a str,
+        },
+        Beta,
+        #[jsony(other)]
+        Other {
+            field: &'a str,
+        },
+    }
+    assert_json_decode_eq_typed!(
+        Vec<ContentCapture>,
+        [
+            {"kind": "Alpha", "data": {"value": "Val"}},
+            {"kind": "Unknown1"},
+            {"kind": "Unknown2", "data": false},
+            {"kind": "Beta"}
+        ],
+        vec![
+            ContentCapture::Alpha{value: "Val"},
+            ContentCapture::Other { field: "Unknown1" },
+            ContentCapture::Other { field: "Unknown2" },
+            ContentCapture::Beta
+        ]
+    );
 }

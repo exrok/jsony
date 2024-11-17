@@ -88,13 +88,7 @@ pub fn array(input: TokenStream) -> TokenStream {
 /// ```rust
 /// let _player: String = jsony::object!{
 ///     name: "Jimmy",
-///     health: 100,
-///     inventory: [
-///         "Rock",
-///         "Helmet"
-///     ]
-/// };
-///
+///     health: 100,`
 /// let array_example: String = jsony::array![
 ///     true,
 ///     // Flatten arrays and loops
@@ -161,6 +155,14 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// | `content = "..."` | `Json` | Field containing the data content of enum.
 /// | `untagged` | `Json` | Only data content of an enum is stored.
 /// | `Flattenable` | `FromJson` | Allows type to use `#[jsony(flatten)]` in `FromJson`.
+///
+/// ## Enum Variant Attributes
+/// These are `jsony` attributes that appear above a variant in an enum.
+///
+/// | Format | Supported Traits | Description |
+/// |-------------------|--------|---------------------------------------------------------------------------------|
+/// | `rename = "..."`  | `Json` | Use provided string as variant name.
+/// | `other`           | `FromJson` | Variant to use if given an unknown variant
 ///
 /// ## Field Attributes
 /// These are `jsony` attributes that appear above a field inside a struct or enum variant.
