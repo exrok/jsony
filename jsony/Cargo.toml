@@ -21,5 +21,6 @@ uuid = { version = "1", optional = true }
 
 
 [features]
-default = []
+default = ["json_comments"]
 uuid = ["dep:uuid"]
+json_comments = []

@@ -268,3 +268,32 @@ fn trailing_commas() {
         Example { value: "hello" }
     );
 }
+
+#[cfg(feature = "json_comments")]
+#[test]
+fn comments() {
+    let input_1 = &"[
+            /* hello
+                -foo
+                - nice
+                asdfasdfa
+            */
+            true, // some text here
+            false // some more comments
+            ,true
+            ]
+            // trailing comment
+            ";
+    assert!(jsony::from_json::<Vec<bool>>(input_1).is_err());
+    assert_eq!(
+        jsony::from_json_with_config::<Vec<bool>>(
+            input_1,
+            JsonParserConfig {
+                allow_comments: true,
+                ..Default::default()
+            }
+        )
+        .unwrap(),
+        vec![true, false, true]
+    );
+}

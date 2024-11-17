@@ -74,6 +74,7 @@ pub struct Parser<'j> {
     pub(crate) parent_context: JsonParentContext,
     pub remaining_depth: i32,
     pub allow_trailing_commas: bool,
+    pub allow_comments: bool,
     pub scratch: Vec<u8>,
 }
 
@@ -218,6 +219,7 @@ impl<'j> Parser<'j> {
             parent_context: JsonParentContext::None,
             remaining_depth: DEFAULT_DEPTH_LIMIT,
             allow_trailing_commas: false,
+            allow_comments: false,
             scratch: Vec::new(),
         }
     }
@@ -402,6 +404,7 @@ impl<'j> Parser<'j> {
                 index: self.index + (self.ctx.data.len() - value.len()),
                 remaining_depth: self.remaining_depth,
                 allow_trailing_commas: self.allow_trailing_commas,
+                allow_comments: self.allow_comments,
                 scratch: Vec::new(),
             })),
             Err(_) => Err(&TODO_ERROR),
@@ -917,18 +920,66 @@ impl<'j> Parser<'j> {
             Err(&EOF_WHILE_PARSING_VALUE)
         }
     }
-    fn eat_whitespace(&mut self) -> Option<u8> {
-        while let Some(&next) = self.ctx.data.get(self.index) {
-            // optimize for common case.
-            if next > b' ' {
-                return Some(next);
-            }
-            match next {
-                b' ' | b'\r' | b'\t' | b'\n' => self.index += 1,
-                _ => return Some(next),
+
+    #[cfg(feature = "json_comments")]
+    #[cold]
+    fn eat_comment(&mut self) {
+        self.index += 1;
+        let Some(ch) = self.ctx.data.get(self.index) else {
+            return;
+        };
+        if *ch == b'/' {
+            if let Some(offset) = memchr::memchr(b'\n', &self.ctx.data[self.index + 1..]) {
+                self.index += offset + 2;
+                return;
+            } else {
+                self.index = self.ctx.data.len();
+                return;
             }
         }
-        None
+        if *ch == b'*' {
+            let mut index = self.index + 2;
+            while let Some(ch) = self.ctx.data.get(index) {
+                if *ch == b'*' {
+                    if let Some(next) = self.ctx.data.get(index + 1) {
+                        if *next == b'/' {
+                            self.index = index + 2;
+                            return;
+                        }
+                    }
+                }
+                index += 1;
+            }
+            self.index = self.ctx.data.len();
+            return;
+        }
+    }
+
+    fn eat_whitespace(&mut self) -> Option<u8> {
+        let Some(mut next) = self.ctx.data.get(self.index).copied() else {
+            return None;
+        };
+        #[cfg(feature = "json_comments")]
+        if next > b'/' {
+            return Some(next);
+        }
+        #[cfg(not(feature = "json_comments"))]
+        if next > b' ' {
+            return Some(next);
+        }
+        loop {
+            match next {
+                b' ' | b'\r' | b'\t' | b'\n' => self.index += 1,
+                #[cfg(feature = "json_comments")]
+                b'/' if self.allow_comments => self.eat_comment(),
+                _ => return Some(next),
+            }
+            if let Some(next2) = self.ctx.data.get(self.index) {
+                next = *next2;
+            } else {
+                return None;
+            }
+        }
     }
 }
 

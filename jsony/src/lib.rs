@@ -549,6 +549,11 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
         let mut parser = Parser::new(json);
         parser.remaining_depth = config.recursion_limit;
         parser.allow_trailing_commas = config.allow_trailing_commas;
+        #[cfg(not(feature = "json_comments"))]
+        if config.allow_comments {
+            panic!("jsony: 'json_comments' feature is not enabled but is required for `allow_comments`.")
+        }
+        parser.allow_comments = config.allow_comments;
         match unsafe { func(value, &mut parser) } {
             Ok(()) => {
                 let _ = parser.peek();
