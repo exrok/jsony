@@ -297,3 +297,50 @@ fn comments() {
         vec![true, false, true]
     );
 }
+
+#[test]
+fn unquoted_keys() {
+    #[derive(Jsony, PartialEq, Eq, Debug)]
+    struct UnquotedStruct<'a> {
+        kind: &'a str,
+        data: bool,
+    }
+    #[derive(Jsony, PartialEq, Eq, Debug)]
+    #[jsony(tag = "kind")]
+    enum UnquotedEnum {
+        Value { data: bool },
+    }
+    let input_1 = &r#"
+        {
+            kind: "Value",
+            data: true
+        }
+    "#;
+    assert!(jsony::from_json::<UnquotedStruct>(input_1).is_err());
+    assert!(jsony::from_json::<UnquotedEnum>(input_1).is_err());
+    assert_eq!(
+        jsony::from_json_with_config::<UnquotedEnum>(
+            input_1,
+            JsonParserConfig {
+                allow_unquoted_field_keys: true,
+                ..Default::default()
+            }
+        )
+        .unwrap(),
+        UnquotedEnum::Value { data: true }
+    );
+    assert_eq!(
+        jsony::from_json_with_config::<UnquotedStruct>(
+            input_1,
+            JsonParserConfig {
+                allow_unquoted_field_keys: true,
+                ..Default::default()
+            }
+        )
+        .unwrap(),
+        UnquotedStruct {
+            kind: "Value",
+            data: true
+        }
+    );
+}

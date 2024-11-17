@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::ops::Range;
 
+use crate::JsonParserConfig;
 use crate::__internal::ObjectSchemaInner;
 use crate::json::DecodeError;
 use crate::text::Ctx;
@@ -72,9 +73,7 @@ pub struct Parser<'j> {
     pub ctx: Ctx<'j>,
     pub index: usize,
     pub(crate) parent_context: JsonParentContext,
-    pub remaining_depth: i32,
-    pub allow_trailing_commas: bool,
-    pub allow_comments: bool,
+    pub config: JsonParserConfig,
     pub scratch: Vec<u8>,
 }
 
@@ -193,7 +192,7 @@ pub struct RetrySnapshot {
     recursion_depth: i32,
 }
 
-const DEFAULT_DEPTH_LIMIT: i32 = 128;
+// const DEFAULT_DEPTH_LIMIT: i32 = 128;
 /// consume_X, assumes we already know following thing must be type X
 /// because we peeked and so the prefix. If you call `consume_X` with
 /// peeking your code is likely buggy.
@@ -201,25 +200,23 @@ impl<'j> Parser<'j> {
     pub fn snapshot(&self) -> RetrySnapshot {
         RetrySnapshot {
             index: self.index,
-            recursion_depth: self.remaining_depth,
+            recursion_depth: self.config.recursion_limit,
         }
     }
 
     pub fn restore_for_retry(&mut self, snapshot: &RetrySnapshot) {
         self.index = snapshot.index;
-        self.remaining_depth = snapshot.recursion_depth;
+        self.config.recursion_limit = snapshot.recursion_depth;
         self.parent_context = JsonParentContext::None;
         self.ctx.error = None;
     }
 
-    pub fn new(data: &'j str) -> Self {
+    pub fn new(data: &'j str, config: JsonParserConfig) -> Self {
         Self {
             ctx: Ctx::new(data),
             index: 0,
             parent_context: JsonParentContext::None,
-            remaining_depth: DEFAULT_DEPTH_LIMIT,
-            allow_trailing_commas: false,
-            allow_comments: false,
+            config,
             scratch: Vec::new(),
         }
     }
@@ -270,8 +267,8 @@ impl<'j> Parser<'j> {
                 self.index += 1;
                 Ok(None)
             } else {
-                self.remaining_depth -= 1;
-                if self.remaining_depth < 0 {
+                self.config.recursion_limit -= 1;
+                if self.config.recursion_limit < 0 {
                     return Err(&RECURSION_LIMIT_EXCEEDED);
                 }
                 Ok(Some(Peek::new(next)))
@@ -312,9 +309,9 @@ impl<'j> Parser<'j> {
                     self.index += 1;
                     let next = self.array_peek()?;
                     if next.is_none() {
-                        if self.allow_trailing_commas {
+                        if self.config.allow_trailing_commas {
                             self.index += 1;
-                            self.remaining_depth += 1;
+                            self.config.recursion_limit += 1;
                             Ok(None)
                         } else {
                             Err(&TRAILING_COMMA)
@@ -325,7 +322,7 @@ impl<'j> Parser<'j> {
                 }
                 b']' => {
                     self.index += 1;
-                    self.remaining_depth += 1;
+                    self.config.recursion_limit += 1;
                     Ok(None)
                 }
                 _ => Err(&EXPECTED_LIST_COMMA_OR_END),
@@ -402,9 +399,7 @@ impl<'j> Parser<'j> {
                     error: None,
                 },
                 index: self.index + (self.ctx.data.len() - value.len()),
-                remaining_depth: self.remaining_depth,
-                allow_trailing_commas: self.allow_trailing_commas,
-                allow_comments: self.allow_comments,
+                config: self.config,
                 scratch: Vec::new(),
             })),
             Err(_) => Err(&TODO_ERROR),
@@ -418,8 +413,8 @@ impl<'j> Parser<'j> {
         if let Some(next) = self.eat_whitespace() {
             match next {
                 b'"' => {
-                    self.remaining_depth -= 1;
-                    if self.remaining_depth < 0 {
+                    self.config.recursion_limit -= 1;
+                    if self.config.recursion_limit < 0 {
                         return Err(&RECURSION_LIMIT_EXCEEDED);
                     }
                     Ok(Some(()))
@@ -559,7 +554,7 @@ impl<'j> Parser<'j> {
             return Err(&EOF_WHILE_PARSING_OBJECT);
         }
         let initial_index = self.index;
-        let initial_remaining_depth = self.remaining_depth;
+        let initial_remaining_depth = self.config.recursion_limit;
         let mut current_field_name = match self.enter_seen_object() {
             Ok(Some(name)) => name,
             Ok(None) => {
@@ -575,7 +570,7 @@ impl<'j> Parser<'j> {
                     Ok(value) => {
                         let frozen = value as *const str;
                         self.index = initial_index;
-                        self.remaining_depth = initial_remaining_depth;
+                        self.config.recursion_limit = initial_remaining_depth;
                         // Saftey: Since we do not modify the buffer this is fine
                         // -- todo: refactor to remove such unsafety
                         return Ok(unsafe { &*frozen });
@@ -619,8 +614,8 @@ impl<'j> Parser<'j> {
         if let Some(next) = self.eat_whitespace() {
             match next {
                 b'"' => {
-                    self.remaining_depth -= 1;
-                    if self.remaining_depth < 0 {
+                    self.config.recursion_limit -= 1;
+                    if self.config.recursion_limit < 0 {
                         return Err(&RECURSION_LIMIT_EXCEEDED);
                     }
                     unsafe { self.read_seen_object_key().map(Some) }
@@ -629,7 +624,18 @@ impl<'j> Parser<'j> {
                     self.index += 1;
                     Ok(None)
                 }
-                _ => Err(&KEY_MUST_BE_A_STRING),
+
+                _ => {
+                    if self.config.allow_unquoted_field_keys {
+                        self.config.recursion_limit -= 1;
+                        if self.config.recursion_limit < 0 {
+                            return Err(&RECURSION_LIMIT_EXCEEDED);
+                        }
+                        return self.read_seen_unquoted_object_key().map(Some);
+                    } else {
+                        return Err(&KEY_MUST_BE_A_STRING);
+                    }
+                }
             }
         } else {
             Err(&EOF_WHILE_PARSING_OBJECT)
@@ -644,9 +650,9 @@ impl<'j> Parser<'j> {
                     match self.eat_whitespace() {
                         Some(b'"') => Ok(Some(())),
                         Some(b'}') => {
-                            if self.allow_trailing_commas {
+                            if self.config.allow_trailing_commas {
                                 self.index += 1;
-                                self.remaining_depth += 1;
+                                self.config.recursion_limit += 1;
                                 Ok(None)
                             } else {
                                 Err(&TRAILING_COMMA)
@@ -658,10 +664,37 @@ impl<'j> Parser<'j> {
                 }
                 b'}' => {
                     self.index += 1;
-                    self.remaining_depth += 1;
+                    self.config.recursion_limit += 1;
                     Ok(None)
                 }
                 _ => Err(&EXPECTED_OBJECT_COMMA_OR_END),
+            }
+        } else {
+            Err(&EOF_WHILE_PARSING_OBJECT)
+        }
+    }
+
+    pub fn read_seen_unquoted_object_key(&mut self) -> JsonResult<&str> {
+        let start = self.index;
+        while let Some(ch) = self.ctx.data.get(self.index) {
+            if matches!(*ch, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') {
+                self.index += 1;
+                continue;
+            }
+            break;
+        }
+        if self.index == start {
+            return Err(&DecodeError {
+                message: "Invalid unquoted key",
+            });
+        }
+        let end = self.index;
+        if let Some(next) = self.eat_whitespace() {
+            if next == b':' {
+                self.index += 1;
+                Ok(unsafe { std::str::from_utf8_unchecked(&self.ctx.data[start..end]) })
+            } else {
+                Err(&EXPECTED_COLON)
             }
         } else {
             Err(&EOF_WHILE_PARSING_OBJECT)
@@ -676,21 +709,27 @@ impl<'j> Parser<'j> {
                     match self.eat_whitespace() {
                         Some(b'"') => unsafe { self.read_seen_object_key().map(Some) },
                         Some(b'}') => {
-                            if self.allow_trailing_commas {
+                            if self.config.allow_trailing_commas {
                                 self.index += 1;
-                                self.remaining_depth += 1;
+                                self.config.recursion_limit += 1;
                                 Ok(None)
                             } else {
                                 Err(&TRAILING_COMMA)
                             }
                         }
-                        Some(_) => Err(&KEY_MUST_BE_A_STRING),
+                        Some(_) => {
+                            if self.config.allow_unquoted_field_keys {
+                                return self.read_seen_unquoted_object_key().map(Some);
+                            } else {
+                                return Err(&KEY_MUST_BE_A_STRING);
+                            }
+                        }
                         None => Err(&EOF_WHILE_PARSING_VALUE),
                     }
                 }
                 b'}' => {
                     self.index += 1;
-                    self.remaining_depth += 1;
+                    self.config.recursion_limit += 1;
                     Ok(None)
                 }
                 _ => Err(&EXPECTED_OBJECT_COMMA_OR_END),
@@ -971,7 +1010,7 @@ impl<'j> Parser<'j> {
             match next {
                 b' ' | b'\r' | b'\t' | b'\n' => self.index += 1,
                 #[cfg(feature = "json_comments")]
-                b'/' if self.allow_comments => self.eat_comment(),
+                b'/' if self.config.allow_comments => self.eat_comment(),
                 _ => return Some(next),
             }
             if let Some(next2) = self.ctx.data.get(self.index) {

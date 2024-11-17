@@ -202,7 +202,7 @@ impl MaybeJson {
                 recursion_limit: 128,
                 allow_trailing_commas: false,
                 allow_comments: false,
-                allow_unquoted_keys: false,
+                allow_unquoted_field_keys: false,
                 allow_trailing_data: true,
             },
         )

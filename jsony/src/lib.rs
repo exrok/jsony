@@ -477,10 +477,11 @@ pub struct JsonParserConfig {
     /// Comments start with two forward slashes (//) and continue to the end of the line.
     pub allow_comments: bool,
 
-    /// When enabled, allows unquoted strings for object keys.
+    /// When enabled, allows unquoted strings for object keys that correspond to fields
+    /// of rust types.
     /// Unquoted keys must be comprised of characters matching the following [A-Za-z0-9_]
     /// and cannot start with a number.
-    pub allow_unquoted_keys: bool,
+    pub allow_unquoted_field_keys: bool,
 
     /// When enabled, allows extra data to appear after the outermost JSON structure.
     /// This is primarily relevant when using the `from_json` function rather than
@@ -494,7 +495,7 @@ impl Default for JsonParserConfig {
             recursion_limit: 128,
             allow_trailing_commas: Default::default(),
             allow_comments: Default::default(),
-            allow_unquoted_keys: Default::default(),
+            allow_unquoted_field_keys: Default::default(),
             allow_trailing_data: Default::default(),
         }
     }
@@ -529,7 +530,7 @@ pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, JsonError> {
             recursion_limit: 128,
             allow_trailing_commas: false,
             allow_comments: false,
-            allow_unquoted_keys: false,
+            allow_unquoted_field_keys: false,
             allow_trailing_data: false,
         },
     )
@@ -546,14 +547,11 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
         json: &'a str,
         config: JsonParserConfig,
     ) -> Result<bool, JsonError> {
-        let mut parser = Parser::new(json);
-        parser.remaining_depth = config.recursion_limit;
-        parser.allow_trailing_commas = config.allow_trailing_commas;
+        let mut parser = Parser::new(json, config);
         #[cfg(not(feature = "json_comments"))]
         if config.allow_comments {
             panic!("jsony: 'json_comments' feature is not enabled but is required for `allow_comments`.")
         }
-        parser.allow_comments = config.allow_comments;
         match unsafe { func(value, &mut parser) } {
             Ok(()) => {
                 let _ = parser.peek();
