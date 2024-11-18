@@ -34,11 +34,11 @@ fn tt_append_blit(output: &mut RustWriter, chr: &str) {
         }));
 }
 
-struct GenericBoundFormating {
+struct GenericBoundFormatting {
     lifetimes: bool,
     bounds: bool,
 }
-fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBoundFormating) {
+fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBoundFormatting) {
     let mut first = true;
     for generic in generics {
         if !fmt.lifetimes
@@ -70,15 +70,15 @@ fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBound
         }
     }
 }
-const DEAD_USE: GenericBoundFormating = GenericBoundFormating {
+const DEAD_USE: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: false,
     bounds: false,
 };
-const USE: GenericBoundFormating = GenericBoundFormating {
+const USE: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: true,
     bounds: false,
 };
-const DEF: GenericBoundFormating = GenericBoundFormating {
+const DEF: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: true,
     bounds: true,
 };
@@ -651,7 +651,7 @@ fn struct_schema(
         fmt_generics(
             out,
             &ctx.target.generics,
-            GenericBoundFormating {
+            GenericBoundFormatting {
                 lifetimes: false,
                 bounds: false,
             },
@@ -850,7 +850,7 @@ fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> 
         }
         _ => {
             return Err(Error::msg(
-                "FromJson not implemented for Tuples with mulitple fields yet.",
+                "FromJson not implemented for Tuples with multiple fields yet.",
             ))
         }
     };
@@ -953,11 +953,11 @@ fn with_injected_closure_arg_type(out: &mut RustWriter, attr_value: &[Tok], ty: 
     if let [Tok::Punct(bar1), Tok::Ident(binding), Tok::Punct(bar2), rest @ ..] = attr_value {
         if bar1.as_char() == '|' && bar2.as_char() == '|' {
             {
-                out.blit_punct(11);
+                out.blit_punct(12);
                 out.buf.push(TokenTree::from(binding.clone()));
                 out.blit(12, 2);
                 out.buf.extend_from_slice(ty);
-                out.blit_punct(11);
+                out.blit_punct(12);
                 out.buf.extend_from_slice(rest);
             };
             return;
@@ -1176,7 +1176,7 @@ fn inner_struct_to_json(
 fn field_from_default(out: &mut RustWriter, field: &Field, set: TraitSet) {
     {
         {
-            if let Some(explict_default) = field.default(set) {
+            if let Some(explicit_default) = field.default(set) {
                 {
                     {
                         let at = out.buf.len();
@@ -1185,7 +1185,7 @@ fn field_from_default(out: &mut RustWriter, field: &Field, set: TraitSet) {
                         {
                             let at = out.buf.len();
                             out.blit_ident(166);
-                            out.buf.extend_from_slice(explict_default);
+                            out.buf.extend_from_slice(explicit_default);
                             out.tt_group(Delimiter::Brace, at);
                         };
                         out.blit(444, 3);
@@ -1223,7 +1223,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
         if field.flatten(FROM_JSON) {
             if flattening.is_some() {
                 return Err(Error::span_msg(
-                    "Only one flatten field is currently supproted",
+                    "Only one flatten field is currently supported",
                     field.name.span(),
                 ));
             }
@@ -1771,7 +1771,7 @@ fn enum_variant_from_json_struct(
         if field.flatten(FROM_JSON) {
             if flattening.is_some() {
                 return Err(Error::span_msg(
-                    "Only one flatten field is currently supproted",
+                    "Only one flatten field is currently supported",
                     field.name.span(),
                 ));
             }

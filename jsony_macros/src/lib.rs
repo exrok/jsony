@@ -202,7 +202,7 @@ pub fn object(input: TokenStream) -> TokenStream {
 ///
 /// Uses the functions from the provided module path when a encoding/decoding trait method would normally be used.
 ///
-/// The function corresponds to the save methods of each trait (ommiting the `__jsony` suffix if present).
+/// The function corresponds to the save methods of each trait (omitting the `__jsony` suffix if present).
 ///
 /// | Trait | Function |
 /// |-------|-----------------|

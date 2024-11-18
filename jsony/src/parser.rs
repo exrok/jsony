@@ -621,7 +621,7 @@ impl<'j> InnerParser<'j> {
         Ok(is_equal)
     }
 
-    /// Safety: Parser must be at a valid stream typically this inforced by
+    /// Safety: Parser must be at a valid stream typically this enforced by
     /// calling the function immediately after `Parser::peak(..) == Peek::String`
     pub unsafe fn read_seen_string<'k, 's: 'k>(
         &mut self,

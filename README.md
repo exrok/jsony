@@ -1,6 +1,6 @@
 # Jsony
 
-An **experimental** fast compiling serialization and deserialization rust libary for JSON like formats.
+An **experimental** fast compiling serialization and deserialization rust library for JSON like formats.
 
 [![Crates.io](https://img.shields.io/crates/v/jsony?style=flat-square)](https://crates.io/crates/jsony)
 [![Crates.io](https://img.shields.io/docsrs/jsony?style=flat-square)](https://docs.rs/jsony/latest/jsony/)

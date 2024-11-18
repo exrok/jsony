@@ -2,7 +2,7 @@ use jsony::{Jsony, RawJson};
 
 /// The `LazyValue` type can be used defer parsing parts
 /// of a payload until later.
-fn defered_parsing() -> Res<()> {
+fn deferred_parsing() -> Res<()> {
     #[derive(Jsony, Debug)]
     #[jsony(Json)]
     struct Alpha<'a> {
@@ -32,7 +32,7 @@ fn defered_parsing() -> Res<()> {
 }
 
 fn main() {
-    defered_parsing().unwrap();
+    deferred_parsing().unwrap();
 }
 
 struct Error {

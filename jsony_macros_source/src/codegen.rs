@@ -117,11 +117,11 @@ macro_rules! token_stream { ($d:tt; $($tt:tt)*) => {{
     let len = $d.buf.len(); $(append_tok!($tt $d);)* $d.split_off_stream(len)
 }}}
 
-struct GenericBoundFormating {
+struct GenericBoundFormatting {
     lifetimes: bool,
     bounds: bool,
 }
-fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBoundFormating) {
+fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBoundFormatting) {
     let mut first = true;
     for generic in generics {
         if !fmt.lifetimes && matches!(generic.kind, GenericKind::Lifetime) {
@@ -149,15 +149,15 @@ fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBound
     }
 }
 
-const DEAD_USE: GenericBoundFormating = GenericBoundFormating {
+const DEAD_USE: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: false,
     bounds: false,
 };
-const USE: GenericBoundFormating = GenericBoundFormating {
+const USE: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: true,
     bounds: false,
 };
-const DEF: GenericBoundFormating = GenericBoundFormating {
+const DEF: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: true,
     bounds: true,
 };
@@ -334,7 +334,7 @@ impl<'a> Ctx<'a> {
         // }
         let crate_path = if let Some(value) = &target.path_override {
             let content = value.to_string();
-            // assumes normal string and no escapes probalby shouldn't
+            // assumes normal string and no escapes probably shouldn't
             #[allow(unused)]
             let inner = &content[1..content.len() - 1];
             // TokenStream::from_str(inner)
@@ -542,7 +542,7 @@ fn struct_schema(
         fmt_generics(
             out,
             &ctx.target.generics,
-            GenericBoundFormating {
+            GenericBoundFormatting {
                 lifetimes: false,
                 bounds: false,
             },
@@ -668,7 +668,7 @@ fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> 
             ToJsonKind::Forward(field)
         }
         _ => {
-            throw!("FromJson not implemented for Tuples with mulitple fields yet.")
+            throw!("FromJson not implemented for Tuples with multiple fields yet.")
         }
     };
     let stream = out.split_off_stream(head);
@@ -858,12 +858,12 @@ fn field_from_default(out: &mut RustWriter, field: &Field, set: TraitSet) {
     // todo optimize this.
     splat!(
         out; [
-            if let Some(explict_default) = field.default(set) {
+            if let Some(explicit_default) = field.default(set) {
                 splat!(
                     out;
                     {
                         let __scope_jsony = | | -> [~field.ty] {
-                            return [~explict_default]
+                            return [~explicit_default]
                         };
                         __scope_jsony()
                     }
@@ -897,7 +897,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
         if field.flatten(FROM_JSON) {
             if flattening.is_some() {
                 return Err(Error::span_msg(
-                    "Only one flatten field is currently supproted",
+                    "Only one flatten field is currently supported",
                     field.name.span(),
                 ));
             }
@@ -1100,8 +1100,8 @@ fn enum_variant_to_json_struct(
         ]
         [inner_struct_to_json(out, ctx, &variant.fields, text, false)?];
         [
-            // opt: Could do a static '}' push if we know that there isn't a trailling comma which
-            // can occour when flattening
+            // opt: Could do a static '}' push if we know that there isn't a trailing comma which
+            // can occur when flattening
             match ctx.target.tag {
                 Tag::Untagged => splat!(out;out.end_json_object();),
                 Tag::Inline(..) if ctx.target.content.is_some() => splat!(out;out.end_json_object();),
@@ -1227,7 +1227,7 @@ fn enum_variant_from_json_struct(
         if field.flatten(FROM_JSON) {
             if flattening.is_some() {
                 return Err(Error::span_msg(
-                    "Only one flatten field is currently supproted",
+                    "Only one flatten field is currently supported",
                     field.name.span(),
                 ));
             }

@@ -604,7 +604,7 @@ pub fn to_json<T: ?Sized + ToJson>(value: &T) -> String {
 
 /// Converts the given value into a JSON string appending it to the provided output.
 ///
-/// Can be more efficent then `to_json` when used it avoid allocations or
+/// Can be more efficient then `to_json` when used it avoid allocations or
 /// extra copies.
 ///
 /// ## Examples

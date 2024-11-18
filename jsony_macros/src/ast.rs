@@ -449,7 +449,7 @@ pub fn extract_derive_target<'a>(
                 TokenTree::Group(_) => return Err(Error::msg("Unexpected group")),
                 TokenTree::Ident(next_ident) => {
                     if ident_eq(&ident, "const") {
-                        return Err(Error::msg_ctx("unexpeced ident", &(&next_ident)));
+                        return Err(Error::msg_ctx("unexpected ident", &(&next_ident)));
                     }
                     (GenericKind::Const, next_ident, false)
                 }
@@ -646,13 +646,13 @@ fn parse_single_field_attr(
             0u64 * TRAIT_COUNT
         }
         "via" => {
-            let Some(TokenTree::Ident(vai_ident)) = value.pop() else {
+            let Some(TokenTree::Ident(via_ident)) = value.pop() else {
                 return Err(Error::span_msg("Expected a value", ident.span()));
             };
             if !value.is_empty() {
                 return Err(Error::span_msg("Unexpected a single literal", ident.span()));
             }
-            let via = vai_ident.to_string();
+            let via = via_ident.to_string();
             match via.as_str() {
                 "Iterator" => {
                     attrs.attrs.push(FieldAttr {
@@ -661,7 +661,7 @@ fn parse_single_field_attr(
                         inner: FieldAttrInner::Via(Via::Iterator),
                     });
                 }
-                _ => return Err(Error::span_msg("Unknown via value", vai_ident.span())),
+                _ => return Err(Error::span_msg("Unknown via value", via_ident.span())),
             }
             1u64 * TRAIT_COUNT
         }

@@ -213,7 +213,7 @@ pub fn write_length(encoder: &mut BytesWriter, len: usize) {
     }
 }
 
-macro_rules! impl_bincode_for_numeric_primative {
+macro_rules! impl_bincode_for_numeric_primitive {
     ($(( $ty:ty, $sz: tt )),* $(,)?) => {
         $(
             unsafe impl ToBinary for $ty {
@@ -265,7 +265,7 @@ unsafe impl<'a> FromBinary<'a> for u8 {
     }
 }
 
-impl_bincode_for_numeric_primative! {
+impl_bincode_for_numeric_primitive! {
     (u16, 2),
     (u32, 4),
     (u64, 8),

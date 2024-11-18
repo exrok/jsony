@@ -37,7 +37,7 @@ pub trait IntoTextWriter<'a> {
     /// Convert Self into TextWriter, preserving the contents.
     fn into_text_writer(self) -> TextWriter<'a>;
 
-    /// Should return Output corrsponding to added context since the
+    /// Should return Output corresponding to added context since the
     /// creation from `into_text_writer()`.
     ///
     /// If `finish_writing` is called on an instance of TextWriter
@@ -49,7 +49,7 @@ pub trait IntoTextWriter<'a> {
 impl<'a> IntoTextWriter<'a> for &'a mut String {
     type Output = &'a str;
     fn into_text_writer(self) -> TextWriter<'a> {
-        // Safety: TextWriter will only appened valid utf-8
+        // Safety: TextWriter will only append valid utf-8
         TextWriter::with_buffer(BytesWriter::from(unsafe { self.as_mut_vec() }))
     }
     fn finish_writing(buffer: TextWriter<'a>) -> &'a str {

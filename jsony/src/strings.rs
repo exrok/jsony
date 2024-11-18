@@ -142,7 +142,7 @@ pub(crate) fn skip_json_string_and_validate(
             b'\\' => {
                 let mut scratch = [MaybeUninit::uninit(); 4];
                 match parse_escape_inner(at + 1, data, &mut scratch) {
-                    Ok((index, _writen)) => {
+                    Ok((index, _written)) => {
                         at = index;
                         continue;
                     }
@@ -372,8 +372,8 @@ mod test {
     }
     #[test]
     fn json_skipping() {
-        let input = br#""hel\nlo""#;
-        let (offset, matches) = skip_json_string_and_eq(1, input, b"hel\nlo").unwrap();
+        let input = br#""hell\no""#;
+        let (offset, matches) = skip_json_string_and_eq(1, input, b"hell\no").unwrap();
         assert_eq!(offset, input.len());
         assert!(matches);
     }

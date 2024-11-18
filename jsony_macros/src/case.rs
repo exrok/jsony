@@ -1,4 +1,4 @@
-// Initialy From serde: https://github.com/serde-rs/serde/blob/master/serde_derive/src/internals/case.rs
+// Initially From serde: https://github.com/serde-rs/serde/blob/master/serde_derive/src/internals/case.rs
 // Code to convert the Rust-styled field/variant (e.g. `my_field`, `MyType`) to the
 // case of the source (e.g. `my-field`, `MY_FIELD`).
 use proc_macro::Literal;

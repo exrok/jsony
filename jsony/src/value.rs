@@ -14,7 +14,7 @@ use std::{ops::Index, ptr::NonNull};
 
 use Kind::{Empty, False, Map, Null, Number, True};
 
-const HASH_MAP_THRESHHOLD: usize = 8;
+const HASH_MAP_THRESHOLD: usize = 8;
 
 use crate::{
     json::{decode_object_sequence, AnyValue, DecodeError},
@@ -527,7 +527,7 @@ impl<'a> JsonItem<'a> {
         if map.capacity() > u32::MAX as usize {
             map.shrink_to_fit();
         }
-        if map.len() >= HASH_MAP_THRESHHOLD {
+        if map.len() >= HASH_MAP_THRESHOLD {
             assert_eq!(size_of::<(JsonKey<'a>, JsonItem<'a>)>(), 8 * 4);
             map.reserve_exact((map.len() + 1) / 2);
 
@@ -537,7 +537,7 @@ impl<'a> JsonItem<'a> {
                 // println!("{:?}", map.spare_capacity_mut().len());
                 let extra = map.spare_capacity_mut().as_mut_ptr().cast::<u64>();
                 // println!("{}", *extra);
-                // zero the memeory
+                // zero the memory
                 for i in 0..map.len() {
                     *extra.add(i) = 0;
                 }
@@ -691,7 +691,7 @@ impl<'a> JsonItem<'a> {
             let len = (self.length & 0x1FFF_FFFF) as usize;
             let ptr = self.ptr.as_ptr() as *const (JsonKey<'a>, JsonItem<'a>);
             let items = unsafe { std::slice::from_raw_parts(ptr, len) };
-            if len < HASH_MAP_THRESHHOLD {
+            if len < HASH_MAP_THRESHOLD {
                 for (k, v) in items {
                     if k.as_str() == key {
                         return v;

@@ -11,7 +11,7 @@ pub struct RustWriter {
     cache: Cache,
 }
 
-/// Reduces macro evalution time by 10% on rustc 1.82
+/// Reduces macro evaluation time by 10% on rustc 1.82
 struct Cache {
     default_span: Span,
     ident: Box<[IdentCacheEntry; cache::IDENT_SIZE]>,

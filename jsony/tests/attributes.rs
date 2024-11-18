@@ -189,10 +189,10 @@ fn assert_bin_equiv<
     let (encoded_value, encoded_reference) = writer.buffer_slice().split_at(i);
     assert_eq!(
         encoded_value, encoded_reference,
-        "Value and reference have same encoding repersentation"
+        "Value and reference have same encoding representation"
     );
     {
-        // saftey: will be safe for all tests we do
+        // safety: will be safe for all tests we do
         let mut decoder =
             jsony::binary::Decoder::new(unsafe { &*(encoded_reference as *const [u8]) });
         let decoded = T::binary_decode(&mut decoder);
@@ -242,10 +242,10 @@ fn with_attribute_enum() {
 }
 
 #[test]
-fn enum_variantions() {
+fn enum_variations() {
     #[derive(Jsony, Debug, PartialEq)]
     #[jsony(Json)]
-    enum ExtenallyTagged<'a> {
+    enum ExternallyTagged<'a> {
         Record {
             alpha: &'a str,
             beta: u32,
@@ -261,12 +261,12 @@ fn enum_variantions() {
 
     assert_json_eq!(
         { "Record": { "alpha": "abc", "beta": 7 } },
-        ExtenallyTagged::Record { alpha: "abc", beta: 7 }
+        ExternallyTagged::Record { alpha: "abc", beta: 7 }
     );
 
     assert_json_eq!(
         { "RecordFlatten": { "alpha": "abc" , "beta": 7, "delta": 90 } },
-        ExtenallyTagged::RecordFlatten { alpha: "abc", map: [
+        ExternallyTagged::RecordFlatten { alpha: "abc", map: [
             ("beta", 7),
             ("delta", 90)
         ].iter().cloned().collect() }
@@ -274,10 +274,10 @@ fn enum_variantions() {
 
     assert_json_eq!(
         { "Single": true },
-        ExtenallyTagged::Single(true)
+        ExternallyTagged::Single(true)
     );
 
-    assert_json_eq!("Empty", ExtenallyTagged::Empty);
+    assert_json_eq!("Empty", ExternallyTagged::Empty);
 
     #[derive(Jsony, Debug, PartialEq)]
     #[jsony(Json, tag = "type")]

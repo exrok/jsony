@@ -198,14 +198,14 @@ mod test {
             &[None],
         );
         assert_decodes(
-            "k1=va%20l+ue&k2=val2", //
+            "k1=a%20b+c&k2=val2", //
             &["k1"],
-            &[Some("va l ue")],
+            &[Some("a b c")],
         );
         assert_decodes(
-            "k1=va%20l+ue&k+2%20=val2", //
+            "k1=a%20b+c&k+2%20=val2", //
             &["k1", "k 2 "],
-            &[Some("va l ue"), Some("val2")],
+            &[Some("a b c"), Some("val2")],
         );
     }
 }

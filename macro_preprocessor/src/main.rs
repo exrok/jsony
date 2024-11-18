@@ -351,7 +351,7 @@ fn export_merged_blocks(files: &[&[u8]]) -> (Vec<u8>, Vec<Vec<u8>>) {
 
     let mut current_slice = Vec::<u8>::new();
     // todo consider remapping the space so that &\x00 never happen and
-    // that the majority of text gets mapped to asscie charaters
+    // that the majority of text gets mapped to asscie characters
     let mut g_count = 0;
     let mut og_count = 0;
     let mut outputs: Vec<Vec<u8>> = Vec::new();
@@ -599,7 +599,7 @@ fn try_match<'a, 'b>(
     todo!();
 }
 
-fn structual_replace(
+fn structural_replace(
     pattern: &str,
     input_string: &str,
     bindings: &[(&str, fn(TokPair) -> bool)],
@@ -718,7 +718,7 @@ fn replace_text() {
     let file = std::fs::read_to_string("/home/user/Projects/git/jsony/jsony_macros/src/codegen.rs")
         .unwrap();
     let mut count = 0;
-    let gen = structual_replace(
+    let gen = structural_replace(
         pattern,
         &file,
         &[

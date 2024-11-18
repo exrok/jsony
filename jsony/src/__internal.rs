@@ -156,7 +156,7 @@ impl<'a> ObjectSchema<'a> {
         &self,
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
-        mut unsued: Option<&mut dyn FieldVistor<'a>>,
+        mut unused: Option<&mut dyn FieldVistor<'a>>,
     ) -> Result<(), &'static DecodeError> {
         let all = (1u64 << self.inner.fields.len()) - 1;
         let mut bitset = 0;
@@ -192,11 +192,11 @@ impl<'a> ObjectSchema<'a> {
                                 bitset |= mask;
                                 break 'next;
                             }
-                            if let Some(ref mut unsued_processor) = unsued {
+                            if let Some(ref mut unused_processor) = unused {
                                 // Safety: Safe since the `key` was provided by the same parses and still
                                 // valid here (since it compiles and wasn't casted to a pointer earlier).
                                 let borrowed = unsafe { ParserWithBorrowedKey::new(key, parser) };
-                                if let Err(err) = unsued_processor.visit(borrowed) {
+                                if let Err(err) = unused_processor.visit(borrowed) {
                                     break 'with_next_key err;
                                 }
                             } else if let Err(error) = parser.at.skip_value() {
@@ -227,7 +227,7 @@ impl<'a> ObjectSchema<'a> {
                 };
                 break 'with_next_key &MISSING_REQUIRED_FIELDS;
             }
-            if let Some(visitor) = &mut unsued {
+            if let Some(visitor) = &mut unused {
                 if let Err(err) = visitor.complete() {
                     break 'with_next_key err;
                 }
@@ -248,7 +248,7 @@ impl<'a> ObjectSchema<'a> {
                 drop(dest.byte_add(field.offset));
             }
         }
-        if let Some(vistor) = unsued {
+        if let Some(vistor) = unused {
             vistor.destroy()
         }
         Err(error)
@@ -264,7 +264,7 @@ where
     F: 'static + Fn(P) -> Result<T, &'static DecodeError>,
 {
     const { assert!(std::mem::size_of::<F>() == 0) }
-    let foor: unsafe fn(dest: NonNull<()>, parser: P) -> Result<(), &'static DecodeError> = unsafe {
+    let func: unsafe fn(dest: NonNull<()>, parser: P) -> Result<(), &'static DecodeError> = unsafe {
         |dest: NonNull<()>, parser: P| -> Result<(), &'static DecodeError> {
             // safety: from above assert F is ZST.
             let func = std::mem::transmute_copy::<(), F>(&());
@@ -278,5 +278,5 @@ where
             }
         }
     };
-    unsafe { std::mem::transmute(foor) }
+    unsafe { std::mem::transmute(func) }
 }

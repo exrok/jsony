@@ -159,7 +159,7 @@ struct Codegen {
 
 fn munch_expr(input: &mut IntoIter, output: &mut Vec<TokenTree>) {
     output.clear();
-    //Todo this doens't handle generics properly
+    //Todo this doesn't handle generics properly
     for tok in input.by_ref() {
         if is_char(&tok, ',') {
             break;
@@ -313,7 +313,7 @@ impl Codegen {
                 // There inner block here for parsing the speicifc case
                 let col = 'value: {
                     if let Some(col) = input.next() {
-                        // todo should be handling when there are many commans
+                        // todo should be handling when there are many commands
                         if !is_char(&col, ',') {
                             break 'value col;
                         }
