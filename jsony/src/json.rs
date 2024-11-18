@@ -485,7 +485,7 @@ unsafe impl<'a> FromJson<'a> for char {
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
-        match parser.read_seen_string() {
+        match parser.take_string() {
             Ok(raw_str) => {
                 let mut chars = raw_str.chars();
                 let ch = chars.next();
