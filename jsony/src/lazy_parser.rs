@@ -5,149 +5,76 @@
 //! inner part. Further, all index access implement null coalescing meaning
 //! when an
 //!
-//! Currently, should not be used to parse user provided json as currently
-//! strict validation is not enough leading strange behaviour.
-//!
 //! Example:
 //! ```ignore
 //! let json = Value::new(r#"{"a": {"b": [{"c": "contents"}]}}"#);
 //! let contents: String = json["a"]["b"][0]["c"].parse().unwrap();
-//! assert_eq!(json["a"]["name_of_missing_key"][0]["c"].key_error(), Some("name_of_missing_key"));
+//! assert_eq!(json[&"a"][&"name_of_missing_key"][0]["c"].key_error(), Some("name_of_missing_key"));
 //! ```
 
-use crate::{
-    json::DecodeError,
-    parser::EOF_WHILE_PARSING_VALUE,
-    strings::{skip_json_string_and_eq, skip_json_string_and_validate},
-    MaybeJson,
-};
-use memchr::memchr;
+use crate::{json::DecodeError, parser::InnerParser, text::Ctx, MaybeJson};
 
 use crate::{from_json_with_config, FromJson, JsonError, JsonParserConfig};
 
-fn index_after_value(s: &[u8]) -> Result<usize, ErrorCode> {
-    let mut depth = 1;
-    let mut i = 0;
-    while let Some(ch) = s.get(i) {
-        i += 1;
-        match ch {
-            b'"' => {
-                i = skip_json_string_and_validate(i, s).map_err(|_| ErrorCode::InvalidString)?
-            }
-            b'{' | b'[' => depth += 1,
-            b'}' | b']' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Ok(i);
-                }
-            }
-            _ => (),
-        }
-    }
-    Err(ErrorCode::Eof)
-}
+static OBJECT_INDEX_ERROR: DecodeError = DecodeError {
+    message: "Object Key Index Error",
+};
 
-pub fn expr_end(s: &[u8]) -> Result<usize, ErrorCode> {
-    let mut i = 0;
-    while s.get(i).ok_or(ErrorCode::Eof)?.is_ascii_whitespace() {
-        i += 1;
-    }
-    let ch = s[i];
-    i += 1;
-    match ch {
-        b'"' => skip_json_string_and_validate(i, s).map_err(|_| ErrorCode::InvalidString),
-        b'{' | b'[' => Ok(i + index_after_value(&s[i..])?),
-        _ => {
-            let v = memchr::memchr3(b',', b']', b'}', &s[i..]).ok_or(ErrorCode::Eof)?;
-            Ok(v + i)
-        }
-    }
-}
+static ARRAY_INDEX_ERROR_0: DecodeError = DecodeError {
+    message: "Array Index of 0 is out of range",
+};
+static ARRAY_INDEX_ERROR_1: DecodeError = DecodeError {
+    message: "Array Index of 1 is out of range",
+};
+static ARRAY_INDEX_ERROR_2: DecodeError = DecodeError {
+    message: "Array Index of 2 is out of range",
+};
+static ARRAY_INDEX_ERROR_N: DecodeError = DecodeError {
+    message: "Array Index out of range",
+};
 
-fn index_of_next_value_in_array(s: &[u8]) -> Result<usize, ErrorCode> {
-    let mut i = 0;
-    while s.get(i).ok_or(ErrorCode::Eof)?.is_ascii_whitespace() {
-        i += 1;
-    }
-    let ch = s[i];
-    i += 1;
-    match ch {
-        b'"' => i = skip_json_string_and_validate(i, s).map_err(|_| ErrorCode::InvalidString)?,
-        b'{' | b'[' => i += index_after_value(&s[i..])?,
-        _ => {}
-    }
-    i += memchr::memchr2(b',', b']', &s[i..]).ok_or(ErrorCode::Eof)?;
-    if s[i] == b']' {
-        return Err(ErrorCode::OutOfBoundsArrayAccess);
-    }
-    Ok(i + 1)
-}
-
-// Return remaining bytes starting with value at the provided index if the bytes
-// begins with a valid JSON array.
-// If bytes is valid UTF-8 the returned bytes will be too.
-fn array_index(bytes: &[u8], mut index: usize) -> Result<&[u8], ErrorCode> {
-    let mut i = 0;
-    while bytes.get(i).ok_or(ErrorCode::Eof)?.is_ascii_whitespace() {
-        i += 1;
-    }
-    if bytes[i] != b'[' {
-        return Err(ErrorCode::ExpectedArray);
-    }
-    i += 1;
-    while index > 0 {
-        i += index_of_next_value_in_array(&bytes[i..])?;
-        index -= 1;
-    }
-    while bytes.get(i).ok_or(ErrorCode::Eof)?.is_ascii_whitespace() {
-        i += 1;
-    }
-    if bytes[i] == b']' {
-        return Err(ErrorCode::OutOfBoundsArrayAccess);
-    }
-    Ok(&bytes[i..])
-}
-
-// Return remaining bytes starting with value of the provided key.
-// begins with a valid JSON object.
-// If bytes is valid UTF-8 the returned bytes will be too.
-pub(crate) fn object_index<'a>(bytes: &'a [u8], key: &[u8]) -> Result<&'a [u8], ErrorCode> {
-    let mut i = 0;
-    while bytes.get(i).ok_or(ErrorCode::Eof)?.is_ascii_whitespace() {
-        i += 1;
-    }
-    if bytes[i] != b'{' {
-        return Err(ErrorCode::ExpectedObject);
-    }
-    i += 1;
-    while let Some(offset) = memchr(b'"', bytes.get(i..).ok_or(ErrorCode::Eof)?) {
-        i += offset + 1;
-        let Ok((ni, matches)) = skip_json_string_and_eq(i, &bytes, key) else {
-            return Err(ErrorCode::Eof);
-        };
-        i = ni + memchr(b':', &bytes[ni..]).ok_or(ErrorCode::Eof)? + 1;
-        let expr_start = i;
-        if matches {
-            return Ok(&bytes[expr_start..]);
-        }
-        i += expr_end(&bytes[i..])?;
-    }
-    Err(ErrorCode::MissingObjectKey)
-}
-
-impl std::ops::Index<&'static str> for MaybeJson {
+impl std::ops::Index<&'static &'static str> for MaybeJson {
     type Output = MaybeJson;
 
     /// If the current value is an object, get the value of the corresponding key
-    fn index(&self, key: &'static str) -> &Self::Output {
+    fn index(&self, key: &'static &'static str) -> &Self::Output {
         if self.is_error() {
             return self;
         }
-        match object_index(self.raw.as_bytes(), key.as_bytes()) {
-            // Safety: See contract of object_index, since self.raw was valid UTF-8 so is value
-            Ok(value) => MaybeJson::new(unsafe { std::str::from_utf8_unchecked(value) }),
-            Err(ErrorCode::MissingObjectKey) => MaybeJson::string_index_error(key),
-            Err(err) => err.as_value(),
+        let mut parser = InnerParser {
+            index: 0,
+            ctx: Ctx::new(&self.raw),
+            config: Default::default(),
+        };
+        match parser.index_object(key) {
+            Ok(true) => MaybeJson::new(unsafe {
+                std::str::from_utf8_unchecked(&parser.ctx.data[parser.index..])
+            }),
+            Ok(false) => MaybeJson::from_object_index_error(key),
+            Err(err) => MaybeJson::from_decode_error(err),
+        }
+    }
+}
+
+impl std::ops::Index<&str> for MaybeJson {
+    type Output = MaybeJson;
+
+    /// If the current value is an object, get the value of the corresponding key
+    fn index(&self, key: &str) -> &Self::Output {
+        if self.is_error() {
+            return self;
+        }
+        let mut parser = InnerParser {
+            index: 0,
+            ctx: Ctx::new(&self.raw),
+            config: Default::default(),
+        };
+        match parser.index_object(key) {
+            Ok(true) => MaybeJson::new(unsafe {
+                std::str::from_utf8_unchecked(&parser.ctx.data[parser.index..])
+            }),
+            Ok(false) => MaybeJson::from_decode_error(&OBJECT_INDEX_ERROR),
+            Err(err) => MaybeJson::from_decode_error(err),
         }
     }
 }
@@ -160,38 +87,56 @@ impl std::ops::Index<usize> for MaybeJson {
         if self.is_error() {
             return self;
         }
-        match array_index(self.raw.as_bytes(), index) {
-            Ok(value) => MaybeJson::new(unsafe { std::str::from_utf8_unchecked(value) }),
-            Err(err) => err.as_value(),
+        let mut parser = InnerParser {
+            index: 0,
+            ctx: Ctx::new(&self.raw),
+            config: Default::default(),
+        };
+        match parser.index_array(index) {
+            Ok(true) => MaybeJson::new(unsafe {
+                std::str::from_utf8_unchecked(&parser.ctx.data[parser.index..])
+            }),
+            Ok(false) => MaybeJson::from_decode_error(match index {
+                0 => &ARRAY_INDEX_ERROR_0,
+                1 => &ARRAY_INDEX_ERROR_1,
+                2 => &ARRAY_INDEX_ERROR_2,
+                _ => &ARRAY_INDEX_ERROR_N,
+            }),
+            Err(err) => MaybeJson::from_decode_error(err),
         }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(u8)]
-pub enum ErrorCode {
-    Eof = 1,
-    MissingObjectKey = 2,
-    OutOfBoundsArrayAccess = 3,
-    ExpectedObject = 4,
-    ExpectedArray = 5,
-    InvalidString = 6,
-}
-
-impl ErrorCode {
-    fn as_value(self) -> &'static MaybeJson {
-        // Safety:
-        //   - Since ErrorCode is never 0, fake_pointer is never null
-        //   - Since length is set to 0 no other restrictions exist
-        //   - Since #[repr(transparent)] Value(str), cast is safe
-        unsafe {
-            let fake_pointer = self as usize as *const u8;
-            &*(core::ptr::slice_from_raw_parts(fake_pointer, 0) as *const MaybeJson)
+impl std::fmt::Debug for MaybeJson {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(error) = self.decode_error() {
+            let mut builder = f.debug_struct("MaybeJson");
+            builder.field("error", error);
+            if let Some(key) = self.key_error() {
+                builder.field("key", &key);
+            }
+            builder.finish()
+        } else {
+            f.debug_struct("MaybeJson")
+                .field("raw", &&self.raw)
+                .finish()
         }
     }
 }
 
 impl MaybeJson {
+    pub fn from_object_index_error(key: &'static &'static str) -> &'static MaybeJson {
+        let ptr = key as *const &'static str as *const u8;
+        // todo switch to strict provenece once it lands
+        let ptr = (ptr as usize | 1) as *const u8;
+        unsafe { &*(core::ptr::slice_from_raw_parts(ptr, 0) as *const MaybeJson) }
+    }
+    pub const fn from_decode_error(decode_error: &'static DecodeError) -> &'static MaybeJson {
+        unsafe {
+            &*(core::ptr::slice_from_raw_parts(decode_error as *const _ as *const u8, 0)
+                as *const MaybeJson)
+        }
+    }
     pub fn parse<'a, T: FromJson<'a>>(&'a self) -> Result<T, JsonError> {
         if let Some(error) = self.json_error() {
             return Err(error);
@@ -207,104 +152,47 @@ impl MaybeJson {
             },
         )
     }
+
     pub fn json_error(&self) -> Option<JsonError> {
-        let Some(error) = self.error_code() else {
+        let Some(error) = self.decode_error() else {
             return None;
         };
         let mut context: Option<String> = None;
-        let simple_error: &'static DecodeError = match error {
-            ErrorCode::Eof => &EOF_WHILE_PARSING_VALUE,
-            ErrorCode::OutOfBoundsArrayAccess => &DecodeError {
-                message: "Out of bounds array access",
-            },
-            ErrorCode::ExpectedObject => &DecodeError {
-                message: "Expected Object",
-            },
-            ErrorCode::ExpectedArray => &DecodeError {
-                message: "Expected Array",
-            },
-            ErrorCode::InvalidString => &DecodeError {
-                message: "Invalid String",
-            },
-            ErrorCode::MissingObjectKey => {
-                if let Some(key) = self.key_error() {
-                    context = Some(key.to_string());
-                };
-                &DecodeError {
-                    message: "Missing Key in object",
-                }
+        if error == &OBJECT_INDEX_ERROR {
+            if let Some(key) = self.key_error() {
+                context = Some(format!("Object key not found: {key:?}"));
             }
-        };
-        Some(JsonError::new(simple_error, context))
+        }
+        Some(JsonError::new(error, context))
     }
-    pub fn error_code(&self) -> Option<ErrorCode> {
+
+    pub fn decode_error(&self) -> Option<&'static DecodeError> {
         if !self.is_error() {
             return None;
         }
         let tagged = self.raw.as_ptr() as usize;
-        if (1..=6).contains(&tagged) {
-            unsafe { Some(std::mem::transmute::<u8, ErrorCode>(tagged as u8)) }
-        } else if tagged > 0xC000_0000_0000_0000 {
-            Some(ErrorCode::MissingObjectKey)
+        if tagged & 0b1 == 1 {
+            Some(&DecodeError {
+                message: "Object Key Index Error",
+            })
         } else {
-            None
-        }
-    }
-
-    fn string_index_error(key: &'static str) -> &'static MaybeJson {
-        #[cfg(target_pointer_width = "64")]
-        // Safety:
-        //   - key pointer must be non-null by definition of references
-        //   - Thus tagged is non-null
-        //   - Since length is set to 0 no other restrictions exist
-        // Under strict provenance the int-2-pointer & back casts may be UB.
-        // waiting for strict_provenance: https://github.com/rust-lang/rust/issues/95228
-        unsafe {
-            let pointer_bits = key.as_ptr() as usize;
-            if pointer_bits > 0x1_ffff_ffff_ffff || key.len() > 0xfff {
-                return ErrorCode::MissingObjectKey.as_value();
-            }
-            let tagged = pointer_bits | (key.len() << 49) | (0xC000_0000_0000_0000);
-            &*(core::ptr::slice_from_raw_parts(tagged as *const u8, 0) as *const MaybeJson)
-        }
-        #[cfg(not(target_pointer_width = "64"))]
-        {
-            ErrorCode::MissingObjectKey.as_value();
+            Some(unsafe { &*(self.raw.as_ptr() as *const DecodeError) })
         }
     }
 
     /// If the value is currently a MissingObjectKey get the key that causes
     /// error is possible.
     pub fn key_error(&self) -> Option<&'static str> {
-        #[cfg(target_pointer_width = "64")]
-        {
-            if !self.is_error() {
-                return None;
-            }
-            let tagged = self.raw.as_ptr() as usize;
-            if tagged < 0xC000_0000_0000_0000 {
-                return None;
-            }
-            let length = (tagged >> 49) & 0xfff;
-            let pointer = tagged & 0x1_ffff_ffff_ffff;
-            // Safety:
-            //   - Assumes was created by [Value::string_index_error]
-            unsafe {
-                Some(std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                    pointer as *const u8,
-                    length,
-                )))
-            }
+        if !self.is_error() {
+            return None;
         }
-        #[cfg(not(target_pointer_width = "64"))]
-        {
+        let tagged = self.raw.as_ptr() as usize;
+        if tagged & 0b1 == 1 {
+            let ptr = (tagged & !0b1) as *const u8;
+            Some(unsafe { *(ptr as *const &'static str) })
+        } else {
             None
         }
-    }
-
-    #[cfg(not(target_pointer_width = "64"))]
-    pub fn key_error(&self) -> Option<&'static str> {
-        return None;
     }
 
     pub fn is_error(&self) -> bool {
@@ -317,34 +205,12 @@ impl MaybeJson {
 
     pub fn new(raw: &str) -> &MaybeJson {
         if raw.is_empty() {
-            ErrorCode::Eof.as_value()
+            return MaybeJson::from_decode_error(&DecodeError {
+                message: "Empty object is not valid JSON",
+            });
         } else {
             unsafe { &*(raw as *const str as *const MaybeJson) }
         }
-    }
-
-    // return a formatted error message if any.
-    pub fn error(&self) -> Option<String> {
-        if !self.is_error() {
-            return None;
-        }
-        if let Some(key) = self.key_error() {
-            return Some(format!("Object key not found: {key:?}"));
-        }
-        let Some(error_code) = self.error_code() else {
-            // shouldn't happen ??
-            return Some("Unknown JSON Parsing Error".into());
-        };
-        let message = match error_code {
-            ErrorCode::Eof => "Unexpected EOF",
-            ErrorCode::MissingObjectKey => "Key not found in object",
-            ErrorCode::OutOfBoundsArrayAccess => "Index larger than array",
-            ErrorCode::ExpectedObject => "Expected an object but found something else",
-            ErrorCode::ExpectedArray => "Expected an array but found something else",
-            ErrorCode::InvalidString => "Invalid string",
-        };
-
-        Some(message.into())
     }
 }
 
@@ -369,7 +235,7 @@ mod test {
             false,
             true,
             -123.456,
-            null,
+            null
         ]));
         assert_eq!(42u64, value[0]["inner"][0].parse::<u64>().unwrap());
         assert_eq!("nice", value[0]["inner"][1].parse::<String>().unwrap());
@@ -387,27 +253,17 @@ mod test {
             "nice": {"inner": [1,2,3]}
         }));
         assert_eq!(value["nice"]["inner"][0].parse::<u64>().unwrap(), 1);
-        assert_eq!(
-            MaybeJson::new("[]")[0].error_code(),
-            Some(ErrorCode::OutOfBoundsArrayAccess)
-        );
-        assert_eq!(
-            value["nice"]["inner"][5].error_code(),
-            Some(ErrorCode::OutOfBoundsArrayAccess)
-        );
+        assert!(MaybeJson::new("[]")[0].decode_error().is_some());
+        assert!(value["nice"]["inner"][5].decode_error().is_some());
 
-        assert_eq!(value["nice"]["not_inner"].key_error(), Some("not_inner"));
+        assert_eq!(value[&"nice"][&"not_inner"].key_error(), Some("not_inner"));
 
-        assert_eq!(
-            value["nice"]["not_inner"].error_code(),
-            Some(ErrorCode::MissingObjectKey)
-        );
+        assert!(value["nice"]["not_inner"].decode_error().is_some());
 
-        assert_eq!(value[0].error_code(), Some(ErrorCode::ExpectedArray));
+        assert!(value[0].decode_error().is_some());
 
-        assert_eq!(
-            value["nice"]["inner"]["key_for_array"].error_code(),
-            Some(ErrorCode::ExpectedObject)
-        );
+        assert!(value["nice"]["inner"]["key_for_array"]
+            .decode_error()
+            .is_some());
     }
 }

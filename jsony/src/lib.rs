@@ -313,17 +313,6 @@ pub struct MaybeJson {
     pub(crate) raw: str,
 }
 
-impl std::fmt::Display for MaybeJson {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.raw)
-    }
-}
-impl std::fmt::Debug for MaybeJson {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", &self.raw)
-    }
-}
-
 /// # Lazy JSON parser
 ///
 /// Interpret the given a string a JSON value to lazily parse. Particular useful,

@@ -826,7 +826,10 @@ impl<'j> InnerParser<'j> {
                     self.config.recursion_limit += 1;
                     Ok(None)
                 }
-                _ => Err(&EXPECTED_LIST_COMMA_OR_END),
+                _ => {
+                    println!("{}", self.ctx.data[self.index..].escape_ascii());
+                    Err(&EXPECTED_LIST_COMMA_OR_END)
+                }
             }
         } else {
             Err(&EOF_WHILE_PARSING_LIST)
@@ -922,6 +925,24 @@ impl<'j> InnerParser<'j> {
         }
     }
 
+    pub fn index_array(&mut self, mut index: usize) -> JsonResult<bool> {
+        let mut res = self.enter_array();
+        loop {
+            match res {
+                Ok(Some(_)) => {
+                    if index == 0 {
+                        return Ok(true);
+                    }
+                    index -= 1;
+                }
+                Ok(None) => return Ok(false),
+                Err(err) => return Err(err),
+            }
+            self.skip_value()?;
+            res = self.array_step();
+        }
+    }
+
     pub fn index_object(&mut self, key: &str) -> JsonResult<bool> {
         if self.peek()? != Peek::Object {
             return Err(&EOF_WHILE_PARSING_OBJECT);
@@ -934,6 +955,7 @@ impl<'j> InnerParser<'j> {
                 Ok(None) => return Ok(false),
                 Err(err) => return Err(err),
             }
+            self.skip_value()?;
             res = self.discard_and_eq_object_step(key);
         }
     }
