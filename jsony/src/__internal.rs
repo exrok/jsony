@@ -48,16 +48,14 @@ unsafe impl<'a, F: FieldVistor<'a>> FieldVistor<'a> for SkipFieldVisitor<F> {
     unsafe fn destroy(&mut self) {
         self.visitor.destroy()
     }
-    unsafe fn visit(
+    fn visit(
         &mut self,
-        field_name: *const str,
-        parser: &mut Parser<'a>,
+        borrowed: crate::json::ParserWithBorrowedKey<'a, '_>,
     ) -> Result<(), &'static DecodeError> {
-        let field_name = unsafe { parser.unfreeze(field_name) };
-        if field_name == self.skipped_field {
-            parser.skip_value()
+        if borrowed.key() == self.skipped_field {
+            borrowed.into_parser().at.skip_value()
         } else {
-            self.visitor.visit(field_name, parser)
+            self.visitor.visit(borrowed)
         }
     }
 }
@@ -79,14 +77,14 @@ unsafe impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
             }
         }
     }
-    unsafe fn visit(
+    fn visit(
         &mut self,
-        field_name: *const str,
-        parser: &mut Parser<'a>,
+        borrowed: ParserWithBorrowedKey<'a, '_>,
     ) -> Result<(), &'static DecodeError> {
-        let field_name = unsafe { parser.unfreeze(field_name) };
+        let field_name = borrowed.key();
         for (i, field) in self.schema.fields().iter().enumerate() {
             if field.name == field_name {
+                let parser = borrowed.into_parser();
                 let mask = 1 << i;
                 if self.bitset & mask != 0 {
                     if let JsonParentContext::None = parser.parent_context {
@@ -112,7 +110,7 @@ unsafe impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
 }
 
 use crate::{
-    json::FieldVistor,
+    json::{FieldVistor, ParserWithBorrowedKey},
     parser::{JsonParentContext, Parser, DUPLICATE_FIELD, MISSING_REQUIRED_FIELDS},
 };
 
@@ -164,7 +162,7 @@ impl<'a> ObjectSchema<'a> {
         let mut bitset = 0;
 
         let error = 'with_next_key: {
-            match parser.enter_object() {
+            match parser.at.enter_object(&mut parser.scratch) {
                 Ok(Some(mut key)) => {
                     'key_loop: loop {
                         'next: {
@@ -195,15 +193,18 @@ impl<'a> ObjectSchema<'a> {
                                 break 'next;
                             }
                             if let Some(ref mut unsued_processor) = unsued {
-                                if let Err(err) = unsued_processor.visit(key, parser) {
+                                // Safety: Safe since the `key` was provided by the same parses and still
+                                // valid here (since it compiles and wasn't casted to a pointer earlier).
+                                let borrowed = unsafe { ParserWithBorrowedKey::new(key, parser) };
+                                if let Err(err) = unsued_processor.visit(borrowed) {
                                     break 'with_next_key err;
                                 }
-                            } else if let Err(error) = parser.skip_value() {
+                            } else if let Err(error) = parser.at.skip_value() {
                                 break 'with_next_key error;
                             }
                         }
 
-                        match parser.object_step() {
+                        match parser.at.object_step(&mut parser.scratch) {
                             Ok(Some(next_key2)) => {
                                 key = next_key2;
                                 continue 'key_loop;

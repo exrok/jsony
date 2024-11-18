@@ -1,6 +1,8 @@
 // #[cfg(test)]
 // mod tests;
-use crate::{text::FromText, text_writer::TextWriter, FromJson, RawJson, ToJson};
+use crate::{
+    parser::InnerParser, text::FromText, text_writer::TextWriter, FromJson, RawJson, ToJson,
+};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -13,11 +15,30 @@ use std::{
 
 use crate::parser::{Parser, Peek};
 
+pub struct ParserWithBorrowedKey<'a, 'b> {
+    key: *const str,
+    parser: &'b mut Parser<'a>,
+}
+
+impl<'a, 'b> ParserWithBorrowedKey<'a, 'b> {
+    pub unsafe fn new(key: *const str, parser: &'b mut Parser<'a>) -> Self {
+        Self { key, parser }
+    }
+    pub fn key(&self) -> &str {
+        unsafe { &*self.key }
+    }
+    pub fn key_with_inner_parser<'c>(&'c mut self) -> (&'c str, &'c mut InnerParser<'a>) {
+        (unsafe { &*self.key }, &mut self.parser.at)
+    }
+    pub fn into_parser(self) -> &'b mut Parser<'a> {
+        self.parser
+    }
+}
+
 pub unsafe trait FieldVistor<'a> {
-    unsafe fn visit(
+    fn visit(
         &mut self,
-        field: *const str,
-        parser: &mut Parser<'a>,
+        borrowed: ParserWithBorrowedKey<'a, '_>,
     ) -> Result<(), &'static DecodeError>;
     fn complete(&mut self) -> Result<(), &'static DecodeError>;
     /// # Safety
@@ -29,20 +50,18 @@ pub unsafe trait FieldVistor<'a> {
 pub struct FuncFieldVisitor<'a> {
     visit: unsafe fn(
         ptr: NonNull<()>,
-        field: *const str,
-        parser: &mut Parser<'a>,
+        borrowed: ParserWithBorrowedKey<'a, '_>,
     ) -> Result<(), &'static DecodeError>,
     drop: unsafe fn(ptr: NonNull<()>),
     ptr: NonNull<()>,
 }
 
 unsafe impl<'a> FieldVistor<'a> for FuncFieldVisitor<'a> {
-    unsafe fn visit(
+    fn visit(
         &mut self,
-        field: *const str,
-        parser: &mut Parser<'a>,
+        borrowed: ParserWithBorrowedKey<'a, '_>,
     ) -> Result<(), &'static DecodeError> {
-        unsafe { (self.visit)(self.ptr, field, parser) }
+        unsafe { (self.visit)(self.ptr, borrowed) }
     }
     fn complete(&mut self) -> Result<(), &'static DecodeError> {
         Ok(())
@@ -63,11 +82,11 @@ where
         ptr.cast::<Self>().write(Self::new());
         // this common pattern can be generlized safely once we get safe transmute
         FuncFieldVisitor {
-            visit: |ptr, field, parser| {
+            visit: |ptr, mut borrowed| {
                 let map = &mut *ptr.cast::<Self>().as_ptr();
-                let (field, ctx) = unsafe { parser.unfreeze_with_context(field) };
-                let key = K::from_text(ctx, field)?;
-                let value = T::json_decode(parser)?;
+                let (key, at) = borrowed.key_with_inner_parser();
+                let key = K::from_text(&mut at.ctx, key)?;
+                let value = T::json_decode(borrowed.into_parser())?;
                 map.insert(key, value);
                 Ok(())
             },
@@ -91,11 +110,11 @@ where
         ptr.cast::<Self>().write(Self::new());
         // this common pattern can be generlized safely once we get safe transmute
         FuncFieldVisitor {
-            visit: |ptr, field, parser| {
+            visit: |ptr, mut borrowed| {
                 let map = &mut *ptr.cast::<Self>().as_ptr();
-                let (field, ctx) = unsafe { parser.unfreeze_with_context(field) };
-                let key = K::from_text(ctx, field)?;
-                let value = T::json_decode(parser)?;
+                let (field, at) = borrowed.key_with_inner_parser();
+                let key = K::from_text(&mut at.ctx, field)?;
+                let value = T::json_decode(borrowed.into_parser())?;
                 map.insert(key, value);
                 Ok(())
             },
@@ -119,11 +138,11 @@ where
         ptr.cast::<Self>().write(Self::new());
         // this common pattern can be generlized safely once we get safe transmute
         FuncFieldVisitor {
-            visit: |ptr, field, parser| {
+            visit: |ptr, mut borrowed| {
                 let map = &mut *ptr.cast::<Self>().as_ptr();
-                let (field, ctx) = unsafe { parser.unfreeze_with_context(field) };
-                let key = K::from_text(ctx, field)?;
-                let value = T::json_decode(parser)?;
+                let (field, at) = borrowed.key_with_inner_parser();
+                let key = K::from_text(&mut at.ctx, field)?;
+                let value = T::json_decode(borrowed.into_parser())?;
                 map.push((key, value));
                 Ok(())
             },
@@ -170,7 +189,7 @@ macro_rules! direct_impl_integer_decode {
                     dest: NonNull<()>,
                     parser: &mut Parser<'a>,
                 ) -> Result<(), &'static DecodeError> {
-                    match parser.consume_numeric_literal() {
+                    match parser.at.consume_numeric_literal() {
                         Ok(value) => {
                             if let Ok(numeric) = value.parse::<$ty>() {
                                 dest.cast::<$ty>().write(numeric);
@@ -266,7 +285,7 @@ fn decode_array_sequence<'de, K: FromJson<'de>>(
     parser: &mut Parser<'de>,
     mut func: impl FnMut(K) -> Result<(), &'static DecodeError>,
 ) -> Result<(), &'static DecodeError> {
-    match parser.enter_array() {
+    match parser.at.enter_array() {
         Ok(Some(_)) => (),
         Ok(None) => return Ok(()),
         Err(err) => return Err(err),
@@ -277,7 +296,7 @@ fn decode_array_sequence<'de, K: FromJson<'de>>(
             Ok(()) => (),
             Err(err) => return Err(err),
         }
-        match parser.array_step() {
+        match parser.at.array_step() {
             Ok(Some(_)) => (),
             Ok(None) => return Ok(()),
             Err(err) => return Err(err),
@@ -289,7 +308,7 @@ pub(crate) fn decode_object_sequence<'de, K: FromJson<'de>, V: FromJson<'de>>(
     parser: &mut Parser<'de>,
     mut func: impl FnMut(K, V) -> Result<(), &'static DecodeError>,
 ) -> Result<(), &'static DecodeError> {
-    match parser.enter_seen_object_at_first_key() {
+    match parser.at.enter_seen_object_at_first_key() {
         Ok(Some(())) => (),
         Ok(None) => return Ok(()),
         Err(err) => return Err(err),
@@ -299,7 +318,7 @@ pub(crate) fn decode_object_sequence<'de, K: FromJson<'de>, V: FromJson<'de>>(
             Ok(value) => value,
             Err(err) => return Err(err),
         };
-        parser.discard_colon()?;
+        parser.at.discard_colon()?;
         let value = match V::json_decode(parser) {
             Ok(value) => value,
             Err(err) => return Err(err),
@@ -308,7 +327,7 @@ pub(crate) fn decode_object_sequence<'de, K: FromJson<'de>, V: FromJson<'de>>(
             Ok(()) => (),
             Err(err) => return Err(err),
         }
-        match parser.object_step_at_key() {
+        match parser.at.object_step_at_key() {
             Ok(Some(())) => (),
             Ok(None) => return Ok(()),
             Err(err) => return Err(err),
@@ -322,7 +341,7 @@ unsafe impl<'de, T: FromJson<'de>> FromJson<'de> for Vec<T> {
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
         let mut array = Vec::<T>::new();
-        let mut value = parser.enter_array()?;
+        let mut value = parser.at.enter_array()?;
         while value.is_some() {
             unsafe {
                 array.reserve(1);
@@ -336,7 +355,7 @@ unsafe impl<'de, T: FromJson<'de>> FromJson<'de> for Vec<T> {
                     array.set_len(len + 1);
                 }
             }
-            value = parser.array_step()?;
+            value = parser.at.array_step()?;
         }
         dest.cast::<Vec<T>>().write(array);
         Ok(())
@@ -426,9 +445,9 @@ unsafe impl<'a, T: FromJson<'a>> FromJson<'a> for Option<T> {
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
-        match parser.peek() {
+        match parser.at.peek() {
             Ok(Peek::Null) => {
-                parser.discard_seen_null()?;
+                parser.at.discard_seen_null()?;
                 dest.cast::<Option<T>>().write(None);
                 Ok(())
             }
@@ -462,14 +481,14 @@ unsafe impl<'a> FromJson<'a> for bool {
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
-        match parser.peek() {
+        match parser.at.peek() {
             Ok(Peek::True) => {
-                parser.discard_seen_true()?;
+                parser.at.discard_seen_true()?;
                 dest.cast::<bool>().write(true);
                 Ok(())
             }
             Ok(Peek::False) => {
-                parser.discard_seen_false()?;
+                parser.at.discard_seen_false()?;
                 dest.cast::<bool>().write(false);
                 Ok(())
             }
@@ -513,7 +532,7 @@ unsafe fn decode_into_array<'de>(
     decode: unsafe fn(NonNull<()>, &mut Parser<'de>) -> Result<(), &'static DecodeError>,
     drop_func: Option<impl Fn(NonNull<()>)>,
 ) -> Result<(), &'static DecodeError> {
-    parser.enter_array()?;
+    parser.at.enter_array()?;
     let mut current = dest;
     let err = 'error: {
         for i in 0..n {
@@ -521,7 +540,7 @@ unsafe fn decode_into_array<'de>(
                 break 'error Err(err);
             }
             current = current.byte_add(size);
-            match parser.array_step() {
+            match parser.at.array_step() {
                 Ok(None) => {
                     if i + 1 == n {
                         return Ok(());
@@ -555,22 +574,24 @@ static ARRAY_LENGTH_MISMATCH: DecodeError = DecodeError {
 
 unsafe impl FromJson<'_> for Box<RawJson> {
     fn json_decode(parser: &mut Parser<'_>) -> Result<Self, &'static DecodeError> {
-        let start = parser.index;
-        if let Err(err) = parser.skip_value() {
+        let start = parser.at.index;
+        if let Err(err) = parser.at.skip_value() {
             return Err(err);
         }
-        let raw = unsafe { std::str::from_utf8_unchecked(&parser.ctx.data[start..parser.index]) };
+        let raw =
+            unsafe { std::str::from_utf8_unchecked(&parser.at.ctx.data[start..parser.at.index]) };
         Ok(RawJson::new_boxed_unchecked(raw.into()))
     }
 }
 
 unsafe impl<'de> FromJson<'de> for &'de RawJson {
     fn json_decode(parser: &mut Parser<'de>) -> Result<Self, &'static DecodeError> {
-        let start = parser.index;
-        if let Err(err) = parser.skip_value() {
+        let start = parser.at.index;
+        if let Err(err) = parser.at.skip_value() {
             return Err(err);
         }
-        let raw = unsafe { std::str::from_utf8_unchecked(&parser.ctx.data[start..parser.index]) };
+        let raw =
+            unsafe { std::str::from_utf8_unchecked(&parser.at.ctx.data[start..parser.at.index]) };
         Ok(RawJson::new_unchecked(raw))
     }
 }
@@ -589,7 +610,7 @@ unsafe impl<'de> FromJson<'de> for () {
         _dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        match parser.enter_array() {
+        match parser.at.enter_array() {
             Ok(None) => Ok(()),
             Ok(_) => Err(&ARRAY_LENGTH_MISMATCH),
             Err(err) => Err(err),
@@ -602,7 +623,7 @@ unsafe impl<'de, T0: FromJson<'de>> FromJson<'de> for (T0,) {
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        let value = parser.enter_array()?;
+        let value = parser.at.enter_array()?;
         if value.is_none() {
             return Err(&ARRAY_LENGTH_MISMATCH);
         }
@@ -610,7 +631,7 @@ unsafe impl<'de, T0: FromJson<'de>> FromJson<'de> for (T0,) {
             dest.byte_add(std::mem::offset_of!(Self, 0)),
             parser,
         )?;
-        let error = match parser.array_step() {
+        let error = match parser.at.array_step() {
             Ok(None) => return Ok(()),
             Ok(Some(_)) => &ARRAY_LENGTH_MISMATCH,
             Err(err) => err,
@@ -626,7 +647,7 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>> FromJson<'de> for (T0, T1
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        if parser.enter_array()?.is_none() {
+        if parser.at.enter_array()?.is_none() {
             return Err(&ARRAY_LENGTH_MISMATCH);
         }
         let error: &'static DecodeError;
@@ -639,7 +660,7 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>> FromJson<'de> for (T0, T1
                 break 't0;
             }
             't1: {
-                if let Err(err) = parser.array_step_expecting_more() {
+                if let Err(err) = parser.at.array_step_expecting_more() {
                     error = err;
                     break 't1;
                 }
@@ -650,7 +671,7 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>> FromJson<'de> for (T0, T1
                     error = err;
                     break 't1;
                 }
-                match parser.array_step() {
+                match parser.at.array_step() {
                     Ok(None) => return Ok(()),
                     Ok(Some(_)) => error = &ARRAY_LENGTH_MISMATCH,
                     Err(err) => error = err,
@@ -670,7 +691,7 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>, T2: FromJson<'de>> FromJs
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        if parser.enter_array()?.is_none() {
+        if parser.at.enter_array()?.is_none() {
             return Err(&ARRAY_LENGTH_MISMATCH);
         }
         let error: &'static DecodeError;
@@ -683,7 +704,7 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>, T2: FromJson<'de>> FromJs
                 break 't0;
             }
             't1: {
-                if let Err(err) = parser.array_step_expecting_more() {
+                if let Err(err) = parser.at.array_step_expecting_more() {
                     error = err;
                     break 't1;
                 }
@@ -695,7 +716,7 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>, T2: FromJson<'de>> FromJs
                     break 't1;
                 }
                 't2: {
-                    if let Err(err) = parser.array_step_expecting_more() {
+                    if let Err(err) = parser.at.array_step_expecting_more() {
                         error = err;
                         break 't2;
                     }
@@ -706,7 +727,7 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>, T2: FromJson<'de>> FromJs
                         error = err;
                         break 't2;
                     }
-                    match parser.array_step() {
+                    match parser.at.array_step() {
                         Ok(None) => return Ok(()),
                         Ok(Some(_)) => error = &ARRAY_LENGTH_MISMATCH,
                         Err(err) => error = err,
@@ -731,7 +752,7 @@ unsafe fn dyn_tuple_decode<'a>(
     )],
     drops: &[unsafe fn(NonNull<()>)],
 ) -> Result<(), &'static DecodeError> {
-    if parser.enter_array()?.is_none() {
+    if parser.at.enter_array()?.is_none() {
         if fields.is_empty() {
             return Ok(());
         } else {
@@ -745,7 +766,7 @@ unsafe fn dyn_tuple_decode<'a>(
             decode_fn(dest.byte_add(*offset), parser)?;
             complete += 1;
             for (offset, decode_fn) in fields {
-                if let Err(err) = parser.array_step() {
+                if let Err(err) = parser.at.array_step() {
                     break 'with_error err;
                 }
                 if let Err(err) = decode_fn(dest.byte_add(*offset), parser) {
@@ -754,7 +775,7 @@ unsafe fn dyn_tuple_decode<'a>(
                 complete += 1;
             }
         }
-        match parser.array_step() {
+        match parser.at.array_step() {
             Ok(None) => return Ok(()),
             Ok(Some(_)) => &ARRAY_LENGTH_MISMATCH,
             Err(err) => err,
@@ -807,7 +828,7 @@ unsafe impl<'de, T: FromJson<'de>, const N: usize> FromJson<'de> for [T; N] {
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
         if N == 0 {
-            return match parser.enter_array() {
+            return match parser.at.enter_array() {
                 Ok(None) => Ok(()),
                 Err(err) => Err(err),
                 _ => Err(&DecodeError {

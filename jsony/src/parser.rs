@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::ops::Range;
 
+use crate::strings::{skip_json_string_and_eq, skip_json_string_and_validate};
 use crate::JsonParserConfig;
 use crate::__internal::ObjectSchemaInner;
 use crate::json::DecodeError;
@@ -67,13 +68,17 @@ pub(crate) enum JsonParentContext {
         mask: u64,
     },
 }
+#[derive(Clone)]
+pub struct InnerParser<'j> {
+    pub ctx: Ctx<'j>,
+    pub index: usize,
+    pub config: JsonParserConfig,
+}
 
 #[derive(Clone)]
 pub struct Parser<'j> {
-    pub ctx: Ctx<'j>,
-    pub index: usize,
+    pub at: InnerParser<'j>,
     pub(crate) parent_context: JsonParentContext,
-    pub config: JsonParserConfig,
     pub scratch: Vec<u8>,
 }
 
@@ -82,7 +87,7 @@ impl<'j> fmt::Debug for Parser<'j> {
         writeln!(
             f,
             "Remaining: {}",
-            &self.ctx.data[self.index..].escape_ascii()
+            &self.at.ctx.data[self.at.index..].escape_ascii()
         )
     }
 }
@@ -192,223 +197,9 @@ pub struct RetrySnapshot {
     recursion_depth: i32,
 }
 
-// const DEFAULT_DEPTH_LIMIT: i32 = 128;
-/// consume_X, assumes we already know following thing must be type X
-/// because we peeked and so the prefix. If you call `consume_X` with
-/// peeking your code is likely buggy.
-impl<'j> Parser<'j> {
-    pub fn snapshot(&self) -> RetrySnapshot {
-        RetrySnapshot {
-            index: self.index,
-            recursion_depth: self.config.recursion_limit,
-        }
-    }
-
-    pub fn restore_for_retry(&mut self, snapshot: &RetrySnapshot) {
-        self.index = snapshot.index;
-        self.config.recursion_limit = snapshot.recursion_depth;
-        self.parent_context = JsonParentContext::None;
-        self.ctx.error = None;
-    }
-
-    pub fn new(data: &'j str, config: JsonParserConfig) -> Self {
-        Self {
-            ctx: Ctx::new(data),
-            index: 0,
-            parent_context: JsonParentContext::None,
-            config,
-            scratch: Vec::new(),
-        }
-    }
-    pub fn report_static_error(&mut self, error: &'j str) {
-        self.ctx.error = Some(Cow::Borrowed(error));
-    }
-    pub fn report_error(&mut self, error: String) {
-        self.ctx.error = Some(Cow::Owned(error));
-    }
-    pub fn clear_error(&mut self) {
-        self.ctx.error = None;
-    }
-
-    pub fn try_zerocopy(&self, text: &str) -> Option<&'j str> {
-        // todo
-        unsafe {
-            if self.ctx.data.as_ptr_range().contains(&text.as_ptr()) {
-                Some(&*(text as *const str))
-            } else {
-                None
-            }
-        }
-    }
-    pub fn slice(&self, range: Range<usize>) -> Option<&[u8]> {
-        self.ctx.data.get(range)
-    }
-
-    pub fn peek(&mut self) -> JsonResult<Peek> {
-        if let Some(next) = self.eat_whitespace() {
-            Ok(Peek::new(next))
-        } else {
-            Err(&EOF_WHILE_PARSING_VALUE)
-        }
-    }
-
-    pub fn enter_array(&mut self) -> JsonResult<Option<Peek>> {
-        if self.peek()? != Peek::Array {
-            return Err(&EOF_WHILE_PARSING_LIST_FIRST_ELEMENT);
-        }
-        self.enter_seen_array()
-    }
-
-    pub fn enter_seen_array(&mut self) -> JsonResult<Option<Peek>> {
-        debug_assert_eq!(self.ctx.data[self.index], b'[');
-        self.index += 1;
-        if let Some(next) = self.eat_whitespace() {
-            if next == b']' {
-                self.index += 1;
-                Ok(None)
-            } else {
-                self.config.recursion_limit -= 1;
-                if self.config.recursion_limit < 0 {
-                    return Err(&RECURSION_LIMIT_EXCEEDED);
-                }
-                Ok(Some(Peek::new(next)))
-            }
-        } else {
-            Err(&EOF_WHILE_PARSING_LIST_FIRST_ELEMENT)
-        }
-    }
-
-    pub fn array_step_expecting_more(&mut self) -> JsonResult<()> {
-        if let Some(next) = self.eat_whitespace() {
-            match next {
-                b',' => {
-                    self.index += 1;
-                    let next = self.array_peek()?;
-                    if next.is_none() {
-                        Err(&TRAILING_COMMA)
-                    } else {
-                        Ok(())
-                    }
-                }
-                b']' => {
-                    self.index += 1;
-                    Err(&DecodeError {
-                        message: "Array length too short",
-                    })
-                }
-                _ => Err(&EXPECTED_LIST_COMMA_OR_END),
-            }
-        } else {
-            Err(&EOF_WHILE_PARSING_LIST)
-        }
-    }
-    pub fn array_step(&mut self) -> JsonResult<Option<Peek>> {
-        if let Some(next) = self.eat_whitespace() {
-            match next {
-                b',' => {
-                    self.index += 1;
-                    let next = self.array_peek()?;
-                    if next.is_none() {
-                        if self.config.allow_trailing_commas {
-                            self.index += 1;
-                            self.config.recursion_limit += 1;
-                            Ok(None)
-                        } else {
-                            Err(&TRAILING_COMMA)
-                        }
-                    } else {
-                        Ok(next)
-                    }
-                }
-                b']' => {
-                    self.index += 1;
-                    self.config.recursion_limit += 1;
-                    Ok(None)
-                }
-                _ => Err(&EXPECTED_LIST_COMMA_OR_END),
-            }
-        } else {
-            Err(&EOF_WHILE_PARSING_LIST)
-        }
-    }
-
-    // todo should make this fuzzy and optimzied
-    pub fn skip_value(&mut self) -> JsonResult<()> {
-        match self.peek()? {
-            Peek::Array => {
-                if self.enter_seen_array()?.is_some() {
-                    loop {
-                        if let Err(err) = self.skip_value() {
-                            return Err(err);
-                        }
-                        if self.array_step()?.is_none() {
-                            break;
-                        }
-                    }
-                }
-                Ok(())
-            }
-            Peek::Object => {
-                if self.enter_seen_object()?.is_some() {
-                    loop {
-                        if let Err(err) = self.skip_value() {
-                            return Err(err);
-                        }
-                        if self.object_step()?.is_none() {
-                            break;
-                        }
-                    }
-                }
-
-                Ok(())
-            }
-            Peek::True => {
-                self.discard_seen_true()?;
-                Ok(())
-            }
-            Peek::False => {
-                self.discard_seen_false()?;
-                Ok(())
-            }
-            Peek::Null => {
-                self.discard_seen_null()?;
-                Ok(())
-            }
-            Peek::String => {
-                // Safety: since self.peek == Peek::String
-                unsafe {
-                    self.read_seen_string()?;
-                }
-                Ok(())
-            }
-            Peek::Minus | Peek(b'0'..b':') => {
-                self.consume_numeric_literal()?;
-                Ok(())
-            }
-            _ => Err(&TODO_ERROR),
-        }
-    }
-
-    // todo should make this fuzzy and optimzied
-    pub fn index_into_next_object(&self, key: &str) -> JsonResult<Option<Parser<'j>>> {
-        match crate::lazy_parser::object_index(&self.ctx.data[self.index..], key.as_bytes()) {
-            Ok(value) => Ok(Some(Parser {
-                parent_context: JsonParentContext::None,
-                ctx: Ctx {
-                    data: self.ctx.data,
-                    error: None,
-                },
-                index: self.index + (self.ctx.data.len() - value.len()),
-                config: self.config,
-                scratch: Vec::new(),
-            })),
-            Err(_) => Err(&TODO_ERROR),
-        }
-    }
-
-    pub fn enter_seen_object_at_first_key(&mut self) -> JsonResult<Option<()>> {
+impl<'j> InnerParser<'j> {
+    pub fn enter_seen_object_key_eq(&mut self, value: &str) -> JsonResult<Option<bool>> {
         debug_assert_eq!(self.ctx.data[self.index], b'{');
-
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
             match next {
@@ -417,198 +208,31 @@ impl<'j> Parser<'j> {
                     if self.config.recursion_limit < 0 {
                         return Err(&RECURSION_LIMIT_EXCEEDED);
                     }
-                    Ok(Some(()))
+                    self.discard_and_eq_seen_object_key(value).map(Some)
                 }
                 b'}' => {
                     self.index += 1;
                     Ok(None)
                 }
-                _ => Err(&KEY_MUST_BE_A_STRING),
+
+                _ => {
+                    if self.config.allow_unquoted_field_keys {
+                        self.config.recursion_limit -= 1;
+                        if self.config.recursion_limit < 0 {
+                            return Err(&RECURSION_LIMIT_EXCEEDED);
+                        }
+                        let key = self.read_seen_unquoted_object_key()?;
+                        return Ok(Some(key == value));
+                    } else {
+                        return Err(&KEY_MUST_BE_A_STRING);
+                    }
+                }
             }
         } else {
             Err(&EOF_WHILE_PARSING_OBJECT)
         }
     }
-    pub fn discard_colon(&mut self) -> JsonResult<()> {
-        if let Some(next) = self.eat_whitespace() {
-            if next == b':' {
-                self.index += 1;
-                Ok(())
-            } else {
-                Err(&EXPECTED_COLON)
-            }
-        } else {
-            Err(&EOF_WHILE_PARSING_OBJECT)
-        }
-    }
-
-    pub fn discard_remaining_object_fields(&mut self) -> JsonResult<()> {
-        loop {
-            match self.object_step() {
-                Ok(Some(_)) => {
-                    if let Err(err) = self.skip_value() {
-                        return Err(err);
-                    }
-                }
-                Ok(None) => {
-                    return Ok(());
-                }
-                Err(err) => {
-                    return Err(err);
-                }
-            }
-        }
-    }
-
-    pub fn tag_query_at_content_next_object(
-        &mut self,
-        tag: &str,
-        content: &str,
-    ) -> JsonResult<(&str, bool)> {
-        if self.peek()? != Peek::Object {
-            return Err(&EOF_WHILE_PARSING_OBJECT);
-        }
-        let mut content_index = None;
-        let mut current_field_name = match self.enter_seen_object() {
-            Ok(Some(name)) => name,
-            Ok(None) => {
-                return Err(&DecodeError {
-                    message: "Missing tag field",
-                })
-            }
-            Err(err) => return Err(err),
-        };
-        loop {
-            if current_field_name == tag {
-                match unsafe { self.read_seen_string() } {
-                    Ok(value) => {
-                        // TODO: refactor this to avoid unsafe
-                        // We should be able to skip through JSON without the scratch buffer
-                        let value = value as *const str;
-                        if let Some(content_index) = content_index {
-                            self.index = content_index;
-                            return Ok((unsafe { &*value }, true));
-                        }
-                        let mut key_buffer: Option<Vec<u8>> = None;
-                        if self.scratch.as_ptr() == value as *const u8 {
-                            key_buffer = Some(std::mem::take(&mut self.scratch));
-                        }
-                        loop {
-                            match self.object_step() {
-                                Ok(Some(name)) => {
-                                    if name == content {
-                                        let value = if let Some(buffer) = key_buffer {
-                                            self.scratch = buffer;
-                                            unsafe { std::str::from_utf8_unchecked(&self.scratch) }
-                                        } else {
-                                            unsafe { &*value }
-                                        };
-                                        return Ok((value, true));
-                                    }
-                                    if let Err(err) = self.skip_value() {
-                                        return Err(err);
-                                    }
-                                }
-                                Ok(None) => {
-                                    let value = if let Some(buffer) = key_buffer {
-                                        self.scratch = buffer;
-                                        unsafe { std::str::from_utf8_unchecked(&self.scratch) }
-                                    } else {
-                                        unsafe { &*value }
-                                    };
-                                    return Ok((value, false));
-                                }
-                                Err(err) => {
-                                    return Err(err);
-                                }
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        return Err(err);
-                    }
-                }
-            } else if current_field_name == content {
-                content_index = Some(self.index);
-            }
-            if let Err(err) = self.skip_value() {
-                return Err(err);
-            }
-            match self.object_step() {
-                Ok(Some(name)) => {
-                    current_field_name = name;
-                }
-                Ok(None) => {
-                    return Err(&DecodeError {
-                        message: "Missing tag field",
-                    });
-                }
-                Err(err) => {
-                    return Err(err);
-                }
-            }
-        }
-    }
-    pub fn tag_query_next_object<'a>(&'a mut self, tag: &str) -> JsonResult<&'a str> {
-        if self.peek()? != Peek::Object {
-            return Err(&EOF_WHILE_PARSING_OBJECT);
-        }
-        let initial_index = self.index;
-        let initial_remaining_depth = self.config.recursion_limit;
-        let mut current_field_name = match self.enter_seen_object() {
-            Ok(Some(name)) => name,
-            Ok(None) => {
-                return Err(&DecodeError {
-                    message: "Missing tag field",
-                })
-            }
-            Err(err) => return Err(err),
-        };
-        loop {
-            if current_field_name == tag {
-                match self.take_string() {
-                    Ok(value) => {
-                        let frozen = value as *const str;
-                        self.index = initial_index;
-                        self.config.recursion_limit = initial_remaining_depth;
-                        // Saftey: Since we do not modify the buffer this is fine
-                        // -- todo: refactor to remove such unsafety
-                        return Ok(unsafe { &*frozen });
-                    }
-                    Err(err) => {
-                        return Err(err);
-                    }
-                }
-            }
-            match self.skip_value() {
-                Ok(()) => {}
-                Err(err) => {
-                    return Err(err);
-                }
-            }
-            match self.object_step() {
-                Ok(Some(name)) => {
-                    current_field_name = name;
-                }
-                Ok(None) => {
-                    return Err(&DecodeError {
-                        message: "Missing tag field",
-                    });
-                }
-                Err(err) => {
-                    return Err(err);
-                }
-            }
-        }
-    }
-    pub fn enter_object(&mut self) -> JsonResult<Option<&str>> {
-        if self.peek()? != Peek::Object {
-            return Err(&EOF_WHILE_PARSING_OBJECT);
-        }
-        self.enter_seen_object()
-    }
-
-    pub fn enter_seen_object(&mut self) -> JsonResult<Option<&str>> {
+    pub fn enter_seen_object_discarding_key(&mut self) -> JsonResult<Option<()>> {
         debug_assert_eq!(self.ctx.data[self.index], b'{');
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
@@ -618,7 +242,47 @@ impl<'j> Parser<'j> {
                     if self.config.recursion_limit < 0 {
                         return Err(&RECURSION_LIMIT_EXCEEDED);
                     }
-                    unsafe { self.read_seen_object_key().map(Some) }
+                    self.discard_seen_object_key().map(Some)
+                }
+                b'}' => {
+                    self.index += 1;
+                    Ok(None)
+                }
+
+                _ => {
+                    if self.config.allow_unquoted_field_keys {
+                        self.config.recursion_limit -= 1;
+                        if self.config.recursion_limit < 0 {
+                            return Err(&RECURSION_LIMIT_EXCEEDED);
+                        }
+                        self.read_seen_unquoted_object_key()?;
+                        return Ok(Some(()));
+                    } else {
+                        return Err(&KEY_MUST_BE_A_STRING);
+                    }
+                }
+            }
+        } else {
+            Err(&EOF_WHILE_PARSING_OBJECT)
+        }
+    }
+    pub fn enter_seen_object<'k, 's: 'k>(
+        &mut self,
+        scratch: &'s mut Vec<u8>,
+    ) -> JsonResult<Option<&'k str>>
+    where
+        'j: 'k,
+    {
+        debug_assert_eq!(self.ctx.data[self.index], b'{');
+        self.index += 1;
+        if let Some(next) = self.eat_whitespace() {
+            match next {
+                b'"' => {
+                    self.config.recursion_limit -= 1;
+                    if self.config.recursion_limit < 0 {
+                        return Err(&RECURSION_LIMIT_EXCEEDED);
+                    }
+                    unsafe { self.read_seen_object_key(scratch).map(Some) }
                 }
                 b'}' => {
                     self.index += 1;
@@ -640,6 +304,19 @@ impl<'j> Parser<'j> {
         } else {
             Err(&EOF_WHILE_PARSING_OBJECT)
         }
+    }
+
+    pub fn enter_object<'k, 's: 'k>(
+        &mut self,
+        scratch: &'s mut Vec<u8>,
+    ) -> JsonResult<Option<&'k str>>
+    where
+        'j: 'k,
+    {
+        if self.peek()? != Peek::Object {
+            return Err(&EOF_WHILE_PARSING_OBJECT);
+        }
+        self.enter_seen_object(scratch)
     }
 
     pub fn object_step_at_key(&mut self) -> JsonResult<Option<()>> {
@@ -674,7 +351,7 @@ impl<'j> Parser<'j> {
         }
     }
 
-    pub fn read_seen_unquoted_object_key(&mut self) -> JsonResult<&str> {
+    pub fn read_seen_unquoted_object_key(&mut self) -> JsonResult<&'j str> {
         let start = self.index;
         while let Some(ch) = self.ctx.data.get(self.index) {
             if matches!(*ch, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') {
@@ -701,13 +378,95 @@ impl<'j> Parser<'j> {
         }
     }
 
-    pub fn object_step(&mut self) -> JsonResult<Option<&str>> {
+    pub fn discard_and_eq_object_step(&mut self, value: &str) -> JsonResult<Option<bool>> {
         if let Some(next) = self.eat_whitespace() {
             match next {
                 b',' => {
                     self.index += 1;
                     match self.eat_whitespace() {
-                        Some(b'"') => unsafe { self.read_seen_object_key().map(Some) },
+                        Some(b'"') => self.discard_and_eq_seen_object_key(value).map(Some),
+                        Some(b'}') => {
+                            if self.config.allow_trailing_commas {
+                                self.index += 1;
+                                self.config.recursion_limit += 1;
+                                Ok(None)
+                            } else {
+                                Err(&TRAILING_COMMA)
+                            }
+                        }
+                        Some(_) => {
+                            if self.config.allow_unquoted_field_keys {
+                                let key = self.read_seen_unquoted_object_key()?;
+                                return Ok(Some(key == value));
+                            } else {
+                                return Err(&KEY_MUST_BE_A_STRING);
+                            }
+                        }
+                        None => Err(&EOF_WHILE_PARSING_VALUE),
+                    }
+                }
+                b'}' => {
+                    self.index += 1;
+                    self.config.recursion_limit += 1;
+                    Ok(None)
+                }
+                _ => Err(&EXPECTED_OBJECT_COMMA_OR_END),
+            }
+        } else {
+            Err(&EOF_WHILE_PARSING_OBJECT)
+        }
+    }
+    pub fn discard_object_step(&mut self) -> JsonResult<Option<()>> {
+        if let Some(next) = self.eat_whitespace() {
+            match next {
+                b',' => {
+                    self.index += 1;
+                    match self.eat_whitespace() {
+                        Some(b'"') => self.discard_seen_object_key().map(Some),
+                        Some(b'}') => {
+                            if self.config.allow_trailing_commas {
+                                self.index += 1;
+                                self.config.recursion_limit += 1;
+                                Ok(None)
+                            } else {
+                                Err(&TRAILING_COMMA)
+                            }
+                        }
+                        Some(_) => {
+                            if self.config.allow_unquoted_field_keys {
+                                self.read_seen_unquoted_object_key()?;
+                                return Ok(Some(()));
+                            } else {
+                                return Err(&KEY_MUST_BE_A_STRING);
+                            }
+                        }
+                        None => Err(&EOF_WHILE_PARSING_VALUE),
+                    }
+                }
+                b'}' => {
+                    self.index += 1;
+                    self.config.recursion_limit += 1;
+                    Ok(None)
+                }
+                _ => Err(&EXPECTED_OBJECT_COMMA_OR_END),
+            }
+        } else {
+            Err(&EOF_WHILE_PARSING_OBJECT)
+        }
+    }
+    pub fn object_step<'k, 's: 'k>(
+        &mut self,
+        scratch: &'s mut Vec<u8>,
+    ) -> JsonResult<Option<&'k str>>
+    where
+        'j: 'k,
+    {
+        if let Some(next) = self.eat_whitespace() {
+            match next {
+                b',' => {
+                    self.index += 1;
+                    match self.eat_whitespace() {
+                        Some(b'"') => unsafe { self.read_seen_object_key(scratch).map(Some) },
                         Some(b'}') => {
                             if self.config.allow_trailing_commas {
                                 self.index += 1;
@@ -738,30 +497,15 @@ impl<'j> Parser<'j> {
             Err(&EOF_WHILE_PARSING_OBJECT)
         }
     }
-
-    pub fn finish(&mut self) -> JsonResult<()> {
-        if self.eat_whitespace().is_none() {
-            Ok(())
-        } else {
-            Err(&TRAILING_CHARACTERS)
+    pub fn try_zerocopy(&self, text: &str) -> Option<&'j str> {
+        // todo
+        unsafe {
+            if self.ctx.data.as_ptr_range().contains(&text.as_ptr()) {
+                Some(&*(text as *const str))
+            } else {
+                None
+            }
         }
-    }
-
-    /// May only call if Peak::True
-    pub fn discard_seen_true(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.ctx.data[self.index], b't');
-        self.consume_ident(TRUE_REST)
-    }
-
-    /// May only call if Peak::False
-    pub fn discard_seen_false(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.ctx.data[self.index], b'f');
-        self.consume_ident(FALSE_REST)
-    }
-
-    pub fn discard_seen_null(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.ctx.data[self.index], b'n');
-        self.consume_ident(NULL_REST)
     }
 
     fn skip_to_escape(&mut self) {
@@ -808,57 +552,88 @@ impl<'j> Parser<'j> {
         }
     }
 
-    pub fn take_cow_string(&mut self) -> JsonResult<Cow<'j, str>> {
-        if self.peek()? != Peek::String {
-            return Err(&EOF_WHILE_PARSING_STRING);
-        }
-        let value: *const str = unsafe { self.read_seen_string()? };
-        let (value, ctx) = unsafe { self.unfreeze_with_context(value) };
-        if let Some(borrowed) = ctx.try_extend_lifetime(value) {
-            Ok(Cow::Borrowed(borrowed))
+    fn discard_and_eq_seen_object_key(&mut self, value: &str) -> JsonResult<bool> {
+        debug_assert_eq!(self.ctx.data[self.index], b'"');
+        let eq = self.discard_and_eq_seen_string(value)?;
+
+        if let Some(next) = self.eat_whitespace() {
+            if next == b':' {
+                self.index += 1;
+                Ok(eq)
+            } else {
+                Err(&EXPECTED_COLON)
+            }
         } else {
-            let owned = value.to_string();
-            Ok(Cow::Owned(owned))
+            Err(&EOF_WHILE_PARSING_OBJECT)
         }
     }
 
-    pub fn take_borrowed_string(&mut self) -> JsonResult<&'j str> {
-        if self.peek()? != Peek::String {
-            return Err(&EOF_WHILE_PARSING_STRING);
-        }
-        let value: *const str = unsafe { self.read_seen_string()? };
-        let (value, ctx) = unsafe { self.unfreeze_with_context(value) };
-        if let Some(borrowed) = ctx.try_extend_lifetime(value) {
-            Ok(borrowed)
+    fn discard_seen_object_key(&mut self) -> JsonResult<()> {
+        debug_assert_eq!(self.ctx.data[self.index], b'"');
+        self.discard_seen_string()?;
+
+        if let Some(next) = self.eat_whitespace() {
+            if next == b':' {
+                self.index += 1;
+                Ok(())
+            } else {
+                Err(&EXPECTED_COLON)
+            }
         } else {
-            Err(&DecodeError {
-                message: "Unexpected escape in string",
-            })
+            Err(&EOF_WHILE_PARSING_OBJECT)
         }
     }
 
-    /// Reads and returns the next string value from the JSON input.
-    ///
-    /// This function advances the parser's cursor to the next non-whitespace character,
-    /// expecting it to be the start of a string. If a string is found, it is parsed
-    /// and returned. The parser's cursor ends immediately after the parsed string.
-    ///
-    /// Depending on the presence of escapes the string maybe reference to underlying
-    /// input or buffer.
-    pub fn take_string(&mut self) -> JsonResult<&str> {
-        if self.peek()? != Peek::String {
-            return Err(&EOF_WHILE_PARSING_STRING);
+    unsafe fn read_seen_object_key<'k, 's: 'k>(
+        &mut self,
+        scratch: &'s mut Vec<u8>,
+    ) -> JsonResult<&'k str>
+    where
+        'j: 'k,
+    {
+        let key = unsafe { self.read_seen_string(scratch)? };
+
+        if let Some(next) = self.eat_whitespace() {
+            if next == b':' {
+                self.index += 1;
+
+                // todo split buffer and parser such that this hack is unneeded
+                Ok(key)
+            } else {
+                Err(&EXPECTED_COLON)
+            }
+        } else {
+            Err(&EOF_WHILE_PARSING_OBJECT)
         }
-        unsafe { self.read_seen_string() }
+    }
+
+    pub fn discard_seen_string<'k, 's: 'k>(&mut self) -> JsonResult<()> {
+        debug_assert_eq!(self.ctx.data[self.index], b'"');
+        self.index = skip_json_string_and_validate(self.index + 1, &self.ctx.data)?;
+        Ok(())
+    }
+
+    pub fn discard_and_eq_seen_string(&mut self, value: &str) -> JsonResult<bool> {
+        debug_assert_eq!(self.ctx.data[self.index], b'"');
+        let (after_index, is_equal) =
+            skip_json_string_and_eq(self.index + 1, &self.ctx.data, value.as_bytes())?;
+        self.index = after_index;
+        Ok(is_equal)
     }
 
     /// Safety: Parser must be at a valid stream typically this inforced by
     /// calling the function immediately after `Parser::peak(..) == Peek::String`
-    pub unsafe fn read_seen_string(&mut self) -> JsonResult<&str> {
+    pub unsafe fn read_seen_string<'k, 's: 'k>(
+        &mut self,
+        scratch: &'s mut Vec<u8>,
+    ) -> JsonResult<&'k str>
+    where
+        'j: 'k,
+    {
         debug_assert_eq!(self.ctx.data[self.index], b'"');
         self.index += 1;
         let mut start = self.index;
-        self.scratch.clear();
+        scratch.clear();
         loop {
             self.skip_to_escape();
             if self.index == self.ctx.data.len() {
@@ -867,28 +642,22 @@ impl<'j> Parser<'j> {
             // match unsafe { self.ctx.data.get_unchecked(self.indexl } {
             match self.ctx.data[self.index] {
                 b'"' => {
-                    if self.scratch.is_empty() {
+                    if scratch.is_empty() {
                         let output = unsafe {
                             std::str::from_utf8_unchecked(&self.ctx.data[start..self.index])
                         };
                         self.index += 1;
                         return Ok(output);
                     } else {
-                        self.scratch
-                            .extend_from_slice(&self.ctx.data[start..self.index]);
+                        scratch.extend_from_slice(&self.ctx.data[start..self.index]);
                         self.index += 1;
-                        return Ok(unsafe { std::str::from_utf8_unchecked(&self.scratch) });
+                        return Ok(unsafe { std::str::from_utf8_unchecked(&*scratch) });
                     }
                 }
                 b'\\' => {
-                    self.scratch
-                        .extend_from_slice(&self.ctx.data[start..self.index]);
+                    scratch.extend_from_slice(&self.ctx.data[start..self.index]);
                     self.index += 1;
-                    match crate::strings::parse_escape(
-                        self.index,
-                        &self.ctx.data,
-                        &mut self.scratch,
-                    ) {
+                    match crate::strings::parse_escape(self.index, &self.ctx.data, scratch) {
                         Ok(index) => {
                             self.index = index;
                             start = index;
@@ -910,53 +679,184 @@ impl<'j> Parser<'j> {
         }
     }
 
-    pub fn consume_numeric_literal(&mut self) -> JsonResult<&'j str> {
-        let (output, index) = extract_numeric_literal(self.ctx.data, self.index)?;
-        self.index = index;
-        Ok(output)
-    }
+    pub fn enter_seen_object_at_first_key(&mut self) -> JsonResult<Option<()>> {
+        debug_assert_eq!(self.ctx.data[self.index], b'{');
 
-    pub(crate) unsafe fn unfreeze_with_context<'a>(
-        &'a mut self,
-        frozen: *const str,
-    ) -> (&'a str, &'a mut Ctx<'j>) {
-        (&*frozen, &mut self.ctx)
-    }
-    pub(crate) unsafe fn unfreeze<'a>(&'a mut self, frozen: *const str) -> &'a str {
-        &*frozen
-    }
-
-    unsafe fn read_seen_object_key(&mut self) -> JsonResult<&'j str> {
-        debug_assert_eq!(self.ctx.data[self.index], b'"');
-        let key = unsafe { self.read_seen_string() }? as *const str;
-
+        self.index += 1;
         if let Some(next) = self.eat_whitespace() {
-            if next == b':' {
-                self.index += 1;
-
-                // todo split buffer and parser such that this hack is unneeded
-                Ok(unsafe { &*key })
-            } else {
-                Err(&EXPECTED_COLON)
+            match next {
+                b'"' => {
+                    self.config.recursion_limit -= 1;
+                    if self.config.recursion_limit < 0 {
+                        return Err(&RECURSION_LIMIT_EXCEEDED);
+                    }
+                    Ok(Some(()))
+                }
+                b'}' => {
+                    self.index += 1;
+                    Ok(None)
+                }
+                _ => Err(&KEY_MUST_BE_A_STRING),
             }
         } else {
             Err(&EOF_WHILE_PARSING_OBJECT)
         }
     }
 
-    fn consume_ident<const SIZE: usize>(&mut self, expected: [u8; SIZE]) -> JsonResult<()> {
-        self.index = consume_ident(self.ctx.data, self.index, expected)?;
-        Ok(())
+    pub fn skip_value(&mut self) -> JsonResult<()> {
+        match self.peek()? {
+            Peek::Array => {
+                if self.enter_seen_array()?.is_some() {
+                    loop {
+                        if let Err(err) = self.skip_value() {
+                            return Err(err);
+                        }
+                        if self.array_step()?.is_none() {
+                            break;
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Peek::Object => {
+                if self.enter_seen_object_discarding_key()?.is_some() {
+                    loop {
+                        if let Err(err) = self.skip_value() {
+                            return Err(err);
+                        }
+                        if self.discard_object_step()?.is_none() {
+                            break;
+                        }
+                    }
+                }
+
+                Ok(())
+            }
+            Peek::True => self.discard_seen_true(),
+            Peek::False => self.discard_seen_false(),
+            Peek::Null => self.discard_seen_null(),
+            Peek::String => self.discard_seen_string(),
+            Peek::Minus | Peek(b'0'..b':') => {
+                self.consume_numeric_literal()?;
+                Ok(())
+            }
+            _ => Err(&TODO_ERROR),
+        }
     }
 
-    fn array_peek(&mut self) -> JsonResult<Option<Peek>> {
+    pub fn enter_array(&mut self) -> JsonResult<Option<Peek>> {
+        if self.peek()? != Peek::Array {
+            return Err(&EOF_WHILE_PARSING_LIST_FIRST_ELEMENT);
+        }
+        self.enter_seen_array()
+    }
+
+    pub fn array_step_expecting_more(&mut self) -> JsonResult<()> {
         if let Some(next) = self.eat_whitespace() {
             match next {
-                b']' => Ok(None),
-                _ => Ok(Some(Peek::new(next))),
+                b',' => {
+                    self.index += 1;
+                    let next = self.array_peek()?;
+                    if next.is_none() {
+                        Err(&TRAILING_COMMA)
+                    } else {
+                        Ok(())
+                    }
+                }
+                b']' => {
+                    self.index += 1;
+                    Err(&DecodeError {
+                        message: "Array length too short",
+                    })
+                }
+                _ => Err(&EXPECTED_LIST_COMMA_OR_END),
             }
         } else {
+            Err(&EOF_WHILE_PARSING_LIST)
+        }
+    }
+
+    pub fn enter_seen_array(&mut self) -> JsonResult<Option<Peek>> {
+        debug_assert_eq!(self.ctx.data[self.index], b'[');
+        self.index += 1;
+        if let Some(next) = self.eat_whitespace() {
+            if next == b']' {
+                self.index += 1;
+                Ok(None)
+            } else {
+                self.config.recursion_limit -= 1;
+                if self.config.recursion_limit < 0 {
+                    return Err(&RECURSION_LIMIT_EXCEEDED);
+                }
+                Ok(Some(Peek::new(next)))
+            }
+        } else {
+            Err(&EOF_WHILE_PARSING_LIST_FIRST_ELEMENT)
+        }
+    }
+
+    pub fn peek(&mut self) -> JsonResult<Peek> {
+        if let Some(next) = self.eat_whitespace() {
+            Ok(Peek::new(next))
+        } else {
             Err(&EOF_WHILE_PARSING_VALUE)
+        }
+    }
+
+    pub fn array_step(&mut self) -> JsonResult<Option<Peek>> {
+        if let Some(next) = self.eat_whitespace() {
+            match next {
+                b',' => {
+                    self.index += 1;
+                    let next = self.array_peek()?;
+                    if next.is_none() {
+                        if self.config.allow_trailing_commas {
+                            self.index += 1;
+                            self.config.recursion_limit += 1;
+                            Ok(None)
+                        } else {
+                            Err(&TRAILING_COMMA)
+                        }
+                    } else {
+                        Ok(next)
+                    }
+                }
+                b']' => {
+                    self.index += 1;
+                    self.config.recursion_limit += 1;
+                    Ok(None)
+                }
+                _ => Err(&EXPECTED_LIST_COMMA_OR_END),
+            }
+        } else {
+            Err(&EOF_WHILE_PARSING_LIST)
+        }
+    }
+
+    fn eat_whitespace(&mut self) -> Option<u8> {
+        let Some(mut next) = self.ctx.data.get(self.index).copied() else {
+            return None;
+        };
+        #[cfg(feature = "json_comments")]
+        if next > b'/' {
+            return Some(next);
+        }
+        #[cfg(not(feature = "json_comments"))]
+        if next > b' ' {
+            return Some(next);
+        }
+        loop {
+            match next {
+                b' ' | b'\r' | b'\t' | b'\n' => self.index += 1,
+                #[cfg(feature = "json_comments")]
+                b'/' if self.config.allow_comments => self.eat_comment(),
+                _ => return Some(next),
+            }
+            if let Some(next2) = self.ctx.data.get(self.index) {
+                next = *next2;
+            } else {
+                return None;
+            }
         }
     }
 
@@ -993,31 +893,341 @@ impl<'j> Parser<'j> {
             return;
         }
     }
+    pub fn discard_seen_true(&mut self) -> JsonResult<()> {
+        debug_assert_eq!(self.ctx.data[self.index], b't');
+        self.consume_ident(TRUE_REST)
+    }
 
-    fn eat_whitespace(&mut self) -> Option<u8> {
-        let Some(mut next) = self.ctx.data.get(self.index).copied() else {
-            return None;
-        };
-        #[cfg(feature = "json_comments")]
-        if next > b'/' {
-            return Some(next);
-        }
-        #[cfg(not(feature = "json_comments"))]
-        if next > b' ' {
-            return Some(next);
-        }
-        loop {
+    pub fn discard_seen_false(&mut self) -> JsonResult<()> {
+        debug_assert_eq!(self.ctx.data[self.index], b'f');
+        self.consume_ident(FALSE_REST)
+    }
+
+    pub fn discard_seen_null(&mut self) -> JsonResult<()> {
+        debug_assert_eq!(self.ctx.data[self.index], b'n');
+        self.consume_ident(NULL_REST)
+    }
+    fn consume_ident<const SIZE: usize>(&mut self, expected: [u8; SIZE]) -> JsonResult<()> {
+        self.index = consume_ident(self.ctx.data, self.index, expected)?;
+        Ok(())
+    }
+    fn array_peek(&mut self) -> JsonResult<Option<Peek>> {
+        if let Some(next) = self.eat_whitespace() {
             match next {
-                b' ' | b'\r' | b'\t' | b'\n' => self.index += 1,
-                #[cfg(feature = "json_comments")]
-                b'/' if self.config.allow_comments => self.eat_comment(),
-                _ => return Some(next),
+                b']' => Ok(None),
+                _ => Ok(Some(Peek::new(next))),
             }
-            if let Some(next2) = self.ctx.data.get(self.index) {
-                next = *next2;
+        } else {
+            Err(&EOF_WHILE_PARSING_VALUE)
+        }
+    }
+
+    pub fn index_object(&mut self, key: &str) -> JsonResult<bool> {
+        if self.peek()? != Peek::Object {
+            return Err(&EOF_WHILE_PARSING_OBJECT);
+        }
+        let mut res = self.enter_seen_object_key_eq(key);
+        loop {
+            match res {
+                Ok(Some(true)) => return Ok(true),
+                Ok(Some(false)) => (),
+                Ok(None) => return Ok(false),
+                Err(err) => return Err(err),
+            }
+            res = self.discard_and_eq_object_step(key);
+        }
+    }
+
+    pub fn discard_colon(&mut self) -> JsonResult<()> {
+        if let Some(next) = self.eat_whitespace() {
+            if next == b':' {
+                self.index += 1;
+                Ok(())
             } else {
-                return None;
+                Err(&EXPECTED_COLON)
             }
+        } else {
+            Err(&EOF_WHILE_PARSING_OBJECT)
+        }
+    }
+
+    pub fn discard_remaining_object_fields(&mut self) -> JsonResult<()> {
+        loop {
+            match self.discard_object_step() {
+                Ok(Some(_)) => {
+                    if let Err(err) = self.skip_value() {
+                        return Err(err);
+                    }
+                }
+                Ok(None) => {
+                    return Ok(());
+                }
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    pub fn tag_query_at_content_next_object<'k, 's: 'k>(
+        &mut self,
+        tag: &str,
+        content: &str,
+        scratch: &'s mut Vec<u8>,
+    ) -> JsonResult<(&'k str, bool)>
+    where
+        'j: 'k,
+    {
+        if self.peek()? != Peek::Object {
+            return Err(&EOF_WHILE_PARSING_OBJECT);
+        }
+        let mut content_index = None;
+        let mut current_field_name = match self.enter_seen_object(scratch) {
+            Ok(Some(name)) => name,
+            Ok(None) => {
+                return Err(&DecodeError {
+                    message: "Missing tag field",
+                })
+            }
+            Err(err) => return Err(err),
+        };
+        loop {
+            if current_field_name == tag {
+                match unsafe { self.read_seen_string(scratch) } {
+                    Ok(value) => {
+                        if let Some(content_index) = content_index {
+                            self.index = content_index;
+                            return Ok((value, true));
+                        }
+                        loop {
+                            match self.discard_and_eq_object_step(content) {
+                                Ok(Some(matches)) => {
+                                    if matches {
+                                        return Ok((value, true));
+                                    }
+                                    if let Err(err) = self.skip_value() {
+                                        return Err(err);
+                                    }
+                                }
+                                Ok(None) => return Ok((value, false)),
+                                Err(err) => {
+                                    return Err(err);
+                                }
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        return Err(err);
+                    }
+                }
+            } else if current_field_name == content {
+                content_index = Some(self.index);
+            }
+            if let Err(err) = self.skip_value() {
+                return Err(err);
+            }
+            match self.object_step(scratch) {
+                Ok(Some(name)) => {
+                    current_field_name = name;
+                }
+                Ok(None) => {
+                    return Err(&DecodeError {
+                        message: "Missing tag field",
+                    });
+                }
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    pub fn take_string<'k, 's: 'k>(&mut self, scratch: &'s mut Vec<u8>) -> JsonResult<&'k str>
+    where
+        'j: 'k,
+    {
+        if self.peek()? != Peek::String {
+            return Err(&EOF_WHILE_PARSING_STRING);
+        }
+        unsafe { self.read_seen_string(scratch) }
+    }
+    pub fn tag_query_next_object<'k, 's: 'k>(
+        &mut self,
+        tag: &str,
+        scratch: &'s mut Vec<u8>,
+    ) -> JsonResult<&'k str>
+    where
+        'j: 'k,
+    {
+        if self.peek()? != Peek::Object {
+            return Err(&EOF_WHILE_PARSING_OBJECT);
+        }
+        let initial_index = self.index;
+        let initial_remaining_depth = self.config.recursion_limit;
+        let mut current_field_name = match self.enter_seen_object(scratch) {
+            Ok(Some(name)) => name,
+            Ok(None) => {
+                return Err(&DecodeError {
+                    message: "Missing tag field",
+                })
+            }
+            Err(err) => return Err(err),
+        };
+        loop {
+            if current_field_name == tag {
+                match self.take_string(scratch) {
+                    Ok(value) => {
+                        self.index = initial_index;
+                        self.config.recursion_limit = initial_remaining_depth;
+                        return Ok(value);
+                    }
+                    Err(err) => {
+                        return Err(err);
+                    }
+                }
+            }
+            match self.skip_value() {
+                Ok(()) => {}
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+            match self.object_step(scratch) {
+                Ok(Some(name)) => {
+                    current_field_name = name;
+                }
+                Ok(None) => {
+                    return Err(&DecodeError {
+                        message: "Missing tag field",
+                    });
+                }
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    pub fn consume_numeric_literal(&mut self) -> JsonResult<&'j str> {
+        let (output, index) = extract_numeric_literal(self.ctx.data, self.index)?;
+        self.index = index;
+        Ok(output)
+    }
+}
+
+impl<'j> Parser<'j> {
+    pub fn snapshot(&self) -> RetrySnapshot {
+        RetrySnapshot {
+            index: self.at.index,
+            recursion_depth: self.at.config.recursion_limit,
+        }
+    }
+
+    pub fn restore_for_retry(&mut self, snapshot: &RetrySnapshot) {
+        self.at.index = snapshot.index;
+        self.at.config.recursion_limit = snapshot.recursion_depth;
+        self.parent_context = JsonParentContext::None;
+        self.at.ctx.error = None;
+    }
+
+    pub fn new(data: &'j str, config: JsonParserConfig) -> Self {
+        Self {
+            at: InnerParser {
+                ctx: Ctx::new(data),
+                index: 0,
+                config,
+            },
+            parent_context: JsonParentContext::None,
+            scratch: Vec::new(),
+        }
+    }
+    pub fn report_static_error(&mut self, error: &'j str) {
+        self.at.ctx.error = Some(Cow::Borrowed(error));
+    }
+    pub fn report_error(&mut self, error: String) {
+        self.at.ctx.error = Some(Cow::Owned(error));
+    }
+    pub fn clear_error(&mut self) {
+        self.at.ctx.error = None;
+    }
+
+    pub fn try_zerocopy(&self, text: &str) -> Option<&'j str> {
+        unsafe {
+            if self.at.ctx.data.as_ptr_range().contains(&text.as_ptr()) {
+                Some(&*(text as *const str))
+            } else {
+                None
+            }
+        }
+    }
+    pub fn slice(&self, range: Range<usize>) -> Option<&[u8]> {
+        self.at.ctx.data.get(range)
+    }
+
+    pub fn finish(&mut self) -> JsonResult<()> {
+        if self.at.eat_whitespace().is_none() {
+            Ok(())
+        } else {
+            Err(&TRAILING_CHARACTERS)
+        }
+    }
+
+    pub fn take_string(&mut self) -> JsonResult<&str> {
+        self.at.take_string(&mut self.scratch)
+    }
+    pub fn skip_value(&mut self) -> JsonResult<()> {
+        self.at.skip_value()
+    }
+    pub fn peek(&mut self) -> JsonResult<Peek> {
+        self.at.peek()
+    }
+    pub unsafe fn read_seen_string(&mut self) -> JsonResult<&str> {
+        unsafe { self.at.read_seen_string(&mut self.scratch) }
+    }
+
+    pub fn tag_query_next_object<'a>(&'a mut self, tag: &str) -> JsonResult<&'a str> {
+        self.at.tag_query_next_object(tag, &mut self.scratch)
+    }
+
+    pub fn tag_query_at_content_next_object<'a>(
+        &'a mut self,
+        tag: &str,
+        content: &str,
+    ) -> JsonResult<(&'a str, bool)> {
+        self.at
+            .tag_query_at_content_next_object(tag, content, &mut self.scratch)
+    }
+    pub unsafe fn discard_remaining_object_fields(&mut self) -> JsonResult<()> {
+        self.at.discard_remaining_object_fields()
+    }
+    pub unsafe fn object_step(&mut self) -> JsonResult<Option<&str>> {
+        self.at.object_step(&mut self.scratch)
+    }
+    pub fn enter_object(&mut self) -> JsonResult<Option<&str>> {
+        self.at.enter_object(&mut self.scratch)
+    }
+    pub fn enter_seen_object(&mut self) -> JsonResult<Option<&str>> {
+        self.at.enter_seen_object(&mut self.scratch)
+    }
+
+    pub fn take_cow_string(&mut self) -> JsonResult<Cow<'j, str>> {
+        let value = self.at.take_string(&mut self.scratch)?;
+        if let Some(borrowed) = self.at.ctx.try_extend_lifetime(value) {
+            Ok(Cow::Borrowed(borrowed))
+        } else {
+            let owned = value.to_string();
+            Ok(Cow::Owned(owned))
+        }
+    }
+
+    pub fn take_borrowed_string(&mut self) -> JsonResult<&'j str> {
+        let value = self.at.take_string(&mut self.scratch)?;
+        if let Some(borrowed) = self.at.ctx.try_extend_lifetime(value) {
+            Ok(borrowed)
+        } else {
+            Err(&DecodeError {
+                message: "Unexpected escape in string",
+            })
         }
     }
 }

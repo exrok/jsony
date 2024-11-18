@@ -1,5 +1,7 @@
 // mod template2;
 
+// #[derive(Clone, Copy, Debug, Jsony)]
+
 use crate::{case::RenameRule, util::Allocator, Error};
 use proc_macro::{Delimiter, Ident, Literal, Span, TokenStream, TokenTree};
 pub enum GenericKind {

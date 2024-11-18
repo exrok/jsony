@@ -1324,7 +1324,7 @@ fn other_variant_key(out: &mut RustWriter, field: &Field) {
             &*(variant as *const str)
         };
         let other_tag = match <[~field.ty] as ::jsony::text::FromText>::from_text(
-            &mut parser.ctx,
+            &mut parser.at.ctx,
             erased
         ) {
             Ok(value) => value,

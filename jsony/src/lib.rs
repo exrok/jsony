@@ -411,10 +411,10 @@ impl JsonError {
         JsonError {
             inner: Box::new(JsonErrorInner {
                 error,
-                context: parser.ctx.error.take().map(|x| x.to_string()),
+                context: parser.at.ctx.error.take().map(|x| x.to_string()),
                 parent_context: parser.parent_context,
-                index: parser.index,
-                surrounding: surrounding(parser.index, &parser.ctx.data),
+                index: parser.at.index,
+                surrounding: surrounding(parser.at.index, &parser.at.ctx.data),
             }),
         }
     }
@@ -554,8 +554,8 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
         }
         match unsafe { func(value, &mut parser) } {
             Ok(()) => {
-                let _ = parser.peek();
-                Ok(parser.ctx.data.len() == parser.index || config.allow_trailing_data)
+                let _ = parser.at.peek();
+                Ok(parser.at.ctx.data.len() == parser.at.index || config.allow_trailing_data)
             }
             Err(err) => Err(JsonError::extract(err, &mut parser)),
         }

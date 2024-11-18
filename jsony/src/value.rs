@@ -349,7 +349,7 @@ unsafe impl<'a> FromJson<'a> for JsonItem<'a> {
     fn json_decode(
         parser: &mut crate::parser::Parser<'a>,
     ) -> Result<Self, &'static crate::json::DecodeError> {
-        match parser.peek()? {
+        match parser.at.peek()? {
             Peek::Array => Ok(JsonItem::new_array(
                 <Vec<JsonItem<'a>> as FromJson<'a>>::json_decode(parser)?,
             )),
@@ -365,20 +365,20 @@ unsafe impl<'a> FromJson<'a> for JsonItem<'a> {
                 <JsonKey<'a> as FromJson<'a>>::json_decode(parser)?,
             )),
             Peek::True => {
-                parser.discard_seen_true()?;
+                parser.at.discard_seen_true()?;
                 return Ok(JsonItem::new(b"true", True));
             }
             Peek::False => {
-                parser.discard_seen_false()?;
+                parser.at.discard_seen_false()?;
                 return Ok(JsonItem::new(b"false", False));
             }
             Peek::Null => {
-                parser.discard_seen_null()?;
+                parser.at.discard_seen_null()?;
                 return Ok(JsonItem::new(b"null", Null));
             }
             //assume number
             _ => {
-                let slice = parser.consume_numeric_literal()?;
+                let slice = parser.at.consume_numeric_literal()?;
                 if !is_json_number(slice.as_bytes()) {
                     return Err(&DecodeError {
                         message: "Invalid number",
