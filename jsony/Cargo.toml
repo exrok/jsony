@@ -12,15 +12,13 @@ categories = ["encoding"]
 rust-version = "1.82"
 
 [dependencies]
-#jsony_macros = { version = "0.0.2" }
-jsony_macros = { path = "../jsony_macros" }
+jsony_macros = { path = "../jsony_macros", optional = true }
 itoa = "1"
 ryu = "1"
-memchr = "2.7.4"
 uuid = { version = "1", optional = true }
 
-
 [features]
-default = ["json_comments"]
+default = ["json_comments", "macros"]
 uuid = ["dep:uuid"]
+macros = ["dep:jsony_macros"]
 json_comments = []

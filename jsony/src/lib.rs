@@ -87,7 +87,9 @@ use parser::Parser;
 /// See [object] template macro for more details.
 ///
 /// Works that sames `object!{}` except produces an array.
+#[cfg(feature = "macros")]
 pub use jsony_macros::array;
+#[cfg(feature = "macros")]
 pub use jsony_macros::{object, Jsony};
 pub use text_writer::IntoTextWriter;
 

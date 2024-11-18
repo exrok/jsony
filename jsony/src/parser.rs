@@ -871,12 +871,12 @@ impl<'j> InnerParser<'j> {
             return;
         };
         if *ch == b'/' {
-            if let Some(offset) = memchr::memchr(b'\n', &self.ctx.data[self.index + 1..]) {
-                self.index += offset + 2;
-                return;
-            } else {
-                self.index = self.ctx.data.len();
-                return;
+            self.index += 1;
+            while let Some(&ch) = self.ctx.data.get(self.index) {
+                self.index += 1;
+                if ch == b'\n' {
+                    return;
+                }
             }
         }
         if *ch == b'*' {

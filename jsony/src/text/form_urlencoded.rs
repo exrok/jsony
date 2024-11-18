@@ -15,6 +15,11 @@ union PtrOrOffset {
     ptr: *const u8,
     offset: usize,
 }
+
+fn memchr(needle: u8, haystack: &[u8]) -> Option<usize> {
+    haystack.iter().position(|&ch| ch == needle)
+}
+
 impl<'input> FormDecoder<'input> {
     pub fn extract_named_fields<'this, 'output_buffer, 'maybe_input: 'input + 'this>(
         &'this mut self,
@@ -36,13 +41,13 @@ impl<'input> FormDecoder<'input> {
                 break;
             }
             let key_start = self.at;
-            let Some(key_len) = memchr::memchr(b'=', &self.ctx.data[self.at..]) else {
+            let Some(key_len) = memchr(b'=', &self.ctx.data[self.at..]) else {
                 return Err(&DecodeError {
                     message: "Expected =",
                 });
             };
             let key_end = key_len + self.at;
-            let value_end = match memchr::memchr(b'&', &self.ctx.data[key_end + 1..]) {
+            let value_end = match memchr(b'&', &self.ctx.data[key_end + 1..]) {
                 Some(value_length) => {
                     self.at = value_length + key_end + 2; // 2: for '=' and '&'
                     value_length + key_end + 1
