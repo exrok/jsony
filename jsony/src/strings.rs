@@ -63,9 +63,7 @@ pub(crate) fn parse_escape(index: usize, read: &[u8], scratch: &mut Vec<u8>) -> 
             }
             Ok(i)
         }
-        Err(_) => {
-            Err(())
-        }
+        Err(_) => Err(()),
     }
 }
 
@@ -343,19 +341,22 @@ fn decode_four_hex_digits(a: u8, b: u8, c: u8, d: u8) -> Option<u16> {
     }
 }
 
-pub(crate) fn decode_two_hex_digits(a: u8, b: u8) -> Option<u8> {
-    let a = HEX[a as usize] as i16;
-    let b = HEX[b as usize] as i16;
+// Likely useful in the future for things like form_urlencoded which has been
+// temporarily removed.
+// pub(crate) fn decode_two_hex_digits(a: u8, b: u8) -> Option<u8> {
+//     let a = HEX[a as usize] as i16;
+//     let b = HEX[b as usize] as i16;
 
-    let codepoint = (a << 4) | b;
+//     let codepoint = (a << 4) | b;
 
-    // A single sign bit check.
-    if codepoint >= 0 {
-        Some(codepoint as u8)
-    } else {
-        None
-    }
-}
+//     // A single sign bit check.
+//     if codepoint >= 0 {
+//         Some(codepoint as u8)
+//     } else {
+//         None
+//     }
+// }
+
 #[cfg(test)]
 mod test {
     use super::*;

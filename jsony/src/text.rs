@@ -1,8 +1,4 @@
 use crate::json::DecodeError;
-// maximum number fields.
-// currently 63 based on how we compute the bit masks.
-pub const MAX_FIELDS: usize = 63;
-pub(crate) mod form_urlencoded;
 mod from_impl;
 
 use core::str;
@@ -42,35 +38,4 @@ impl<'a> Ctx<'a> {
 
 pub trait FromText<'a>: Sized {
     fn from_text(ctx: &mut Ctx<'a>, text: &str) -> Result<Self, &'static DecodeError>;
-}
-
-pub trait FromTextSequence<'a>: Sized {
-    fn from_text_sequence(
-        ctx: &mut Ctx<'a>,
-        sequence: &[Option<&str>],
-    ) -> Result<Self, &'static DecodeError>;
-}
-
-pub trait TextSequenceFieldNames: Sized {
-    fn text_sequence_field_names() -> &'static [&'static str];
-}
-
-#[cfg(test)]
-mod test {
-    use form_urlencoded::FormDecoder;
-    use std::mem::MaybeUninit;
-
-    use super::*;
-    #[test]
-    fn form_decoder() {
-        let mut fields = MaybeUninit::<[Option<&str>; 32]>::uninit();
-        let mut decoder = FormDecoder::new("foo=hello&billy=nice");
-        let lines = decoder
-            .extract_named_fields(&mut fields, &["foo", "billy"])
-            .unwrap();
-        assert_eq!(lines, &[Some("hello"), Some("nice")]);
-        //        let value = from_form::<Foo>(b"x=hello&value=nice").unwrap();
-        //       assert_eq!(value.x, "hello");
-        //      assert_eq!(value.value, "nice");
-    }
 }

@@ -18,7 +18,6 @@ It is not recommended to be used for external facing systems at this time.
 - Data formats
   - JSON (optional extension: trailing commas, comments, unquoted keys)
   - Custom Binary Encoding
-  - x-www-form-urlencoded
 - Lazy JSON parser for efficiently extracting small fragments.
 - JSON templating macros
 - Encode directly to a file or stack allocated to buffer.

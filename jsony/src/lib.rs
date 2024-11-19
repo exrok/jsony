@@ -3,7 +3,6 @@
 //! for the following formats:
 //! - [JSON](json) (with optional extensions: trailing commas, comments, unquoted keys)
 //! - [Custom Binary Encoding](crate::binary)
-//! - [x-www-form-urlencoded](from_form_urlencoded) (in progress)
 //!
 //! ### Decoding/Encoding JSON with strongly typed data structures
 //!
@@ -59,7 +58,6 @@
     clippy::question_mark,
     reason = "? introduces extra code bloat slowing down compile times"
 )]
-use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 #[doc(hidden)]
 pub mod __internal;
@@ -77,8 +75,6 @@ mod third_party;
 pub use byte_writer::BytesWriter;
 use parser::JsonParentContext;
 use parser::MISSING_REQUIRED_FIELDS;
-use text::FromTextSequence;
-use text::TextSequenceFieldNames;
 pub use text_writer::TextWriter;
 pub mod value;
 use binary::{Decoder, FromBinaryError};
@@ -659,18 +655,4 @@ pub fn to_binary<T: ToBinary + ?Sized>(value: &T) -> Vec<u8> {
     let mut encoder = BytesWriter::new();
     value.binary_encode(&mut encoder);
     encoder.into_vec()
-}
-
-pub fn from_form_urlencoded<'a, T: TextSequenceFieldNames + FromTextSequence<'a>>(
-    form: &'a str,
-) -> Result<T, &'static DecodeError> {
-    let mut decoder = text::form_urlencoded::FormDecoder::new(form);
-    let mut fields = MaybeUninit::<[Option<&str>; 32]>::uninit();
-    let Ok(lines) = decoder.extract_named_fields(&mut fields, T::text_sequence_field_names())
-    else {
-        return Err(&DecodeError {
-            message: "Expected larger",
-        });
-    };
-    T::from_text_sequence(&mut decoder.ctx, lines)
 }
