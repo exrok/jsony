@@ -222,9 +222,9 @@ impl<'j> InnerParser<'j> {
                             return Err(&RECURSION_LIMIT_EXCEEDED);
                         }
                         let key = self.read_seen_unquoted_object_key()?;
-                        return Ok(Some(key == value));
+                        Ok(Some(key == value))
                     } else {
-                        return Err(&KEY_MUST_BE_A_STRING);
+                        Err(&KEY_MUST_BE_A_STRING)
                     }
                 }
             }
@@ -256,9 +256,9 @@ impl<'j> InnerParser<'j> {
                             return Err(&RECURSION_LIMIT_EXCEEDED);
                         }
                         self.read_seen_unquoted_object_key()?;
-                        return Ok(Some(()));
+                        Ok(Some(()))
                     } else {
-                        return Err(&KEY_MUST_BE_A_STRING);
+                        Err(&KEY_MUST_BE_A_STRING)
                     }
                 }
             }
@@ -297,7 +297,7 @@ impl<'j> InnerParser<'j> {
                         }
                         return self.read_seen_unquoted_object_key().map(Some);
                     } else {
-                        return Err(&KEY_MUST_BE_A_STRING);
+                        Err(&KEY_MUST_BE_A_STRING)
                     }
                 }
             }
@@ -397,9 +397,9 @@ impl<'j> InnerParser<'j> {
                         Some(_) => {
                             if self.config.allow_unquoted_field_keys {
                                 let key = self.read_seen_unquoted_object_key()?;
-                                return Ok(Some(key == value));
+                                Ok(Some(key == value))
                             } else {
-                                return Err(&KEY_MUST_BE_A_STRING);
+                                Err(&KEY_MUST_BE_A_STRING)
                             }
                         }
                         None => Err(&EOF_WHILE_PARSING_VALUE),
@@ -435,9 +435,9 @@ impl<'j> InnerParser<'j> {
                         Some(_) => {
                             if self.config.allow_unquoted_field_keys {
                                 self.read_seen_unquoted_object_key()?;
-                                return Ok(Some(()));
+                                Ok(Some(()))
                             } else {
-                                return Err(&KEY_MUST_BE_A_STRING);
+                                Err(&KEY_MUST_BE_A_STRING)
                             }
                         }
                         None => Err(&EOF_WHILE_PARSING_VALUE),
@@ -480,7 +480,7 @@ impl<'j> InnerParser<'j> {
                             if self.config.allow_unquoted_field_keys {
                                 return self.read_seen_unquoted_object_key().map(Some);
                             } else {
-                                return Err(&KEY_MUST_BE_A_STRING);
+                                Err(&KEY_MUST_BE_A_STRING)
                             }
                         }
                         None => Err(&EOF_WHILE_PARSING_VALUE),
@@ -609,19 +609,20 @@ impl<'j> InnerParser<'j> {
 
     pub fn discard_seen_string<'k, 's: 'k>(&mut self) -> JsonResult<()> {
         debug_assert_eq!(self.ctx.data[self.index], b'"');
-        self.index = skip_json_string_and_validate(self.index + 1, &self.ctx.data)?;
+        self.index = skip_json_string_and_validate(self.index + 1, self.ctx.data)?;
         Ok(())
     }
 
     pub fn discard_and_eq_seen_string(&mut self, value: &str) -> JsonResult<bool> {
         debug_assert_eq!(self.ctx.data[self.index], b'"');
         let (after_index, is_equal) =
-            skip_json_string_and_eq(self.index + 1, &self.ctx.data, value.as_bytes())?;
+            skip_json_string_and_eq(self.index + 1, self.ctx.data, value.as_bytes())?;
         self.index = after_index;
         Ok(is_equal)
     }
 
-    /// Safety: Parser must be at a valid stream typically this enforced by
+    /// # Safety
+    /// Parser must be at a valid stream typically this enforced by
     /// calling the function immediately after `Parser::peak(..) == Peek::String`
     pub unsafe fn read_seen_string<'k, 's: 'k>(
         &mut self,
@@ -657,7 +658,7 @@ impl<'j> InnerParser<'j> {
                 b'\\' => {
                     scratch.extend_from_slice(&self.ctx.data[start..self.index]);
                     self.index += 1;
-                    match crate::strings::parse_escape(self.index, &self.ctx.data, scratch) {
+                    match crate::strings::parse_escape(self.index, self.ctx.data, scratch) {
                         Ok(index) => {
                             self.index = index;
                             start = index;
@@ -708,9 +709,7 @@ impl<'j> InnerParser<'j> {
             Peek::Array => {
                 if self.enter_seen_array()?.is_some() {
                     loop {
-                        if let Err(err) = self.skip_value() {
-                            return Err(err);
-                        }
+                        self.skip_value()?;
                         if self.array_step()?.is_none() {
                             break;
                         }
@@ -721,9 +720,7 @@ impl<'j> InnerParser<'j> {
             Peek::Object => {
                 if self.enter_seen_object_discarding_key()?.is_some() {
                     loop {
-                        if let Err(err) = self.skip_value() {
-                            return Err(err);
-                        }
+                        self.skip_value()?;
                         if self.discard_object_step()?.is_none() {
                             break;
                         }
@@ -893,7 +890,6 @@ impl<'j> InnerParser<'j> {
                 index += 1;
             }
             self.index = self.ctx.data.len();
-            return;
         }
     }
     pub fn discard_seen_true(&mut self) -> JsonResult<()> {
@@ -976,11 +972,7 @@ impl<'j> InnerParser<'j> {
     pub fn discard_remaining_object_fields(&mut self) -> JsonResult<()> {
         loop {
             match self.discard_object_step() {
-                Ok(Some(_)) => {
-                    if let Err(err) = self.skip_value() {
-                        return Err(err);
-                    }
-                }
+                Ok(Some(_)) => self.skip_value()?,
                 Ok(None) => {
                     return Ok(());
                 }
@@ -1027,9 +1019,7 @@ impl<'j> InnerParser<'j> {
                                     if matches {
                                         return Ok((value, true));
                                     }
-                                    if let Err(err) = self.skip_value() {
-                                        return Err(err);
-                                    }
+                                    self.skip_value()?
                                 }
                                 Ok(None) => return Ok((value, false)),
                                 Err(err) => {
@@ -1045,9 +1035,7 @@ impl<'j> InnerParser<'j> {
             } else if current_field_name == content {
                 content_index = Some(self.index);
             }
-            if let Err(err) = self.skip_value() {
-                return Err(err);
-            }
+            self.skip_value()?;
             match self.object_step(scratch) {
                 Ok(Some(name)) => {
                     current_field_name = name;
@@ -1203,6 +1191,9 @@ impl<'j> Parser<'j> {
     pub fn peek(&mut self) -> JsonResult<Peek> {
         self.at.peek()
     }
+    /// # Safety
+    /// Parser must be at a valid stream typically this enforced by
+    /// calling the function immediately after `Parser::peak(..) == Peek::String`
     pub unsafe fn read_seen_string(&mut self) -> JsonResult<&str> {
         unsafe { self.at.read_seen_string(&mut self.scratch) }
     }
@@ -1219,10 +1210,10 @@ impl<'j> Parser<'j> {
         self.at
             .tag_query_at_content_next_object(tag, content, &mut self.scratch)
     }
-    pub unsafe fn discard_remaining_object_fields(&mut self) -> JsonResult<()> {
+    pub fn discard_remaining_object_fields(&mut self) -> JsonResult<()> {
         self.at.discard_remaining_object_fields()
     }
-    pub unsafe fn object_step(&mut self) -> JsonResult<Option<&str>> {
+    pub fn object_step(&mut self) -> JsonResult<Option<&str>> {
         self.at.object_step(&mut self.scratch)
     }
     pub fn enter_object(&mut self) -> JsonResult<Option<&str>> {

@@ -114,19 +114,8 @@ fn main() {
 
     util::print_pretty_and_copy(codegen::derive(tokens! {
         // #[derive(Clone, Copy, Debug, Jsony)]
-
-    #[derive(Debug, Jsony, PartialEq, Eq)]
-    #[jsony(tag = "kind")]
-    enum TaggedCapture<'a> {
-        Alpha {
-            value: &'a str,
-        },
-        Beta,
-        #[jsony(other)]
-        Other {
-            field: &'a str,
-        },
-    }
+    #[derive(Jsony, Debug)]
+    struct NestedArray(Vec<NestedArray>);
 
 
 

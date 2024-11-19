@@ -41,7 +41,7 @@ pub struct SkipFieldVisitor<F> {
     pub visitor: F,
 }
 
-unsafe impl<'a, F: FieldVistor<'a>> FieldVistor<'a> for SkipFieldVisitor<F> {
+impl<'a, F: FieldVistor<'a>> FieldVistor<'a> for SkipFieldVisitor<F> {
     fn complete(&mut self) -> Result<(), &'static DecodeError> {
         self.visitor.complete()
     }
@@ -60,7 +60,7 @@ unsafe impl<'a, F: FieldVistor<'a>> FieldVistor<'a> for SkipFieldVisitor<F> {
     }
 }
 
-unsafe impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
+impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
     fn complete(&mut self) -> Result<(), &'static DecodeError> {
         if self.bitset & self.required != self.required {
             return Err(&DecodeError {
@@ -143,6 +143,7 @@ pub struct ObjectSchema<'a> {
 impl<'a> ObjectSchema<'a> {
     fn fields(&self) -> &[Field<'a>] {
         unsafe {
+            #[allow(clippy::unnecessary_cast, reason = "clippy false positive")]
             std::slice::from_raw_parts(
                 self.inner.fields.as_ptr() as *const Field<'a>,
                 self.inner.fields.len(),

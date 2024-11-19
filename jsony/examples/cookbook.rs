@@ -55,7 +55,7 @@ where
     #[inline]
     fn from(value: E) -> Self {
         Self {
-            location: &std::panic::Location::caller(),
+            location: std::panic::Location::caller(),
             error: value.into(),
         }
     }

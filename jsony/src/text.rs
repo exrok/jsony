@@ -27,7 +27,7 @@ impl<'a> Ctx<'a> {
         }
     }
     pub fn static_error(&mut self, err: &'static str) {
-        if let None = self.error {
+        if self.error.is_none() {
             self.error = Some(Cow::Borrowed(err));
         }
     }

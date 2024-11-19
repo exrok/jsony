@@ -23,10 +23,10 @@ fn simple_struct() {
     }
     let x = from_json::<Simple>(obj! { "a1": 23,  "a2": true }).unwrap();
     assert_eq!(x.a1, 23);
-    assert_eq!(x.a2, true);
+    assert!(x.a2);
     let x = from_json::<Simple>(obj! { "a2": true, "a1": 23 }).unwrap();
     assert_eq!(x.a1, 23);
-    assert_eq!(x.a2, true);
+    assert!(x.a2);
     assert!(from_json::<Simple>(obj! { "a1": 23, }).is_err());
     assert!(from_json::<Simple>(obj! { "a1": 23, "a2": 1 }).is_err());
     assert!(from_json::<Simple>("{").is_err());
@@ -51,9 +51,9 @@ fn simple_struct() {
     })
     .unwrap();
     assert_eq!(nested.x.a1, -4353);
-    assert_eq!(nested.x.a2, true);
+    assert!(nested.x.a2);
     assert_eq!(nested.y.a1, 22);
-    assert_eq!(nested.y.a2, false);
+    assert!(!nested.y.a2);
 }
 
 #[test]
@@ -67,10 +67,10 @@ fn defaults() {
     }
     let x = from_json::<Simple>(obj! { "a1": 23,  "a2": true }).unwrap();
     assert_eq!(x.a1, 23);
-    assert_eq!(x.a2, true);
+    assert!(x.a2);
     let x = from_json::<Simple>(obj! {}).unwrap();
     assert_eq!(x.a1, 203);
-    assert_eq!(x.a2, false);
+    assert!(!x.a2);
 
     #[derive(Jsony)]
     struct Nested {
@@ -85,18 +85,18 @@ fn defaults() {
     })
     .unwrap();
     assert_eq!(nested.x.a1, 203);
-    assert_eq!(nested.x.a2, true);
+    assert!(nested.x.a2);
     assert_eq!(nested.y.a1, 203);
-    assert_eq!(nested.y.a2, false);
+    assert!(!nested.y.a2);
 
     let nested = from_json::<Nested>(obj! {
         "x": { "a2": true}
     })
     .unwrap();
     assert_eq!(nested.x.a1, 203);
-    assert_eq!(nested.x.a2, true);
+    assert!(nested.x.a2);
     assert_eq!(nested.y.a1, 0);
-    assert_eq!(nested.y.a2, false);
+    assert!(!nested.y.a2);
 }
 
 #[test]

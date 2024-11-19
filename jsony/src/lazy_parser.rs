@@ -205,9 +205,9 @@ impl MaybeJson {
 
     pub fn new(raw: &str) -> &MaybeJson {
         if raw.is_empty() {
-            return MaybeJson::from_decode_error(&DecodeError {
+            MaybeJson::from_decode_error(&DecodeError {
                 message: "Empty object is not valid JSON",
-            });
+            })
         } else {
             unsafe { &*(raw as *const str as *const MaybeJson) }
         }

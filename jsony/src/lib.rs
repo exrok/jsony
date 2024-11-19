@@ -55,6 +55,10 @@
 //! - [Compact loosely typed Value](crate::value::JsonItem): Represent arbitrary JSON values in memory.
 //! - [Flexible encode destination](crate::to_json_into): Encode to a file or stack-allocating buffer.
 
+#![allow(
+    clippy::question_mark,
+    reason = "? introduces extra code bloat slowing down compile times"
+)]
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 #[doc(hidden)]
@@ -196,6 +200,9 @@ pub unsafe trait FromJson<'a>: Sized + 'a {
     ///
     /// # Safety
     ///
+    /// dest, must be a pointer to Self although possilibly uninitialized
+    /// and be valid for writes.
+    ///
     /// If this method returns `Ok(())`, it must have properly initialized the
     /// memory at `dest` with a valid instance of `Self`. There is no such
     /// constraint if an error is returned.
@@ -285,7 +292,7 @@ impl RawJson {
     }
     pub(crate) fn new_boxed_unchecked(raw: Box<str>) -> Box<RawJson> {
         if raw.is_empty() {
-            return Self::new_boxed_unchecked("null".into());
+            Self::new_boxed_unchecked("null".into())
         } else {
             unsafe { Box::from_raw(Box::into_raw(raw) as *mut RawJson) }
         }
@@ -405,7 +412,7 @@ impl JsonError {
                 context: parser.at.ctx.error.take().map(|x| x.to_string()),
                 parent_context: parser.parent_context,
                 index: parser.at.index,
-                surrounding: surrounding(parser.at.index, &parser.at.ctx.data),
+                surrounding: surrounding(parser.at.index, parser.at.ctx.data),
             }),
         }
     }
@@ -420,10 +427,10 @@ impl std::fmt::Debug for JsonError {
 
 impl std::fmt::Display for JsonError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.inner.error.message)?;
+        f.write_str(self.inner.error.message)?;
         if let Some(context) = &self.inner.context {
             f.write_str(": ")?;
-            f.write_str(&context)?;
+            f.write_str(context)?;
         }
 
         match &self.inner.parent_context {
@@ -565,7 +572,7 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
             unsafe {
                 value.assume_init_drop();
             }
-            return Err(JsonError::trailing());
+            Err(JsonError::trailing())
         }
         Err(err) => Err(err),
     }

@@ -33,9 +33,7 @@ impl<'input> FormDecoder<'input> {
                 ptrs.add(i).write((PtrOrOffset { offset: usize::MAX }, 0));
             }
         }
-        let found = unsafe {
-            std::slice::from_raw_parts_mut(ptrs as *mut (PtrOrOffset, isize), field_names.len())
-        };
+        let found = unsafe { std::slice::from_raw_parts_mut(ptrs, field_names.len()) };
         'outer: loop {
             if self.ctx.data.len() == self.at {
                 break;
@@ -93,7 +91,7 @@ impl<'input> FormDecoder<'input> {
                 };
                 let bytes = if size < 0 {
                     let size = size & !(1 << ((std::mem::size_of::<usize>() * 8) - 1));
-                    &self.buffer[ptr.offset as usize..][..size as usize]
+                    &self.buffer[ptr.offset..][..size as usize]
                 } else {
                     std::slice::from_raw_parts(ptr.ptr, size as usize)
                 };
@@ -150,7 +148,7 @@ impl<'input> FormDecoder<'input> {
             }
         }
         if written == 0 {
-            return None;
+            None
         } else {
             self.buffer.extend_from_slice(&value[written..]);
             Some((initial, self.buffer.len() - initial))

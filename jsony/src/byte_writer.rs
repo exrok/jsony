@@ -39,14 +39,14 @@ impl<'a> From<&'a mut [MaybeUninit<u8>]> for BytesWriter<'a> {
 
 impl<'a> From<&'a mut Vec<u8>> for BytesWriter<'a> {
     fn from(value: &'a mut Vec<u8>) -> Self {
-        let mut _0 = ManuallyDrop::new(std::mem::take(value));
+        let mut this = ManuallyDrop::new(std::mem::take(value));
         BytesWriter {
-            data: _0.as_mut_ptr(),
-            len: _0.len(),
-            capacity: _0.capacity(),
+            data: this.as_mut_ptr(),
+            len: this.len(),
+            capacity: this.capacity(),
             backing: Backing::Vec {
                 bytes: value,
-                offset: _0.len(),
+                offset: this.len(),
             },
         }
     }
@@ -112,8 +112,15 @@ impl<'a> BytesWriter<'a> {
     pub fn clear(&mut self) {
         self.len = 0;
     }
-    pub unsafe fn set_len(&mut self, len: usize) {
-        self.len = len;
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// # Safety
+    /// - new_len must be less than or equal to capacity().
+    /// - The elements at old_len..new_len must be initialized.
+    pub unsafe fn set_len(&mut self, new_len: usize) {
+        self.len = new_len;
     }
     pub fn saturting_pop(&mut self) {
         self.len = self.len.saturating_sub(1);
@@ -144,12 +151,12 @@ impl<'a> BytesWriter<'a> {
             return this.buffer_slice().into();
         }
         // todo document safety
-        return unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) };
+        unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) }
     }
     pub fn owned_into_vec(self) -> Vec<u8> {
         let mut this = ManuallyDrop::new(self);
         if let Backing::Owned = this.backing {
-            return unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) };
+            unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) }
         } else {
             unsafe { ManuallyDrop::drop(&mut this) };
             panic!("Expected write buffer to backed by an owned allocation");
@@ -169,6 +176,8 @@ impl<'a> BytesWriter<'a> {
         unsafe { ManuallyDrop::drop(&mut this) };
         panic!("Expected write buffer to backed by a Vec<u8>");
     }
+    /// # Safety
+    /// `self.buffer_slice()` must be valid UTF-8
     pub unsafe fn into_cow_utf8_unchecked(self) -> Cow<'a, str> {
         let mut this = ManuallyDrop::new(self);
         let data = this.data;
@@ -216,7 +225,7 @@ impl<'a> BytesWriter<'a> {
                 if let Some(error) = error.take() {
                     return Err(error);
                 }
-                return Ok(*written);
+                Ok(*written)
             }
             _ => {
                 panic!("Expected Write Instance");
@@ -275,7 +284,7 @@ impl<'a> BytesWriter<'a> {
     /// overflows `isize::MAX`.
     #[inline]
     pub(crate) unsafe fn reserve_small(&mut self, size: usize) {
-        debug_assert!(size <= std::isize::MAX as usize);
+        debug_assert!(size <= isize::MAX as usize);
         if self.len + size <= self.capacity {
             return;
         }
@@ -349,7 +358,7 @@ impl<'a> BytesWriter<'a> {
 
     #[cold]
     fn reserve_internal(&mut self, size: usize, can_write: bool) {
-        debug_assert!(size <= std::isize::MAX as usize);
+        debug_assert!(size <= isize::MAX as usize);
         if let Backing::Write {
             written,
             error,
@@ -393,10 +402,7 @@ impl<'a> BytesWriter<'a> {
 #[inline(never)]
 fn safe_alloc(capacity: usize) -> *mut u8 {
     assert!(capacity > 0);
-    assert!(
-        capacity <= std::isize::MAX as usize,
-        "capacity is too large"
-    );
+    assert!(capacity <= isize::MAX as usize, "capacity is too large");
 
     // SAFETY: capacity is non-zero, and always multiple of alignment (1).
     unsafe {
@@ -413,15 +419,12 @@ fn safe_alloc(capacity: usize) -> *mut u8 {
 /// # Safety
 ///
 /// - if `capacity > 0`, `capacity` is the same value that was used to allocate the block
-/// of memory pointed by `ptr`.
+///   of memory pointed by `ptr`.
 #[cold]
 #[inline(never)]
 unsafe fn safe_realloc(ptr: *mut u8, capacity: usize, new_capacity: usize) -> *mut u8 {
     assert!(new_capacity > 0);
-    assert!(
-        new_capacity <= std::isize::MAX as usize,
-        "capacity is too large"
-    );
+    assert!(new_capacity <= isize::MAX as usize, "capacity is too large");
 
     let data = if capacity == 0 {
         let new_layout = Layout::from_size_align_unchecked(new_capacity, 1);

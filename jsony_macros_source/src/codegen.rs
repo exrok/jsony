@@ -94,7 +94,7 @@ macro_rules! append_tok {
     }};
     (# $d:tt) => { $d.tt_punct_joint('\'') };
     (: $d:tt) => { $d.tt_punct_alone(':') };
-    (~ $d:tt) => { $d.tt_punct_joint('-') };
+    (~ $d:tt) => { $d.tt_punct_joint('#') };
     (< $d:tt) => { $d.tt_punct_alone('<') };
     (% $d:tt) => { $d.tt_punct_joint(':') };
     (:: $d:tt) => {$d.tt_punct_joint(':'); $d.tt_punct_alone(':') };
@@ -190,6 +190,7 @@ fn bodyless_impl_from(
 fn impl_from_binary(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
     splat! {
         output;
+        ~[[automatically_derived]]
         unsafe [try bodyless_impl_from(output, None, Ident::new("FromBinary", Span::call_site()), ctx)] {
             fn binary_decode(decoder: &mut [~&ctx.crate_path]::binary::Decoder<#[#ctx.lifetime]>) -> Self [
                 output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
@@ -229,6 +230,7 @@ fn impl_from_json_field_visitor(
 fn impl_from_json(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
     splat! {
         output;
+        ~[[automatically_derived]]
         unsafe [try bodyless_impl_from(output, None, Ident::new("FromJson", Span::call_site()), ctx)] {
             unsafe fn emplace_from_json(dst: ::std::ptr::NonNull<()>, parser: &mut [~&ctx.crate_path]::parser::Parser<#[#ctx.lifetime]>)
             -> ::std::result::Result<(), &#static ::jsony::json::DecodeError> [
@@ -249,6 +251,7 @@ fn impl_to_binary(
     let any_generics = !target.generics.is_empty();
     splat! {
         output;
+        ~[[automatically_derived]]
         unsafe impl [?(any_generics) < [fmt_generics(output, &target.generics, DEF)] >]
          [~&crate_path]::ToBinary for [#target.name][?(any_generics) <
             [fmt_generics( output, &target.generics, USE)]
@@ -282,6 +285,7 @@ fn impl_to_json(
     let any_generics = !target.generics.is_empty();
     splat! {
         output;
+        ~[[automatically_derived]]
         impl [?(any_generics) < [fmt_generics(output, &target.generics, DEF)] >]
          [~&crate_path]::ToJson for [#target.name][?(any_generics) <
             [fmt_generics( output, &target.generics, USE)]
@@ -907,101 +911,99 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
     let ordered_fields = schema_ordered_fields(fields);
 
     splat!(out;
-       const _: () = {
-            [?(ctx.target.flattenable)
-            const unsafe fn __schema_inner<#[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, DEF)]] >()
-                ~> ::jsony::__internal::ObjectSchema<#[#ctx.lifetime]>
-                [?(!ctx.target.where_clauses.is_empty() || !ctx.target.generic_field_types.is_empty())
-             where [
-                for (ty in &ctx.target.generic_field_types) {
-                    [~ty]: FromJson<#[#ctx.lifetime]>
+        [?(ctx.target.flattenable)
+        const unsafe fn __schema_inner<#[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, DEF)]] >()
+            ~> ::jsony::__internal::ObjectSchema<#[#ctx.lifetime]>
+            [?(!ctx.target.where_clauses.is_empty() || !ctx.target.generic_field_types.is_empty())
+            where [
+            for (ty in &ctx.target.generic_field_types) {
+                [~ty]: FromJson<#[#ctx.lifetime]>
+            }
+            ]]
+            {
+                ::jsony::__internal::ObjectSchema::<#[#ctx.lifetime]> {
+                    inner: &const { [struct_schema(out, ctx, &ordered_fields, None)?] },
+                    phantom: ::std::marker::PhantomData
                 }
-             ]]
-                {
-                    ::jsony::__internal::ObjectSchema::<#[#ctx.lifetime]> {
-                        inner: &const { [struct_schema(out, ctx, &ordered_fields, None)?] },
-                        phantom: ::std::marker::PhantomData
+            }
+        ]
+        [
+            let start = out.buf.len();
+            if let Some(flatten_field) = flattening {
+                splat!(out;
+                    let mut __flatten_visitor_jsony =
+                        <[~flatten_field.ty] as ::jsony::json::FromJsonFieldVisitor>::new_field_visitor(
+                            dst.byte_add(offset_of!([ctx.dead_target_type(out)], [#flatten_field.name])),
+                            parser,
+                        );
+                )
+            }
+            if has_skips {
+                splat!(out; let __result = );
+            }
+            if ctx.target.flattenable {
+                splat!(out; __schema_inner::<
+                    #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
+                >())
+            } else {
+                splat!(out;
+                ::jsony::__internal::ObjectSchema::<#[#ctx.lifetime]> {
+                    inner: &const { [struct_schema(out, ctx, &ordered_fields, None)?] },
+                    phantom: ::std::marker::PhantomData
+                })
+            }
+            splat!(out; .decode(dst, parser, [if flattening.is_some() {
+                splat!(out; Some(&mut __flatten_visitor_jsony))
+            } else {
+                splat!(out; None)
+            }]));
+            if has_skips {
+                splat!(out;
+                    ; //<-- close off let stmt
+                    if let Err(err) = __result {
+                        return Err(err)
                     }
-                }
-            ]
-            [
-                let start = out.buf.len();
-                if let Some(flatten_field) = flattening {
-                    splat!(out;
-                        let mut __flatten_visitor_jsony =
-                            <[~flatten_field.ty] as ::jsony::json::FromJsonFieldVisitor>::new_field_visitor(
-                                dst.byte_add(offset_of!([ctx.dead_target_type(out)], [#flatten_field.name])),
-                                parser,
-                            );
-                    )
-                }
-                if has_skips {
-                    splat!(out; let __result = );
-                }
-                if ctx.target.flattenable {
-                    splat!(out; __schema_inner::<
-                        #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
-                    >())
-                } else {
-                    splat!(out;
-                    ::jsony::__internal::ObjectSchema::<#[#ctx.lifetime]> {
-                        inner: &const { [struct_schema(out, ctx, &ordered_fields, None)?] },
-                        phantom: ::std::marker::PhantomData
-                    })
-                }
-                splat!(out; .decode(dst, parser, [if flattening.is_some() {
-                    splat!(out; Some(&mut __flatten_visitor_jsony))
-                } else {
-                    splat!(out; None)
-                }]));
-                if has_skips {
-                    splat!(out;
-                        ; //<-- close off let stmt
-                        if let Err(err) = __result {
-                            return Err(err)
+                    [for field in fields {
+                        if field.flags & Field::WITH_FROM_JSON_SKIP == 0 {
+                            continue;
                         }
-                        [for field in fields {
-                            if field.flags & Field::WITH_FROM_JSON_SKIP == 0 {
-                                continue;
-                            }
-                            splat!(
-                                out;
-                                dst.byte_add(::std::mem::offset_of!([ctx.dead_target_type(out)], [#field.name]))
-                                    .cast::<[~field.ty]>()
-                                    .write([field_from_default(out, field, FROM_JSON)]);
-                            )
-                        }]
+                        splat!(
+                            out;
+                            dst.byte_add(::std::mem::offset_of!([ctx.dead_target_type(out)], [#field.name]))
+                                .cast::<[~field.ty]>()
+                                .write([field_from_default(out, field, FROM_JSON)]);
+                        )
+                    }]
 
-                        Ok(())
-                    );
+                    Ok(())
+                );
+            }
+            let ts = out.split_off_stream(start);
+            impl_from_json(out, ctx, ts)?;
+            if ctx.target.flattenable {
+                if has_skips {
+                    throw!("Flattenable does not yet support skipped fields")
                 }
-                let ts = out.split_off_stream(start);
-                impl_from_json(out, ctx, ts)?;
-                if ctx.target.flattenable {
-                    if has_skips {
-                        throw!("Flattenable does not yet support skipped fields")
+                let body = token_stream!(
+                    out;
+                    jsony::__internal::DynamicFieldDecoder {
+                        destination: dst,
+                        schema: __schema_inner::<
+                            #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
+                        >(),
+                        bitset: [#Literal::u64_unsuffixed(0)],
+                        required: [#Literal::u64_unsuffixed(required_bitset(&ordered_fields))],
                     }
-                    let body = token_stream!(
-                        out;
-                        jsony::__internal::DynamicFieldDecoder {
-                            destination: dst,
-                            schema: __schema_inner::<
-                                #[#ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
-                            >(),
-                            bitset: [#Literal::u64_unsuffixed(0)],
-                            required: [#Literal::u64_unsuffixed(required_bitset(&ordered_fields))],
-                        }
-                    );
-                    impl_from_json_field_visitor(
-                        out,
-                        ctx,
-                        &|out| splat!(out; jsony::__internal::DynamicFieldDecoder<#[#ctx.lifetime]>),
-                        body
-                    )?;
+                );
+                impl_from_json_field_visitor(
+                    out,
+                    ctx,
+                    &|out| splat!(out; jsony::__internal::DynamicFieldDecoder<#[#ctx.lifetime]>),
+                    body
+                )?;
 
-                }
-            ]
-        };
+            }
+        ]
     );
 
     Ok(())
@@ -1683,74 +1685,80 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
 }
 
 // bincode test
-fn handle_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenStream, Error> {
-    let mut output = RustWriter::new();
-    let ctx = Ctx::new(&mut output, target)?;
+fn handle_struct(
+    output: &mut RustWriter,
+    target: &DeriveTargetInner,
+    fields: &[Field],
+) -> Result<(), Error> {
+    let ctx = Ctx::new(output, target)?;
     if target.from_json {
-        struct_from_json(&mut output, &ctx, fields)?;
+        struct_from_json(output, &ctx, fields)?;
     }
     if target.to_json {
-        struct_to_json(&mut output, &ctx, fields)?;
+        struct_to_json(output, &ctx, fields)?;
     }
 
     if target.to_binary {
-        let body = token_stream! { (&mut output); [
+        let body = token_stream! { output; [
             for field in fields {
-                binary_encode_field(&mut output, &ctx, field, &|out| splat!{out; &self.[#field.name]})
+                binary_encode_field(output, &ctx, field, &|out| splat!{out; &self.[#field.name]})
             }
         ]};
-        impl_to_binary(&mut output, &ctx, body)?;
+        impl_to_binary(output, &ctx, body)?;
     }
 
     if target.from_binary {
-        let body = token_stream! {(&mut output);
+        let body = token_stream! {output;
             [#target.name] {
                 [for field in fields {
-                    splat!{(&mut output);
-                        [#field.name]: [binary_decode_field(&mut output, &ctx, field)],
+                    splat!{(output);
+                        [#field.name]: [binary_decode_field(output, &ctx, field)],
                     }
                 }]
             }
         };
-        impl_from_binary(&mut output, &ctx, body)?;
+        impl_from_binary(output, &ctx, body)?;
     }
 
-    Ok(output.buf.drain(..).collect())
+    Ok(())
 }
 
-fn handle_tuple_struct(target: &DeriveTargetInner, fields: &[Field]) -> Result<TokenStream, Error> {
-    let mut output = RustWriter::new();
-    let ctx = Ctx::new(&mut output, target)?;
+fn handle_tuple_struct(
+    output: &mut RustWriter,
+    target: &DeriveTargetInner,
+    fields: &[Field],
+) -> Result<(), Error> {
+    let ctx = Ctx::new(output, target)?;
 
     if target.from_json {
-        tuple_struct_from_json(&mut output, &ctx, fields)?;
+        tuple_struct_from_json(output, &ctx, fields)?;
     }
 
     if target.to_json {
-        tuple_struct_to_json(&mut output, &ctx, fields)?;
+        tuple_struct_to_json(output, &ctx, fields)?;
     }
 
     if target.to_binary {
-        let body = token_stream! { (&mut output); [
+        let body = token_stream! {output; [
             for (i, field) in fields.iter().enumerate() {
-                binary_encode_field(&mut output, &ctx, field, &|out| splat!{out; &self.[#Literal::usize_unsuffixed(i)]})
+                binary_encode_field(output, &ctx, field, &|out| splat!{out; &self.[#Literal::usize_unsuffixed(i)]})
             }
         ]};
-        impl_to_binary(&mut output, &ctx, body)?;
+        impl_to_binary(output, &ctx, body)?;
     }
 
     if target.from_binary {
-        let body = token_stream! {(&mut output);
+        let body = token_stream! {output;
             [#target.name] (
                 [for field in fields {
-                    splat!{(&mut output); [binary_decode_field(&mut output, &ctx, field)], }
+                    splat!{(output); [binary_decode_field(output, &ctx, field)], }
                 }]
             )
         };
-        impl_from_binary(&mut output, &ctx, body)?;
+        impl_from_binary(output, &ctx, body)?;
     }
 
-    Ok(output.buf.drain(..).collect())
+    Ok(())
 }
 
 fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
@@ -1832,9 +1840,12 @@ fn enum_from_binary(
     impl_from_binary(out, ctx, body)
 }
 
-fn handle_enum(target: &DeriveTargetInner, variants: &[EnumVariant]) -> Result<TokenStream, Error> {
-    let mut output = RustWriter::new();
-    let mut ctx = Ctx::new(&mut output, target)?;
+fn handle_enum(
+    output: &mut RustWriter,
+    target: &DeriveTargetInner,
+    variants: &[EnumVariant],
+) -> Result<(), Error> {
+    let mut ctx = Ctx::new(output, target)?;
     let mut max_tuples = 0;
     for var in variants {
         if matches!(var.kind, EnumKind::Tuple | EnumKind::Struct) {
@@ -1843,19 +1854,19 @@ fn handle_enum(target: &DeriveTargetInner, variants: &[EnumVariant]) -> Result<T
     }
     ctx.temp = (0..max_tuples).map(var).collect::<Vec<_>>();
     if target.to_json {
-        enum_to_json(&mut output, &ctx, variants)?;
+        enum_to_json(output, &ctx, variants)?;
     }
     if target.from_json {
-        enum_from_json(&mut output, &ctx, variants)?;
+        enum_from_json(output, &ctx, variants)?;
     }
     if target.to_binary {
-        enum_to_binary(&mut output, &ctx, variants)?;
+        enum_to_binary(output, &ctx, variants)?;
     }
     if target.from_binary {
-        enum_from_binary(&mut output, &ctx, variants)?;
+        enum_from_binary(output, &ctx, variants)?;
     }
 
-    Ok(output.buf.drain(..).collect())
+    Ok(())
 }
 pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     let outer_tokens: Vec<TokenTree> = stream.into_iter().collect();
@@ -1886,14 +1897,15 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     let mut field_buf = Vec::<Field>::new();
     let mut pool = MemoryPool::<FieldAttrs>::new();
     let mut attr_buf = pool.allocator();
+    let mut rust_writer = RustWriter::new();
     match kind {
         DeriveTargetKind::Struct => {
             match ast::parse_struct_fields(&mut field_buf, &field_toks, &mut attr_buf) {
                 Ok(_) => {
                     ast::scan_fields(&mut target, &mut field_buf);
-                    handle_struct(&target, &field_buf)
+                    handle_struct(&mut rust_writer, &target, &field_buf)?;
                 }
-                Err(err) => Err(err),
+                Err(err) => return Err(err),
             }
         }
         DeriveTargetKind::TupleStruct => {
@@ -1905,9 +1917,9 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
             ) {
                 Ok(_) => {
                     ast::scan_fields(&mut target, &mut field_buf);
-                    handle_tuple_struct(&target, &field_buf)
+                    handle_tuple_struct(&mut rust_writer, &target, &field_buf)?;
                 }
-                Err(err) => Err(err),
+                Err(err) => return Err(err),
             }
         }
         DeriveTargetKind::Enum => {
@@ -1918,11 +1930,19 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
                 &mut field_buf,
                 &mut attr_buf,
             ) {
-                Ok(enums) => handle_enum(&target, &enums),
-                Err(err) => Err(err),
+                Ok(enums) => {
+                    handle_enum(&mut rust_writer, &target, &enums)?;
+                }
+                Err(err) => return Err(err),
             }
         }
     }
+    let ts = rust_writer.split_off_stream(0);
+    Ok(token_stream!(
+        (&mut rust_writer);
+        ~[[allow(clippy::question_mark)]]
+        const _: () = [@TokenTree::Group(Group::new(Delimiter::Brace, ts))];
+    ))
 }
 
 pub fn derive(stream: TokenStream) -> TokenStream {

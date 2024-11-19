@@ -21,6 +21,8 @@ pub struct ParserWithBorrowedKey<'a, 'b> {
 }
 
 impl<'a, 'b> ParserWithBorrowedKey<'a, 'b> {
+    /// # Safety
+    /// key must have a lifetime greater or equal to 'b + 'a
     pub unsafe fn new(key: *const str, parser: &'b mut Parser<'a>) -> Self {
         Self { key, parser }
     }
@@ -35,7 +37,7 @@ impl<'a, 'b> ParserWithBorrowedKey<'a, 'b> {
     }
 }
 
-pub unsafe trait FieldVistor<'a> {
+pub trait FieldVistor<'a> {
     fn visit(
         &mut self,
         borrowed: ParserWithBorrowedKey<'a, '_>,
@@ -56,7 +58,7 @@ pub struct FuncFieldVisitor<'a> {
     ptr: NonNull<()>,
 }
 
-unsafe impl<'a> FieldVistor<'a> for FuncFieldVisitor<'a> {
+impl<'a> FieldVistor<'a> for FuncFieldVisitor<'a> {
     fn visit(
         &mut self,
         borrowed: ParserWithBorrowedKey<'a, '_>,
@@ -155,8 +157,14 @@ where
     }
 }
 
+/// # Safety
+/// If the Self::Vistor complete method returns `Ok(())` then `Self` must be have
+/// initialized within the given ptr.
 pub unsafe trait FromJsonFieldVisitor<'a> {
     type Vistor: FieldVistor<'a>;
+    /// # Safety
+    /// dest, must be a pointer to Self although possilibly uninitialized
+    /// and be valid for writes.
     unsafe fn new_field_visitor(ptr: NonNull<()>, parser: &Parser<'a>) -> Self::Vistor;
 }
 
@@ -213,7 +221,7 @@ unsafe impl<'a> FromJson<'a> for &'a str {
         match parser.take_borrowed_string() {
             Ok(raw_str) => {
                 dest.cast::<&str>().write(raw_str);
-                return Ok(());
+                Ok(())
             }
             Err(err) => Err(err),
         }
@@ -240,12 +248,10 @@ unsafe impl<'a, T: Sized + FromJson<'a>> FromJson<'a> for Box<T> {
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
         let mut raw = Box::<T>::new_uninit();
-        if let Err(err) = <T as FromJson<'a>>::emplace_from_json(
+        <T as FromJson<'a>>::emplace_from_json(
             NonNull::new_unchecked(raw.as_mut_ptr()).cast(),
             parser,
-        ) {
-            return Err(err);
-        }
+        )?;
         dest.cast::<Box<T>>().write(raw.assume_init());
         Ok(())
     }
@@ -575,9 +581,7 @@ static ARRAY_LENGTH_MISMATCH: DecodeError = DecodeError {
 unsafe impl FromJson<'_> for Box<RawJson> {
     fn json_decode(parser: &mut Parser<'_>) -> Result<Self, &'static DecodeError> {
         let start = parser.at.index;
-        if let Err(err) = parser.at.skip_value() {
-            return Err(err);
-        }
+        parser.at.skip_value()?;
         let raw =
             unsafe { std::str::from_utf8_unchecked(&parser.at.ctx.data[start..parser.at.index]) };
         Ok(RawJson::new_boxed_unchecked(raw.into()))
@@ -587,9 +591,7 @@ unsafe impl FromJson<'_> for Box<RawJson> {
 unsafe impl<'de> FromJson<'de> for &'de RawJson {
     fn json_decode(parser: &mut Parser<'de>) -> Result<Self, &'static DecodeError> {
         let start = parser.at.index;
-        if let Err(err) = parser.at.skip_value() {
-            return Err(err);
-        }
+        parser.at.skip_value()?;
         let raw =
             unsafe { std::str::from_utf8_unchecked(&parser.at.ctx.data[start..parser.at.index]) };
         Ok(RawJson::new_unchecked(raw))
@@ -741,7 +743,7 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>, T2: FromJson<'de>> FromJs
         Err(error)
     }
 }
-
+#[allow(clippy::type_complexity)]
 #[inline(never)]
 unsafe fn dyn_tuple_decode<'a>(
     dest: NonNull<()>,
@@ -1265,7 +1267,7 @@ impl<'a, 'b> ArrayWriter<'a, 'b> {
     }
     #[doc(hidden)]
     pub fn inner_writer<'j>(&'j mut self) -> &'j mut TextWriter<'b> {
-        &mut self.writer
+        self.writer
     }
     pub fn push<'k, Kind: JsonValueKind>(
         &'k mut self,
@@ -1304,7 +1306,7 @@ impl<'a, 'b> ObjectWriter<'a, 'b> {
     }
     #[doc(hidden)]
     pub fn inner_writer<'j>(&'j mut self) -> &'j mut TextWriter<'b> {
-        &mut self.writer
+        self.writer
     }
     pub fn extend(&mut self, a: &dyn ToJson<Kind = AlwaysObject>) {
         self.writer.smart_object_comma();

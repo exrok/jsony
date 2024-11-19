@@ -88,6 +88,12 @@ impl<'a> IntoTextWriter<'a> for &'a mut [MaybeUninit<u8>] {
     }
 }
 
+impl<'a> Default for TextWriter<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'a> TextWriter<'a> {
     /// Note: We do not want to make this public.
     fn with_buffer(buffer: BytesWriter<'a>) -> TextWriter<'a> {
@@ -235,9 +241,13 @@ impl<'a> TextWriter<'a> {
     pub fn push_str(&mut self, text: &str) {
         self.buffer.push_bytes(text.as_bytes());
     }
-    pub unsafe fn push_unchecked_ascii(&mut self, text: u8) {
-        self.buffer.push(text);
+    /// # Safety
+    /// ch must be an ascii character
+    pub unsafe fn push_unchecked_ascii(&mut self, ch: u8) {
+        self.buffer.push(ch);
     }
+    /// # Safety
+    /// text must be valid UTF-8
     pub(crate) unsafe fn push_unchecked_utf8(&mut self, text: &[u8]) {
         self.buffer.push_bytes(text);
     }

@@ -9,9 +9,9 @@ impl<'a> FromText<'a> for &'a str {
         if let Some(text) = ctx.try_extend_lifetime(text) {
             Ok(text)
         } else {
-            return Err(&DecodeError {
+            Err(&DecodeError {
                 message: "Text does not extend lifetime",
-            });
+            })
         }
     }
 }
@@ -64,7 +64,7 @@ impl<'a> FromText<'a> for Cow<'a, str> {
 impl<'a> FromText<'a> for bool {
     fn from_text(_ctx: &mut Ctx<'a>, text: &str) -> Result<Self, &'static DecodeError> {
         if text.eq_ignore_ascii_case("true") || text == "1" {
-            return Ok(true);
+            Ok(true)
         } else if text.eq_ignore_ascii_case("false") || text == "0" {
             return Ok(false);
         } else {

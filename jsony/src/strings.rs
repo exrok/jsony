@@ -48,7 +48,7 @@ fn skip_to_escape_slow(mut at: usize, data: &[u8]) -> usize {
     while at < data.len() && !is_escape(data[at]) {
         at += 1;
     }
-    return at;
+    at
 }
 
 pub(crate) fn parse_escape(index: usize, read: &[u8], scratch: &mut Vec<u8>) -> Result<usize, ()> {
@@ -61,10 +61,10 @@ pub(crate) fn parse_escape(index: usize, read: &[u8], scratch: &mut Vec<u8>) -> 
             unsafe {
                 scratch.set_len(l);
             }
-            return Ok(i);
+            Ok(i)
         }
         Err(_) => {
-            return Err(());
+            Err(())
         }
     }
 }
@@ -299,7 +299,7 @@ fn push_wtf8_codepoint(n: u32, scratch: &mut [MaybeUninit<u8>; 4]) -> usize {
         ptr.add(encoded_len - 1)
             .write((n & 0b0011_1111) as u8 | 0b1000_0000);
 
-        return encoded_len;
+        encoded_len
     }
 }
 

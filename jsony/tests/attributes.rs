@@ -69,8 +69,8 @@ mod bool_as_int {
         (*value as u32).json_encode__jsony(output);
     }
 
-    pub fn json_decode<'a>(
-        parser: &mut jsony::parser::Parser<'a>,
+    pub fn json_decode(
+        parser: &mut jsony::parser::Parser<'_>,
     ) -> Result<bool, &'static DecodeError> {
         Ok(<u32>::json_decode(parser)? != 0)
     }
@@ -90,8 +90,8 @@ mod from_str {
 
     use jsony::{json::DecodeError, FromBinary};
 
-    pub fn json_decode<'a, T: FromStr>(
-        parser: &mut jsony::parser::Parser<'a>,
+    pub fn json_decode<T: FromStr>(
+        parser: &mut jsony::parser::Parser<'_>,
     ) -> Result<T, &'static DecodeError>
     where
         <T as FromStr>::Err: std::fmt::Display,

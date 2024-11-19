@@ -26,6 +26,7 @@
 //!
 //! This implementation differs from other crates in its focus on compile-time efficiency
 //! and straightforward error handling approach.
+#![allow(clippy::transmute_int_to_float, reason = "simpler to use same method")]
 
 use super::{FromBinary, ToBinary};
 use crate::BytesWriter;
@@ -656,7 +657,7 @@ mod test {
             boxed.binary_encode(&mut output);
             assert_eq!(output.buffer_slice(), *encoded);
             assert_eq!(
-                from_binary::<Box<str>>(&output.buffer_slice()).unwrap(),
+                from_binary::<Box<str>>(output.buffer_slice()).unwrap(),
                 boxed
             );
         }
@@ -665,10 +666,7 @@ mod test {
             let boxed: String = (*input).into();
             boxed.binary_encode(&mut output);
             assert_eq!(output.buffer_slice(), *encoded);
-            assert_eq!(
-                from_binary::<String>(&output.buffer_slice()).unwrap(),
-                boxed
-            );
+            assert_eq!(from_binary::<String>(output.buffer_slice()).unwrap(), boxed);
         }
         for (input, encoded) in inputs.iter().zip(&encoded) {
             output.clear();
@@ -676,7 +674,7 @@ mod test {
             boxed.binary_encode(&mut output);
             assert_eq!(output.buffer_slice(), *encoded);
             assert_eq!(
-                from_binary::<Cow<'_, str>>(&output.buffer_slice()).unwrap(),
+                from_binary::<Cow<'_, str>>(output.buffer_slice()).unwrap(),
                 boxed
             );
         }
