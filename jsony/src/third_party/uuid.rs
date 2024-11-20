@@ -40,7 +40,7 @@ unsafe impl<'a> FromJson<'a> for Uuid {
 impl ToJson for Uuid {
     type Kind = AlwaysString;
 
-    fn json_encode__jsony(&self, output: &mut crate::TextWriter) -> AlwaysString {
+    fn encode_json__jsony(&self, output: &mut crate::TextWriter) -> AlwaysString {
         let mut buffer = [0; Hyphenated::LENGTH];
         output.start_json_string();
         output.push_str(uuid::fmt::Hyphenated::from_uuid(*self).encode_lower(&mut buffer));
@@ -52,7 +52,7 @@ impl ToJson for Uuid {
 unsafe impl<'a> FromBinary<'a> for Uuid {
     const POD: bool = true;
 
-    fn binary_decode(decoder: &mut crate::binary::Decoder<'a>) -> Self {
+    fn decode_binary(decoder: &mut crate::binary::Decoder<'a>) -> Self {
         Uuid::from_bytes(*decoder.byte_array::<16>())
     }
 }
@@ -60,7 +60,7 @@ unsafe impl<'a> FromBinary<'a> for Uuid {
 unsafe impl ToBinary for Uuid {
     const POD: bool = true;
 
-    fn binary_encode(&self, encoder: &mut crate::BytesWriter) {
+    fn encode_binary(&self, encoder: &mut crate::BytesWriter) {
         encoder.push_bytes(self.as_bytes());
     }
 }

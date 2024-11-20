@@ -13,7 +13,7 @@ macro_rules! compact_stringify {
     ($($tt:tt)*) => {concat!($(flat_stringify_tt!{$tt}),*)};
 }
 
-macro_rules! assert_json_encode_eq {
+macro_rules! assert_encode_json_eq {
     ($json:tt, $($input:tt)* ) => {
         assert_eq!(
             compact_stringify!($json),
@@ -23,7 +23,7 @@ macro_rules! assert_json_encode_eq {
     };
 }
 
-macro_rules! assert_json_decode_eq {
+macro_rules! assert_decode_json_eq {
     ($json:tt, $($input:tt)* ) => {
         assert_eq!(
             $($input)*,
@@ -33,7 +33,7 @@ macro_rules! assert_json_decode_eq {
     };
 }
 
-macro_rules! assert_json_decode_eq_typed {
+macro_rules! assert_decode_json_eq_typed {
     ($ty:ty, $json:tt, $($input:tt)* ) => {
         assert_eq!(
             $($input)*,
@@ -45,8 +45,8 @@ macro_rules! assert_json_decode_eq_typed {
 
 macro_rules! assert_json_eq {
     ($json:tt, $($input:tt)* ) => {
-        assert_json_decode_eq!($json, $($input)*);
-        assert_json_encode_eq!($json, $($input)*);
+        assert_decode_json_eq!($json, $($input)*);
+        assert_encode_json_eq!($json, $($input)*);
     };
 }
 
@@ -65,22 +65,22 @@ mod bool_as_int {
         json::DecodeError, BytesWriter, FromBinary, FromJson, TextWriter, ToBinary, ToJson,
     };
 
-    pub fn json_encode(value: &bool, output: &mut TextWriter) {
-        (*value as u32).json_encode__jsony(output);
+    pub fn encode_json(value: &bool, output: &mut TextWriter) {
+        (*value as u32).encode_json__jsony(output);
     }
 
-    pub fn json_decode(
+    pub fn decode_json(
         parser: &mut jsony::parser::Parser<'_>,
     ) -> Result<bool, &'static DecodeError> {
-        Ok(<u32>::json_decode(parser)? != 0)
+        Ok(<u32>::decode_json(parser)? != 0)
     }
 
-    pub fn binary_encode(value: &bool, output: &mut BytesWriter) {
-        (*value as u32).binary_encode(output)
+    pub fn encode_binary(value: &bool, output: &mut BytesWriter) {
+        (*value as u32).encode_binary(output)
     }
 
-    pub fn binary_decode(decoder: &mut jsony::binary::Decoder<'_>) -> bool {
-        u32::binary_decode(decoder) != 0
+    pub fn decode_binary(decoder: &mut jsony::binary::Decoder<'_>) -> bool {
+        u32::decode_binary(decoder) != 0
     }
 }
 
@@ -90,7 +90,7 @@ mod from_str {
 
     use jsony::{json::DecodeError, FromBinary};
 
-    pub fn json_decode<T: FromStr>(
+    pub fn decode_json<T: FromStr>(
         parser: &mut jsony::parser::Parser<'_>,
     ) -> Result<T, &'static DecodeError>
     where
@@ -107,11 +107,11 @@ mod from_str {
         }
     }
 
-    pub fn binary_decode<T: FromStr + Default>(decoder: &mut jsony::binary::Decoder<'_>) -> T
+    pub fn decode_binary<T: FromStr + Default>(decoder: &mut jsony::binary::Decoder<'_>) -> T
     where
         <T as FromStr>::Err: std::fmt::Display,
     {
-        match T::from_str(<&str>::binary_decode(decoder)) {
+        match T::from_str(<&str>::decode_binary(decoder)) {
             Ok(value) => value,
             Err(err) => {
                 decoder.report_error(format_args!("FromStr failed: {err}"));
@@ -124,24 +124,24 @@ mod from_str {
 mod to_lossy_str {
     use jsony::{BytesWriter, TextWriter, ToBinary, ToJson};
 
-    pub fn json_encode(value: &[u8], output: &mut TextWriter) {
-        String::from_utf8_lossy(value).json_encode__jsony(output);
+    pub fn encode_json(value: &[u8], output: &mut TextWriter) {
+        String::from_utf8_lossy(value).encode_json__jsony(output);
     }
 
-    pub fn binary_encode(value: &[u8], output: &mut BytesWriter) {
-        String::from_utf8_lossy(value).binary_encode(output);
+    pub fn encode_binary(value: &[u8], output: &mut BytesWriter) {
+        String::from_utf8_lossy(value).encode_binary(output);
     }
 }
 // for testing generic encode
 mod to_string {
     use jsony::{BytesWriter, TextWriter, ToBinary, ToJson};
 
-    pub fn json_encode<T: ToString>(value: &T, output: &mut TextWriter) {
-        value.to_string().json_encode__jsony(output);
+    pub fn encode_json<T: ToString>(value: &T, output: &mut TextWriter) {
+        value.to_string().encode_json__jsony(output);
     }
 
-    pub fn binary_encode<T: ToString>(value: &T, output: &mut BytesWriter) {
-        value.to_string().binary_encode(output)
+    pub fn encode_binary<T: ToString>(value: &T, output: &mut BytesWriter) {
+        value.to_string().encode_binary(output)
     }
 }
 
@@ -149,14 +149,14 @@ mod to_string {
 mod utf8_as_bytes {
     use jsony::{json::DecodeError, FromBinary, FromJson};
 
-    pub fn json_decode<'a>(
+    pub fn decode_json<'a>(
         parser: &mut jsony::parser::Parser<'a>,
     ) -> Result<&'a [u8], &'static DecodeError> {
-        <&'a str>::json_decode(parser).map(|s| s.as_bytes())
+        <&'a str>::decode_json(parser).map(|s| s.as_bytes())
     }
 
-    pub fn binary_decode<'a>(decoder: &mut jsony::binary::Decoder<'a>) -> &'a [u8] {
-        <&'a str>::binary_decode(decoder).as_bytes()
+    pub fn decode_binary<'a>(decoder: &mut jsony::binary::Decoder<'a>) -> &'a [u8] {
+        <&'a str>::decode_binary(decoder).as_bytes()
     }
 }
 
@@ -165,10 +165,10 @@ mod utf8_as_bytes {
 //     value: &T,
 // ) {
 //     let mut writer = jsony::BytesWriter::new();
-//     value.binary_encode(&mut writer);
+//     value.encode_binary(&mut writer);
 //     {
 //         let mut decoder = jsony::binary::Decoder::new(writer.buffer_slice());
-//         let decoded = T::binary_decode(&mut decoder);
+//         let decoded = T::decode_binary(&mut decoder);
 //         assert_eq!(value, &decoded);
 //     }
 // }
@@ -183,9 +183,9 @@ fn assert_bin_equiv<
     reference: &F,
 ) {
     let mut writer = jsony::BytesWriter::new();
-    value.binary_encode(&mut writer);
+    value.encode_binary(&mut writer);
     let i = writer.buffer_slice().len();
-    reference.binary_encode(&mut writer);
+    reference.encode_binary(&mut writer);
     let (encoded_value, encoded_reference) = writer.buffer_slice().split_at(i);
     assert_eq!(
         encoded_value, encoded_reference,
@@ -195,7 +195,7 @@ fn assert_bin_equiv<
         // safety: will be safe for all tests we do
         let mut decoder =
             jsony::binary::Decoder::new(unsafe { &*(encoded_reference as *const [u8]) });
-        let decoded = T::binary_decode(&mut decoder);
+        let decoded = T::decode_binary(&mut decoder);
         assert_eq!(value, &decoded);
     }
 }
@@ -219,8 +219,8 @@ fn with_attribute_struct() {
         #[jsony(FromJson with = from_str, ToJson with = bool_as_int)]
         value: bool,
     }
-    assert_json_encode_eq!( { "value": 1 }, Asymmetric { value: true });
-    assert_json_decode_eq!( { "value": "true" }, Asymmetric { value: true });
+    assert_encode_json_eq!( { "value": 1 }, Asymmetric { value: true });
+    assert_decode_json_eq!( { "value": "true" }, Asymmetric { value: true });
 }
 
 #[test]
@@ -399,7 +399,7 @@ fn skip() {
         #[jsony(FromJson skip, default = "w_default")]
         w: &'a str,
     }
-    assert_json_decode_eq!({
+    assert_decode_json_eq!({
         "x": "ab",
         "y": 21, // since it is skipped it doesn't matter what type it is
         "z": "ignore me too",
@@ -413,7 +413,7 @@ fn skip() {
         w: "w_default",       // skip as it was enabled for `FromJson`
     });
 
-    assert_json_encode_eq!({
+    assert_encode_json_eq!({
         // "x": .., // was skipped since v.len() == 2
         // "y": .., // was skipped unconditionally
         // "z": .., // so was 'z'
@@ -427,7 +427,7 @@ fn skip() {
         w: "don't skip me",
     });
 
-    assert_json_encode_eq!({
+    assert_encode_json_eq!({
         "x": "abc", // was not skipped since v.len() != 2
         // "y": .., // was skipped unconditionally
         // "z": .., // so was 'z'
@@ -457,7 +457,7 @@ fn skip() {
             w: &'a str,
         },
     }
-    assert_json_decode_eq!({
+    assert_decode_json_eq!({
         "V1": {
             "x": "ab",
             "y": 21, // since it is skipped it doesn't matter what type it is
@@ -473,7 +473,7 @@ fn skip() {
         w: "w_default",       // skip as it was enabled for `FromJson`
     });
 
-    assert_json_encode_eq!({
+    assert_encode_json_eq!({
         "V1": {
             // "x": .., // was skipped since v.len() == 2
             // "y": .., // was skipped unconditionally
@@ -489,7 +489,7 @@ fn skip() {
         w: "don't skip me",
     });
 
-    assert_json_encode_eq!({
+    assert_encode_json_eq!({
         "V1": {
             "x": "abc", // was not skipped since v.len() != 2
             // "y": .., // was skipped unconditionally
@@ -542,7 +542,7 @@ fn other_variant() {
         Beta,
     }
 
-    assert_json_decode_eq_typed!(
+    assert_decode_json_eq_typed!(
         Vec<Stringly>,
         ["Alpha", "Unknown", "Beta"],
         vec![Stringly::Alpha, Stringly::Other, Stringly::Beta]
@@ -556,7 +556,7 @@ fn other_variant() {
         Beta,
     }
 
-    assert_json_decode_eq_typed!(
+    assert_decode_json_eq_typed!(
         Vec<StringlyCapture>,
         ["Alpha", "Unknown", "Beta"],
         vec![
@@ -576,7 +576,7 @@ fn other_variant() {
         Beta,
     }
 
-    assert_json_decode_eq_typed!(
+    assert_decode_json_eq_typed!(
         Vec<StringlyCaptureStruct>,
         ["Alpha", "Unknown", "Beta"],
         vec![
@@ -598,7 +598,7 @@ fn other_variant() {
         Beta,
     }
 
-    assert_json_decode_eq_typed!(
+    assert_decode_json_eq_typed!(
         Vec<MixedCaptureStruct>,
         [{"Alpha": {"value": "Val"}}, "Unknown", "Beta"],
         vec![
@@ -620,7 +620,7 @@ fn other_variant() {
         },
     }
 
-    assert_json_decode_eq_typed!(
+    assert_decode_json_eq_typed!(
         Vec<TaggedCapture>,
         [
             {"kind": "Alpha", "value": "Val"},
@@ -635,7 +635,7 @@ fn other_variant() {
             TaggedCapture::Beta
         ]
     );
-    assert_json_decode_eq_typed!(
+    assert_decode_json_eq_typed!(
         Vec<TaggedCapture>,
         [
             {"kind": "Alpha", "value": "Val"},
@@ -661,7 +661,7 @@ fn other_variant() {
             field: &'a str,
         },
     }
-    assert_json_decode_eq_typed!(
+    assert_decode_json_eq_typed!(
         Vec<ContentCapture>,
         [
             {"kind": "Alpha", "data": {"value": "Val"}},

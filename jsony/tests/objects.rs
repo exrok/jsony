@@ -76,8 +76,8 @@ struct Struct {
 impl ToJson for StructOther {
     type Kind = AnyValue;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> AnyValue {
-        self.field2.json_encode__jsony(output);
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AnyValue {
+        self.field2.encode_json__jsony(output);
         AnyValue
     }
 }

@@ -98,13 +98,13 @@ pub use text_writer::IntoTextWriter;
 ///
 /// # Safety
 ///
-/// This trait is safe to implement if you only override `binary_decode` and leave
+/// This trait is safe to implement if you only override `decode_binary` and leave
 /// other methods as default. However, setting `POD = true` requires additional
 /// safety considerations.
 ///
 /// # Usage
 ///
-/// Given a decoder, `binary_decode` will attempt to decode `Self` from the prefix
+/// Given a decoder, `decode_binary` will attempt to decode `Self` from the prefix
 /// of the decoder. This method always returns a value, even in case of an error.
 /// When an error occurs, a default value is returned. This approach is primarily
 /// an optimization but can also be used to extract partial values when parsing
@@ -113,7 +113,7 @@ pub use text_writer::IntoTextWriter;
 /// # Error Handling
 ///
 /// Errors are stored in the decoder rather than being returned directly by
-/// `binary_decode`.
+/// `decode_binary`.
 ///
 /// # Plain Old Data (POD)
 ///
@@ -125,13 +125,13 @@ pub use text_writer::IntoTextWriter;
 /// - Every bit must be valid for the type and layout.
 /// - There must be no padding between fields.
 /// - Fields must be laid out in the same order as they are encoded and decoded
-///   by `binary_decode`.
+///   by `decode_binary`.
 pub unsafe trait FromBinary<'a>: Sized {
     /// Indicates whether this type is Plain Old Data (POD).
     const POD: bool = false;
 
     /// Decodes `Self` from the given decoder.
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self;
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self;
 
     /// Hidden method for endian transformation.
     ///
@@ -156,11 +156,11 @@ pub unsafe trait FromBinary<'a>: Sized {
 ///
 /// 1. Every bit pattern must be valid for the type and layout.
 /// 2. There must be no padding between fields.
-/// 3. Fields must be laid out in the same order as they would be encoded and decoded via the `binary_encode` function.
+/// 3. Fields must be laid out in the same order as they would be encoded and decoded via the `encode_binary` function.
 ///
 /// # Notes
 ///
-/// - The `binary_encode` function should always write a value, even in error cases.
+/// - The `encode_binary` function should always write a value, even in error cases.
 ///   There is no error return;
 pub unsafe trait ToBinary {
     /// Indicates whether the type is Plain Old Data (POD).
@@ -172,7 +172,7 @@ pub unsafe trait ToBinary {
     /// Encodes the type into its binary representation.
     ///
     /// This function should append the binary encoding of `self` to the provided `encoder`.
-    fn binary_encode(&self, encoder: &mut BytesWriter);
+    fn encode_binary(&self, encoder: &mut BytesWriter);
 
     /// Hidden method for endian transformation.
     ///
@@ -184,7 +184,7 @@ pub unsafe trait ToBinary {
 
 /// A trait for types that can be parsed from JSON.
 ///
-/// Either `emplace_for_json` or `json_decode` should be implemented.
+/// Either `emplace_for_json` or `decode_json` should be implemented.
 ///
 /// # Safety
 ///
@@ -213,7 +213,7 @@ pub unsafe trait FromJson<'a>: Sized + 'a {
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
-        match Self::json_decode(parser) {
+        match Self::decode_json(parser) {
             Ok(value) => {
                 dest.cast::<Self>().write(value);
                 Ok(())
@@ -236,7 +236,7 @@ pub unsafe trait FromJson<'a>: Sized + 'a {
     ///
     /// The parsed value if successful, or an error if parsing failed.
     #[inline]
-    fn json_decode(parser: &mut Parser<'a>) -> Result<Self, &'static DecodeError> {
+    fn decode_json(parser: &mut Parser<'a>) -> Result<Self, &'static DecodeError> {
         let mut value = std::mem::MaybeUninit::<Self>::uninit();
         if let Err(err) = unsafe {
             Self::emplace_from_json(NonNull::new_unchecked(value.as_mut_ptr()).cast(), parser)
@@ -264,7 +264,7 @@ pub trait ToJson {
     /// Note: this method is prefixed to avoid collisions in macros that
     /// that invoke it via method resolution.
     #[allow(non_snake_case)]
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind;
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind;
 }
 
 /// A validated JSON string slice.
@@ -629,7 +629,7 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
 /// ```
 pub fn to_json<T: ?Sized + ToJson>(value: &T) -> String {
     let mut buf = TextWriter::new();
-    value.json_encode__jsony(&mut buf);
+    value.encode_json__jsony(&mut buf);
     buf.into_string()
 }
 
@@ -665,13 +665,13 @@ pub fn to_json<T: ?Sized + ToJson>(value: &T) -> String {
 /// ```
 pub fn to_json_into<'a, T: ToJson, W: IntoTextWriter<'a>>(value: &T, output: W) -> W::Output {
     let mut buffer = W::into_text_writer(output);
-    value.json_encode__jsony(&mut buffer);
+    value.encode_json__jsony(&mut buffer);
     W::finish_writing(buffer)
 }
 
 pub fn from_binary<'a, T: FromBinary<'a>>(slice: &'a [u8]) -> Result<T, FromBinaryError> {
     let mut decoder = Decoder::new(slice);
-    let value = Ok(T::binary_decode(&mut decoder));
+    let value = Ok(T::decode_binary(&mut decoder));
     if let Some(error) = decoder.consume_error() {
         Err(error)
     } else {
@@ -681,6 +681,6 @@ pub fn from_binary<'a, T: FromBinary<'a>>(slice: &'a [u8]) -> Result<T, FromBina
 
 pub fn to_binary<T: ToBinary + ?Sized>(value: &T) -> Vec<u8> {
     let mut encoder = BytesWriter::new();
-    value.binary_encode(&mut encoder);
+    value.encode_binary(&mut encoder);
     encoder.into_vec()
 }

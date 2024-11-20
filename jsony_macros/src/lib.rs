@@ -206,10 +206,10 @@ pub fn object(input: TokenStream) -> TokenStream {
 ///
 /// | Trait | Function |
 /// |-------|-----------------|
-/// | `ToJson` | `fn json_encode(value: &bool, output: &mut TextWriter)`
-/// | `FromJson` | `fn json_decode<'a>(parser: &mut jsony::parser::Parser<'a>) -> Result<bool, &'static DecodeError>`
-/// | `ToBinary` | `fn binary_encode(value: &bool, output: &mut BytesWriter)`
-/// | `FromBinary` | `fn binary_decode(decoder: &mut jsony::binary::Decoder<'_>) -> bool`
+/// | `ToJson` | `fn encode_json(value: &bool, output: &mut TextWriter)`
+/// | `FromJson` | `fn decode_json<'a>(parser: &mut jsony::parser::Parser<'a>) -> Result<bool, &'static DecodeError>`
+/// | `ToBinary` | `fn encode_binary(value: &bool, output: &mut BytesWriter)`
+/// | `FromBinary` | `fn decode_binary(decoder: &mut jsony::binary::Decoder<'_>) -> bool`
 ///
 /// ##### Example of `with` attribute
 /// ```ignore
@@ -217,17 +217,17 @@ pub fn object(input: TokenStream) -> TokenStream {
 ///     use jsony::{
 ///         json::DecodeError, BytesWriter, FromBinary, FromJson, TextWriter, ToBinary, ToJson,
 ///     };
-///     pub fn json_encode(value: &bool, output: &mut TextWriter) {
-///         (*value as u32).json_encode__jsony(output);
+///     pub fn encode_json(value: &bool, output: &mut TextWriter) {
+///         (*value as u32).encode_json__jsony(output);
 ///     }
-///     pub fn json_decode(parser: &mut jsony::parser::Parser<'_>) -> Result<bool, &'static DecodeError> {
-///         Ok(<u32>::json_decode(parser)? != 0)
+///     pub fn decode_json(parser: &mut jsony::parser::Parser<'_>) -> Result<bool, &'static DecodeError> {
+///         Ok(<u32>::decode_json(parser)? != 0)
 ///     }
-///     pub fn binary_encode(value: &bool, output: &mut BytesWriter) {
-///         (*value as u32).binary_encode(output)
+///     pub fn encode_binary(value: &bool, output: &mut BytesWriter) {
+///         (*value as u32).encode_binary(output)
 ///     }
-///     pub fn binary_decode(decoder: &mut jsony::binary::Decoder<'_>) -> bool {
-///         u32::binary_decode(decoder) != 0
+///     pub fn decode_binary(decoder: &mut jsony::binary::Decoder<'_>) -> bool {
+///         u32::decode_binary(decoder) != 0
 ///     }
 /// }
 ///

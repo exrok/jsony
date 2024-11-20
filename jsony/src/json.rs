@@ -88,7 +88,7 @@ where
                 let map = &mut *ptr.cast::<Self>().as_ptr();
                 let (key, at) = borrowed.key_with_inner_parser();
                 let key = K::from_text(&mut at.ctx, key)?;
-                let value = T::json_decode(borrowed.into_parser())?;
+                let value = T::decode_json(borrowed.into_parser())?;
                 map.insert(key, value);
                 Ok(())
             },
@@ -116,7 +116,7 @@ where
                 let map = &mut *ptr.cast::<Self>().as_ptr();
                 let (field, at) = borrowed.key_with_inner_parser();
                 let key = K::from_text(&mut at.ctx, field)?;
-                let value = T::json_decode(borrowed.into_parser())?;
+                let value = T::decode_json(borrowed.into_parser())?;
                 map.insert(key, value);
                 Ok(())
             },
@@ -144,7 +144,7 @@ where
                 let map = &mut *ptr.cast::<Self>().as_ptr();
                 let (field, at) = borrowed.key_with_inner_parser();
                 let key = K::from_text(&mut at.ctx, field)?;
-                let value = T::json_decode(borrowed.into_parser())?;
+                let value = T::decode_json(borrowed.into_parser())?;
                 map.push((key, value));
                 Ok(())
             },
@@ -297,8 +297,8 @@ fn decode_array_sequence<'de, K: FromJson<'de>>(
         Err(err) => return Err(err),
     };
     loop {
-        K::json_decode(parser)?;
-        match func(K::json_decode(parser)?) {
+        K::decode_json(parser)?;
+        match func(K::decode_json(parser)?) {
             Ok(()) => (),
             Err(err) => return Err(err),
         }
@@ -320,12 +320,12 @@ pub(crate) fn decode_object_sequence<'de, K: FromJson<'de>, V: FromJson<'de>>(
         Err(err) => return Err(err),
     }
     loop {
-        let key = match K::json_decode(parser) {
+        let key = match K::decode_json(parser) {
             Ok(value) => value,
             Err(err) => return Err(err),
         };
         parser.at.discard_colon()?;
-        let value = match V::json_decode(parser) {
+        let value = match V::decode_json(parser) {
             Ok(value) => value,
             Err(err) => return Err(err),
         };
@@ -579,7 +579,7 @@ static ARRAY_LENGTH_MISMATCH: DecodeError = DecodeError {
 };
 
 unsafe impl FromJson<'_> for Box<RawJson> {
-    fn json_decode(parser: &mut Parser<'_>) -> Result<Self, &'static DecodeError> {
+    fn decode_json(parser: &mut Parser<'_>) -> Result<Self, &'static DecodeError> {
         let start = parser.at.index;
         parser.at.skip_value()?;
         let raw =
@@ -589,7 +589,7 @@ unsafe impl FromJson<'_> for Box<RawJson> {
 }
 
 unsafe impl<'de> FromJson<'de> for &'de RawJson {
-    fn json_decode(parser: &mut Parser<'de>) -> Result<Self, &'static DecodeError> {
+    fn decode_json(parser: &mut Parser<'de>) -> Result<Self, &'static DecodeError> {
         let start = parser.at.index;
         parser.at.skip_value()?;
         let raw =
@@ -601,7 +601,7 @@ unsafe impl<'de> FromJson<'de> for &'de RawJson {
 impl ToJson for RawJson {
     type Kind = AnyValue;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind {
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
         output.push_str(&self.raw);
         AnyValue
     }
@@ -877,7 +877,7 @@ macro_rules! into_json_itoa {
         $(
             impl ToJson for $ty {
                 type Kind = AnyValue;
-                fn json_encode__jsony(&self, output: &mut TextWriter) -> AnyValue {
+                fn encode_json__jsony(&self, output: &mut TextWriter) -> AnyValue {
                     let mut buffer = itoa::Buffer::new();
                     output.push_str(buffer.format(*self));
                     AnyValue
@@ -891,7 +891,7 @@ into_json_itoa![u8 i8 u16 i16 u32 i32 u64 i64 u128 i128 usize isize];
 
 impl ToJson for f32 {
     type Kind = AnyValue;
-    fn json_encode__jsony(&self, x: &mut TextWriter) -> AnyValue {
+    fn encode_json__jsony(&self, x: &mut TextWriter) -> AnyValue {
         if !self.is_finite() {
             x.push_str("null");
             return AnyValue;
@@ -902,7 +902,7 @@ impl ToJson for f32 {
 }
 impl ToJson for f64 {
     type Kind = AnyValue;
-    fn json_encode__jsony(&self, x: &mut TextWriter) -> AnyValue {
+    fn encode_json__jsony(&self, x: &mut TextWriter) -> AnyValue {
         if !self.is_finite() {
             x.push_str("null");
             return AnyValue;
@@ -986,7 +986,7 @@ impl CharEscape {
 
 impl ToJson for str {
     type Kind = AlwaysString;
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> AlwaysString {
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AlwaysString {
         output.start_json_string();
         let bytes = self.as_bytes();
         let mut start = 0;
@@ -1048,9 +1048,9 @@ impl ToJson for str {
 
 impl<T: ToJson> ToJson for Option<T> {
     type Kind = AnyValue;
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> AnyValue {
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AnyValue {
         if let Some(value) = self {
-            value.json_encode__jsony(output);
+            value.encode_json__jsony(output);
         } else {
             output.push_str("null");
         }
@@ -1060,24 +1060,24 @@ impl<T: ToJson> ToJson for Option<T> {
 
 impl<T: ToJson, const N: usize> ToJson for [T; N] {
     type Kind = AlwaysArray;
-    fn json_encode__jsony(&self, array: &mut TextWriter) -> AlwaysArray {
-        self.as_slice().json_encode__jsony(array)
+    fn encode_json__jsony(&self, array: &mut TextWriter) -> AlwaysArray {
+        self.as_slice().encode_json__jsony(array)
     }
 }
 
 impl<T: ToJson> ToJson for Vec<T> {
     type Kind = AlwaysArray;
-    fn json_encode__jsony(&self, array: &mut TextWriter) -> AlwaysArray {
-        self.as_slice().json_encode__jsony(array)
+    fn encode_json__jsony(&self, array: &mut TextWriter) -> AlwaysArray {
+        self.as_slice().encode_json__jsony(array)
     }
 }
 
 impl<T: ToJson> ToJson for [T] {
     type Kind = AlwaysArray;
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> AlwaysArray {
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AlwaysArray {
         output.start_json_array();
         for value in self {
-            value.json_encode__jsony(output);
+            value.encode_json__jsony(output);
             output.push_comma();
         }
         output.end_json_array()
@@ -1087,54 +1087,54 @@ impl<T: ToJson> ToJson for [T] {
 impl<'a, T: ToJson + ToOwned + ?Sized> ToJson for Cow<'a, T> {
     type Kind = T::Kind;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> T::Kind {
-        <T as ToJson>::json_encode__jsony(self.as_ref(), output)
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> T::Kind {
+        <T as ToJson>::encode_json__jsony(self.as_ref(), output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for Rc<T> {
     type Kind = T::Kind;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> T::Kind {
-        <T as ToJson>::json_encode__jsony(self, output)
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> T::Kind {
+        <T as ToJson>::encode_json__jsony(self, output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for Box<T> {
     type Kind = T::Kind;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> T::Kind {
-        <T as ToJson>::json_encode__jsony(self, output)
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> T::Kind {
+        <T as ToJson>::encode_json__jsony(self, output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for Arc<T> {
     type Kind = T::Kind;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> T::Kind {
-        <T as ToJson>::json_encode__jsony(self, output)
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> T::Kind {
+        <T as ToJson>::encode_json__jsony(self, output)
     }
 }
 
 impl ToJson for String {
     type Kind = AlwaysString;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> AlwaysString {
-        self.as_str().json_encode__jsony(output)
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AlwaysString {
+        self.as_str().encode_json__jsony(output)
     }
 }
 impl<T: ToJson + ?Sized> ToJson for &T {
     type Kind = T::Kind;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> T::Kind {
-        <T as ToJson>::json_encode__jsony(*self, output)
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> T::Kind {
+        <T as ToJson>::encode_json__jsony(*self, output)
     }
 }
 
 impl<V: ToJson, S> ToJson for HashSet<V, S> {
     type Kind = AlwaysArray;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> AlwaysArray {
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AlwaysArray {
         output.start_json_array();
         for value in self {
-            value.json_encode__jsony(output);
+            value.encode_json__jsony(output);
             output.push_comma();
         }
         output.end_json_array()
@@ -1144,12 +1144,12 @@ impl<V: ToJson, S> ToJson for HashSet<V, S> {
 impl<K: ToJson<Kind = AlwaysString>, V: ToJson> ToJson for BTreeMap<K, V> {
     type Kind = AlwaysObject;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> AlwaysObject {
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AlwaysObject {
         output.start_json_object();
         for (key, value) in self {
-            key.json_encode__jsony(output);
+            key.encode_json__jsony(output);
             output.push_colon();
-            value.json_encode__jsony(output);
+            value.encode_json__jsony(output);
             output.push_comma();
         }
         output.end_json_object()
@@ -1159,12 +1159,12 @@ impl<K: ToJson<Kind = AlwaysString>, V: ToJson> ToJson for BTreeMap<K, V> {
 impl<K: ToJson<Kind = AlwaysString>, V: ToJson, S> ToJson for HashMap<K, V, S> {
     type Kind = AlwaysObject;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> AlwaysObject {
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AlwaysObject {
         output.start_json_object();
         for (key, value) in self {
-            key.json_encode__jsony(output);
+            key.encode_json__jsony(output);
             output.push_colon();
-            value.json_encode__jsony(output);
+            value.encode_json__jsony(output);
             output.push_comma();
         }
         output.end_json_object()
@@ -1174,9 +1174,9 @@ impl<K: ToJson<Kind = AlwaysString>, V: ToJson, S> ToJson for HashMap<K, V, S> {
 impl<T1: ToJson> ToJson for (T1,) {
     type Kind = AlwaysArray;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind {
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
         output.start_json_array();
-        self.0.json_encode__jsony(output);
+        self.0.encode_json__jsony(output);
         output.end_json_array()
     }
 }
@@ -1184,11 +1184,11 @@ impl<T1: ToJson> ToJson for (T1,) {
 impl<T1: ToJson, T2: ToJson> ToJson for (T1, T2) {
     type Kind = AlwaysArray;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind {
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
         output.start_json_array();
-        self.0.json_encode__jsony(output);
+        self.0.encode_json__jsony(output);
         output.push_comma();
-        self.1.json_encode__jsony(output);
+        self.1.encode_json__jsony(output);
         output.end_json_array()
     }
 }
@@ -1196,13 +1196,13 @@ impl<T1: ToJson, T2: ToJson> ToJson for (T1, T2) {
 impl<T1: ToJson, T2: ToJson, T3: ToJson> ToJson for (T1, T2, T3) {
     type Kind = AlwaysArray;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind {
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
         output.start_json_array();
-        self.0.json_encode__jsony(output);
+        self.0.encode_json__jsony(output);
         output.push_comma();
-        self.1.json_encode__jsony(output);
+        self.1.encode_json__jsony(output);
         output.push_comma();
-        self.2.json_encode__jsony(output);
+        self.2.encode_json__jsony(output);
         output.end_json_array()
     }
 }
@@ -1210,22 +1210,22 @@ impl<T1: ToJson, T2: ToJson, T3: ToJson> ToJson for (T1, T2, T3) {
 impl<T1: ToJson, T2: ToJson, T3: ToJson, T4: ToJson> ToJson for (T1, T2, T3, T4) {
     type Kind = AlwaysArray;
 
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind {
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
         output.start_json_array();
-        self.0.json_encode__jsony(output);
+        self.0.encode_json__jsony(output);
         output.push_comma();
-        self.1.json_encode__jsony(output);
+        self.1.encode_json__jsony(output);
         output.push_comma();
-        self.2.json_encode__jsony(output);
+        self.2.encode_json__jsony(output);
         output.push_comma();
-        self.3.json_encode__jsony(output);
+        self.3.encode_json__jsony(output);
         output.end_json_array()
     }
 }
 
 impl ToJson for bool {
     type Kind = AnyValue;
-    fn json_encode__jsony(&self, output: &mut TextWriter) -> AnyValue {
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AnyValue {
         if *self {
             output.push_str("true");
         } else {
@@ -1274,7 +1274,7 @@ impl<'a, 'b> ArrayWriter<'a, 'b> {
         a: &(impl ToJson<Kind = Kind> + ?Sized),
     ) -> ValueExtender<'k, 'b, Kind> {
         self.writer.smart_array_comma();
-        a.json_encode__jsony(self.writer);
+        a.encode_json__jsony(self.writer);
         ValueExtender {
             writer: self.writer,
             phantom: PhantomData,
@@ -1283,7 +1283,7 @@ impl<'a, 'b> ArrayWriter<'a, 'b> {
     pub fn extend(&mut self, a: &dyn ToJson<Kind = AlwaysArray>) {
         self.writer.smart_array_comma();
         self.writer.join_parent_json_value_with_next();
-        a.json_encode__jsony(self.writer);
+        a.encode_json__jsony(self.writer);
         self.writer.join_array_with_next_value();
         self.writer.joining = false;
     }
@@ -1311,13 +1311,13 @@ impl<'a, 'b> ObjectWriter<'a, 'b> {
     pub fn extend(&mut self, a: &dyn ToJson<Kind = AlwaysObject>) {
         self.writer.smart_object_comma();
         self.writer.join_parent_json_value_with_next();
-        a.json_encode__jsony(self.writer);
+        a.encode_json__jsony(self.writer);
         self.writer.join_object_with_next_value();
         self.writer.joining = false;
     }
     pub fn dyn_key<'q>(&'q mut self, a: &dyn ToJson<Kind = AlwaysString>) -> ValueWriter<'q, 'b> {
         self.writer.smart_object_comma();
-        a.json_encode__jsony(self.writer);
+        a.encode_json__jsony(self.writer);
         self.writer.push_colon();
         ValueWriter {
             writer: self.writer,
@@ -1325,7 +1325,7 @@ impl<'a, 'b> ObjectWriter<'a, 'b> {
     }
     pub fn key<'q>(&'q mut self, a: &str) -> ValueWriter<'q, 'b> {
         self.writer.smart_object_comma();
-        a.json_encode__jsony(self.writer);
+        a.encode_json__jsony(self.writer);
         self.writer.push_colon();
         ValueWriter {
             writer: self.writer,
@@ -1350,21 +1350,21 @@ impl<'a, 'b> Drop for ValueWriter<'a, 'b> {
 impl<'a, 'b> ValueExtender<'a, 'b, AlwaysObject> {
     pub fn extend(&mut self, value: &dyn ToJson<Kind = AlwaysObject>) {
         self.writer.join_object_with_next_value();
-        value.json_encode__jsony(self.writer);
+        value.encode_json__jsony(self.writer);
     }
 }
 
 impl<'a, 'b> ValueExtender<'a, 'b, AlwaysArray> {
     pub fn extend(&mut self, value: &dyn ToJson<Kind = AlwaysArray>) {
         self.writer.join_array_with_next_value();
-        value.json_encode__jsony(self.writer);
+        value.encode_json__jsony(self.writer);
     }
 }
 
 impl<'a, 'b> ValueExtender<'a, 'b, AlwaysString> {
     pub fn extend(&mut self, value: &dyn ToJson<Kind = AlwaysString>) {
         self.writer.join_string_with_next_value();
-        value.json_encode__jsony(self.writer);
+        value.encode_json__jsony(self.writer);
     }
 }
 
@@ -1380,7 +1380,7 @@ impl<'a, 'b> ValueWriter<'a, 'b> {
         a: &(impl ToJson<Kind = Kind> + ?Sized),
     ) -> ValueExtender<'a, 'b, Kind> {
         let writer = self.into_inner();
-        a.json_encode__jsony(writer);
+        a.encode_json__jsony(writer);
         ValueExtender {
             writer,
             phantom: PhantomData,

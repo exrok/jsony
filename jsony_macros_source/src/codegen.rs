@@ -192,7 +192,7 @@ fn impl_from_binary(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> R
         output;
         ~[[automatically_derived]]
         unsafe [try bodyless_impl_from(output, None, Ident::new("FromBinary", Span::call_site()), ctx)] {
-            fn binary_decode(decoder: &mut [~&ctx.crate_path]::binary::Decoder<#[#ctx.lifetime]>) -> Self [
+            fn decode_binary(decoder: &mut [~&ctx.crate_path]::binary::Decoder<#[#ctx.lifetime]>) -> Self [
                 output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
@@ -261,7 +261,7 @@ fn impl_to_binary(
                     splat!(output; [~ty]: ToBinary,)
                 }
              ]] {
-            fn binary_encode(&self, encoder: &mut ::jsony::BytesWriter) [
+            fn encode_binary(&self, encoder: &mut ::jsony::BytesWriter) [
                 output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
@@ -305,7 +305,7 @@ fn impl_to_json(
                     },
                 }
             ];
-            fn json_encode__jsony(&self, out: &mut jsony::TextWriter) -> Self::Kind [
+            fn encode_json__jsony(&self, out: &mut jsony::TextWriter) -> Self::Kind [
                 output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
@@ -385,7 +385,7 @@ fn var(num: usize) -> Ident {
     Ident::new(x, Span::call_site())
 }
 
-fn binary_encode_field(
+fn encode_binary_field(
     output: &mut RustWriter,
     ctx: &Ctx,
     field: &Field,
@@ -403,13 +403,13 @@ fn binary_encode_field(
                 splat!(output; <[~field.ty] as [~&ctx.crate_path]::ToBinary>)
             }
         ]
-        ::binary_encode(
+        ::encode_binary(
             [place(output)], encoder
         );
     };
 }
 
-fn binary_decode_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
+fn decode_binary_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
     if field.flags & Field::WITH_FROM_BINARY_SKIP != 0 {
         field_from_default(out, field, FROM_BINARY);
         return;
@@ -423,7 +423,7 @@ fn binary_decode_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
                 splat!(out; <[~field.ty] as [ctx.FromBinary(out)]>)
             }
         ]
-        ::binary_decode(
+        ::decode_binary(
             decoder
         )
     };
@@ -444,7 +444,7 @@ fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) -> Result
     if let Some(with) = field.with(FROM_JSON) {
         splat! { out;
            [~&ctx.crate_path]::__internal::emplace_json_for_with_attribute::<&mut ::jsony::parser::Parser<#[#ctx.lifetime]>, [~field.ty], _>(
-               &[~with]::json_decode
+               &[~with]::decode_json
            )
         }
     } else {
@@ -692,9 +692,9 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
             splat!(out;
                 [
                     if let Some(with) = field.with(TO_JSON) {
-                        splat!(out; [~with]::json_encode)
+                        splat!(out; [~with]::encode_json)
                     } else {
-                        splat!(out; <[~field.ty] as ::jsony::ToJson>::json_encode__jsony)
+                        splat!(out; <[~field.ty] as ::jsony::ToJson>::encode_json__jsony)
                     }
                 ]
                 (&self.[#Literal::usize_unsuffixed(0)], out)
@@ -714,9 +714,9 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Re
                     }]
                     [
                         if let Some(with) = field.with(TO_JSON) {
-                            splat!(out; [~with]::json_encode)
+                            splat!(out; [~with]::encode_json)
                         } else {
-                            splat!(out; <[~field.ty] as ::jsony::ToJson>::json_encode__jsony)
+                            splat!(out; <[~field.ty] as ::jsony::ToJson>::encode_json__jsony)
                         }
                     ](&self.[#Literal::usize_unsuffixed(i)], out);
                 }]
@@ -816,9 +816,9 @@ fn inner_struct_to_json(
                         } else {
                             splat!(out; [#ctx.temp[i]])
                         }]).iter() {
-                            let _: ::jsony::json::AlwaysString = key.json_encode__jsony(out);
+                            let _: ::jsony::json::AlwaysString = key.encode_json__jsony(out);
                             out.push_colon();
-                            value.json_encode__jsony(out);
+                            value.encode_json__jsony(out);
                             out.push_comma();
                         }
                     );
@@ -832,9 +832,9 @@ fn inner_struct_to_json(
                 }
                 splat!(out; [
                             if let Some(with) = field.with(TO_JSON) {
-                                splat!(out; [~with]::json_encode)
+                                splat!(out; [~with]::encode_json)
                             } else {
-                                splat!(out; <[~field.ty] as ::jsony::ToJson>::json_encode__jsony)
+                                splat!(out; <[~field.ty] as ::jsony::ToJson>::encode_json__jsony)
                             }
                         ]([if on_self {
                     splat!(out; &self.[#field.name])
@@ -1175,9 +1175,9 @@ fn enum_variant_to_json(
                 out;
                 [
                     if let Some(with) = field.with(TO_JSON) {
-                        splat!(out; [~with]::json_encode)
+                        splat!(out; [~with]::encode_json)
                     } else {
-                        splat!(out; <[~field.ty] as ::jsony::ToJson>::json_encode__jsony)
+                        splat!(out; <[~field.ty] as ::jsony::ToJson>::encode_json__jsony)
                     }
                 ]
                 ([#ctx.temp[0]], out);
@@ -1365,7 +1365,7 @@ fn enum_variant_from_json(
                     } else {
                         splat!(out; < [~field.ty] as ::jsony::FromJson<#[#ctx.lifetime]> >)
                     }
-                ]::json_decode(parser) {
+                ]::decode_json(parser) {
                     Ok(value) => {
                         dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name](value));
                         [?(untagged) break #success]
@@ -1701,7 +1701,7 @@ fn handle_struct(
     if target.to_binary {
         let body = token_stream! { output; [
             for field in fields {
-                binary_encode_field(output, &ctx, field, &|out| splat!{out; &self.[#field.name]})
+                encode_binary_field(output, &ctx, field, &|out| splat!{out; &self.[#field.name]})
             }
         ]};
         impl_to_binary(output, &ctx, body)?;
@@ -1712,7 +1712,7 @@ fn handle_struct(
             [#target.name] {
                 [for field in fields {
                     splat!{(output);
-                        [#field.name]: [binary_decode_field(output, &ctx, field)],
+                        [#field.name]: [decode_binary_field(output, &ctx, field)],
                     }
                 }]
             }
@@ -1741,7 +1741,7 @@ fn handle_tuple_struct(
     if target.to_binary {
         let body = token_stream! {output; [
             for (i, field) in fields.iter().enumerate() {
-                binary_encode_field(output, &ctx, field, &|out| splat!{out; &self.[#Literal::usize_unsuffixed(i)]})
+                encode_binary_field(output, &ctx, field, &|out| splat!{out; &self.[#Literal::usize_unsuffixed(i)]})
             }
         ]};
         impl_to_binary(output, &ctx, body)?;
@@ -1751,7 +1751,7 @@ fn handle_tuple_struct(
         let body = token_stream! {output;
             [#target.name] (
                 [for field in fields {
-                    splat!{(output); [binary_decode_field(output, &ctx, field)], }
+                    splat!{(output); [decode_binary_field(output, &ctx, field)], }
                 }]
             )
         };
@@ -1773,7 +1773,7 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                         ) => {
                             encoder.push([#Literal::u8_unsuffixed(i as u8)]);
                             [for (i, field) in variant.fields.iter().enumerate() {
-                                binary_encode_field(out, ctx, field, &|out| splat!{out; [#ctx.temp[i]]})
+                                encode_binary_field(out, ctx, field, &|out| splat!{out; [#ctx.temp[i]]})
                             }]
                         }}
                     },
@@ -1783,7 +1783,7 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                         } => {
                             encoder.push([#Literal::u8_unsuffixed(i as u8)]);
                             [for field in variant.fields {
-                                binary_encode_field(out, ctx, field, &|out| splat!{out; [#ctx.temp[i]]})
+                                encode_binary_field(out, ctx, field, &|out| splat!{out; [#ctx.temp[i]]})
                             }]
                         }}
                     },
@@ -1817,7 +1817,7 @@ fn enum_from_binary(
                             splat!{out;
                                 [#ctx.target.name]::[#variant.name](
                                     [for field in variant.fields {
-                                        splat!{out; [binary_decode_field(out, ctx, field)], }
+                                        splat!{out; [decode_binary_field(out, ctx, field)], }
                                     }]
                                 )
                             }
@@ -1826,7 +1826,7 @@ fn enum_from_binary(
                             splat!{out;
                                 [#ctx.target.name]::[#variant.name]{
                                     [for field in variant.fields {
-                                        splat!{out; [#field.name]: [binary_decode_field(out, ctx, field)], }
+                                        splat!{out; [#field.name]: [decode_binary_field(out, ctx, field)], }
                                     }]
                                 }
                             }

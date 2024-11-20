@@ -152,7 +152,7 @@ pub struct JsonKey<'a> {
     marker: std::marker::PhantomData<&'a ()>,
 }
 unsafe impl<'a> FromJson<'a> for JsonKey<'a> {
-    fn json_decode(
+    fn decode_json(
         parser: &mut crate::parser::Parser<'a>,
     ) -> Result<Self, &'static crate::json::DecodeError> {
         let slice = parser.take_cow_string()?;
@@ -316,13 +316,13 @@ impl<'a> Drop for JsonItem<'a> {
 impl<'a> ToJson for JsonItem<'a> {
     type Kind = AnyValue;
 
-    fn json_encode__jsony(&self, output: &mut crate::TextWriter) -> Self::Kind {
+    fn encode_json__jsony(&self, output: &mut crate::TextWriter) -> Self::Kind {
         match self.json_type() {
             Null => output.push_str("null"),
             True => output.push_str("true"),
             False => output.push_str("false"),
             Kind::String => {
-                self.as_str().unwrap().json_encode__jsony(output);
+                self.as_str().unwrap().encode_json__jsony(output);
             }
             Number => {
                 output.push_str(self.as_str().unwrap());
@@ -330,15 +330,15 @@ impl<'a> ToJson for JsonItem<'a> {
             Map => {
                 output.start_json_object();
                 for (key, value) in self.as_object_entries().unwrap() {
-                    key.json_encode__jsony(output);
+                    key.encode_json__jsony(output);
                     output.push_colon();
-                    value.json_encode__jsony(output);
+                    value.encode_json__jsony(output);
                     output.push_comma();
                 }
                 output.end_json_object();
             }
             Kind::Array => {
-                self.as_array().unwrap().json_encode__jsony(output);
+                self.as_array().unwrap().encode_json__jsony(output);
             }
             Empty => output.push_str("null"),
         };
@@ -346,12 +346,12 @@ impl<'a> ToJson for JsonItem<'a> {
     }
 }
 unsafe impl<'a> FromJson<'a> for JsonItem<'a> {
-    fn json_decode(
+    fn decode_json(
         parser: &mut crate::parser::Parser<'a>,
     ) -> Result<Self, &'static crate::json::DecodeError> {
         match parser.at.peek()? {
             Peek::Array => Ok(JsonItem::new_array(
-                <Vec<JsonItem<'a>> as FromJson<'a>>::json_decode(parser)?,
+                <Vec<JsonItem<'a>> as FromJson<'a>>::decode_json(parser)?,
             )),
             Peek::Object => {
                 let mut data = Vec::<(JsonKey<'a>, JsonItem<'a>)>::new();
@@ -362,7 +362,7 @@ unsafe impl<'a> FromJson<'a> for JsonItem<'a> {
                 Ok(JsonItem::new_map(data))
             }
             Peek::String => Ok(JsonItem::new_string(
-                <JsonKey<'a> as FromJson<'a>>::json_decode(parser)?,
+                <JsonKey<'a> as FromJson<'a>>::decode_json(parser)?,
             )),
             Peek::True => {
                 parser.at.discard_seen_true()?;

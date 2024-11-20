@@ -167,7 +167,7 @@ impl<'a> Decoder<'a> {
             if value != 255 {
                 value as usize
             } else {
-                <u64 as FromBinary>::binary_decode(self) as usize
+                <u64 as FromBinary>::decode_binary(self) as usize
             }
         }
     }
@@ -219,7 +219,7 @@ macro_rules! impl_bincode_for_numeric_primitive {
         $(
             unsafe impl ToBinary for $ty {
                 const POD: bool = true;
-                fn binary_encode(&self, encoder: &mut BytesWriter) {
+                fn encode_binary(&self, encoder: &mut BytesWriter) {
                     encoder.push_bytes(&self.to_le_bytes());
                 }
 
@@ -230,7 +230,7 @@ macro_rules! impl_bincode_for_numeric_primitive {
             }
             unsafe impl<'a> FromBinary<'a> for $ty {
                 const POD: bool = true;
-                fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
+                fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
                     unsafe {
                         let nstart = decoder.start.add($sz);
                         if nstart.as_ptr() > decoder.end.as_ptr() {
@@ -254,14 +254,14 @@ macro_rules! impl_bincode_for_numeric_primitive {
 
 unsafe impl ToBinary for u8 {
     const POD: bool = true;
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
         encoder.push(*self)
     }
 }
 
 unsafe impl<'a> FromBinary<'a> for u8 {
     const POD: bool = true;
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         decoder.byte()
     }
 }
@@ -278,8 +278,8 @@ macro_rules! impl_bincode_via_transmute {
         $(
             unsafe impl ToBinary for $src {
                 const POD: bool = true;
-                fn binary_encode(&self, encoder: &mut BytesWriter) {
-                    <$reuse>::binary_encode(
+                fn encode_binary(&self, encoder: &mut BytesWriter) {
+                    <$reuse>::encode_binary(
                         unsafe { &*(self as *const _ as *const $reuse) },
                         encoder
                     )
@@ -294,9 +294,9 @@ macro_rules! impl_bincode_via_transmute {
             }
             unsafe impl<'a> FromBinary<'a> for $src {
                 const POD: bool = true;
-                fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
+                fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
                     unsafe {
-                        std::mem::transmute::<$reuse, $src>(<$reuse>::binary_decode(decoder))
+                        std::mem::transmute::<$reuse, $src>(<$reuse>::decode_binary(decoder))
                     }
                 }
 
@@ -322,14 +322,14 @@ impl_bincode_via_transmute! {
 }
 
 unsafe impl ToBinary for bool {
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
         encoder.push(*self as u8)
     }
 }
 
 unsafe impl<'a> FromBinary<'a> for bool {
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
-        u8::binary_decode(decoder) == 1
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        u8::decode_binary(decoder) == 1
     }
 }
 
@@ -343,49 +343,49 @@ fn encode_array_body<T: ToBinary>(slice: &[T], encoder: &mut BytesWriter) {
         });
     } else {
         for value in slice {
-            value.binary_encode(encoder)
+            value.encode_binary(encoder)
         }
     }
 }
 
 unsafe impl<T: ToBinary> ToBinary for [T] {
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
         write_length(encoder, self.len());
         encode_array_body(self, encoder);
     }
 }
 
 unsafe impl<'a> FromBinary<'a> for &'a [u8] {
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         let len = decoder.read_length();
         decoder.byte_slice(len)
     }
 }
 unsafe impl ToBinary for String {
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
-        self.as_bytes().binary_encode(encoder);
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
+        self.as_bytes().encode_binary(encoder);
     }
 }
 
 unsafe impl ToBinary for Cow<'_, str> {
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
-        self.as_bytes().binary_encode(encoder);
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
+        self.as_bytes().encode_binary(encoder);
     }
 }
 
 unsafe impl<'a> FromBinary<'a> for Cow<'a, str> {
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
-        Cow::Borrowed(<&'a str>::binary_decode(decoder))
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        Cow::Borrowed(<&'a str>::decode_binary(decoder))
     }
 }
 unsafe impl ToBinary for str {
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
-        self.as_bytes().binary_encode(encoder);
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
+        self.as_bytes().encode_binary(encoder);
     }
 }
 unsafe impl<'a> FromBinary<'a> for &'a str {
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
-        match std::str::from_utf8(<&[u8]>::binary_decode(decoder)) {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        match std::str::from_utf8(<&[u8]>::decode_binary(decoder)) {
             Ok(s) => s,
             Err(err) => {
                 decoder.report_error(format_args!("Invalid Utf-8 string: {err:?}"));
@@ -398,7 +398,7 @@ unsafe impl<'a> FromBinary<'a> for &'a str {
 unsafe impl<'a, T: FromBinary<'a>, const N: usize> FromBinary<'a> for [T; N] {
     const POD: bool = T::POD;
 
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         if T::POD {
             let byte_size = N * std::mem::size_of::<T>();
             let bytes = decoder.byte_slice(byte_size);
@@ -412,7 +412,7 @@ unsafe impl<'a, T: FromBinary<'a>, const N: usize> FromBinary<'a> for [T; N] {
                 return array;
             }
         }
-        std::array::from_fn(|_| T::binary_decode(decoder))
+        std::array::from_fn(|_| T::decode_binary(decoder))
     }
 
     #[cfg(not(target_endian = "little"))]
@@ -427,7 +427,7 @@ unsafe impl<'a, T: FromBinary<'a>, const N: usize> FromBinary<'a> for [T; N] {
 unsafe impl<T: ToBinary, const N: usize> ToBinary for [T; N] {
     const POD: bool = T::POD;
 
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
         encode_array_body(self, encoder)
     }
 
@@ -442,7 +442,7 @@ unsafe impl<T: ToBinary, const N: usize> ToBinary for [T; N] {
 }
 
 unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Vec<T> {
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         let len = decoder.read_length();
         if T::POD {
             let byte_size = len * std::mem::size_of::<T>();
@@ -468,36 +468,36 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Vec<T> {
         } else {
             let mut vec = Vec::with_capacity(len.min(4096));
             for _ in 0..len {
-                vec.push(T::binary_decode(decoder));
+                vec.push(T::decode_binary(decoder));
             }
             vec
         }
     }
 }
 unsafe impl<T: ToBinary> ToBinary for Vec<T> {
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
-        <[T]>::binary_encode(self, encoder);
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
+        <[T]>::encode_binary(self, encoder);
     }
 }
 
 unsafe impl<'a, T: ToBinary + ?Sized> ToBinary for &'a mut T {
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
-        (**self).binary_encode(encoder)
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
+        (**self).encode_binary(encoder)
     }
 }
 
 unsafe impl<'a, T: ToBinary + ?Sized> ToBinary for &'a T {
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
-        (**self).binary_encode(encoder)
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
+        (**self).encode_binary(encoder)
     }
 }
 
 unsafe impl<K: ToBinary, V: ToBinary, S> ToBinary for HashMap<K, V, S> {
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
         write_length(encoder, self.len());
         for (k, v) in self {
-            k.binary_encode(encoder);
-            v.binary_encode(encoder);
+            k.encode_binary(encoder);
+            v.encode_binary(encoder);
         }
     }
 }
@@ -505,12 +505,12 @@ unsafe impl<K: ToBinary, V: ToBinary, S> ToBinary for HashMap<K, V, S> {
 unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, V: FromBinary<'a>, S: BuildHasher + Default>
     FromBinary<'a> for HashMap<K, V, S>
 {
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         let len = decoder.read_length();
         let mut map = HashMap::with_capacity_and_hasher(len.min(4096), Default::default());
         for _ in 0..len {
-            let k = K::binary_decode(decoder);
-            let v = V::binary_decode(decoder);
+            let k = K::decode_binary(decoder);
+            let v = V::decode_binary(decoder);
             map.insert(k, v);
         }
         map
@@ -518,10 +518,10 @@ unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, V: FromBinary<'a>, S: BuildHasher
 }
 
 unsafe impl<K: ToBinary, S> ToBinary for HashSet<K, S> {
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
         write_length(encoder, self.len());
         for k in self {
-            k.binary_encode(encoder);
+            k.encode_binary(encoder);
         }
     }
 }
@@ -529,45 +529,45 @@ unsafe impl<K: ToBinary, S> ToBinary for HashSet<K, S> {
 unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, S: BuildHasher + Default> FromBinary<'a>
     for HashSet<K, S>
 {
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         let len = decoder.read_length();
         let mut map = HashSet::with_capacity_and_hasher(len.min(4096), Default::default());
         for _ in 0..len {
-            map.insert(K::binary_decode(decoder));
+            map.insert(K::decode_binary(decoder));
         }
         map
     }
 }
 
 unsafe impl<T: ToBinary> ToBinary for Box<T> {
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
-        T::binary_encode(self, encoder)
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
+        T::encode_binary(self, encoder)
     }
 }
 
 unsafe impl<'a> FromBinary<'a> for String {
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
-        <&str>::binary_decode(decoder).into()
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        <&str>::decode_binary(decoder).into()
     }
 }
 
 unsafe impl<'a> FromBinary<'a> for Box<str> {
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
-        <&str>::binary_decode(decoder).into()
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        <&str>::decode_binary(decoder).into()
     }
 }
 
 unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Box<[T]> {
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
-        <Vec<T>>::binary_decode(decoder).into()
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        <Vec<T>>::decode_binary(decoder).into()
     }
 }
 
 unsafe impl<T: ToBinary> ToBinary for Option<T> {
-    fn binary_encode(&self, encoder: &mut BytesWriter) {
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
         if let Some(value) = self {
             encoder.push(1);
-            value.binary_encode(encoder);
+            value.encode_binary(encoder);
         } else {
             encoder.push(0);
         }
@@ -575,9 +575,9 @@ unsafe impl<T: ToBinary> ToBinary for Option<T> {
 }
 
 unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Option<T> {
-    fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
-        if u8::binary_decode(decoder) == 1 {
-            Some(T::binary_decode(decoder))
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        if u8::decode_binary(decoder) == 1 {
+            Some(T::decode_binary(decoder))
         } else {
             None
         }
@@ -605,7 +605,7 @@ mod test {
             unsafe {
                 self.buffer.set_len(0);
             }
-            value.binary_encode(&mut self.buffer);
+            value.encode_binary(&mut self.buffer);
             let result = crate::from_binary::<T>(self.buffer.buffer_slice()).unwrap();
             assert_eq!(value, &result);
         }
@@ -644,7 +644,7 @@ mod test {
         let inputs = ["", "hello", &a, &b, &c];
         let encoded = inputs.map(|string| {
             let mut buf = BytesWriter::new();
-            string.binary_encode(&mut buf);
+            string.encode_binary(&mut buf);
             buf.into_vec()
         });
         for (input, encoded) in inputs.iter().zip(&encoded) {
@@ -654,7 +654,7 @@ mod test {
         for (input, encoded) in inputs.iter().zip(&encoded) {
             output.clear();
             let boxed: Box<str> = (*input).into();
-            boxed.binary_encode(&mut output);
+            boxed.encode_binary(&mut output);
             assert_eq!(output.buffer_slice(), *encoded);
             assert_eq!(
                 from_binary::<Box<str>>(output.buffer_slice()).unwrap(),
@@ -664,14 +664,14 @@ mod test {
         for (input, encoded) in inputs.iter().zip(&encoded) {
             output.clear();
             let boxed: String = (*input).into();
-            boxed.binary_encode(&mut output);
+            boxed.encode_binary(&mut output);
             assert_eq!(output.buffer_slice(), *encoded);
             assert_eq!(from_binary::<String>(output.buffer_slice()).unwrap(), boxed);
         }
         for (input, encoded) in inputs.iter().zip(&encoded) {
             output.clear();
             let boxed: Cow<'_, str> = (*input).into();
-            boxed.binary_encode(&mut output);
+            boxed.encode_binary(&mut output);
             assert_eq!(output.buffer_slice(), *encoded);
             assert_eq!(
                 from_binary::<Cow<'_, str>>(output.buffer_slice()).unwrap(),
@@ -688,7 +688,7 @@ mod test {
         let inputs = [&b""[..], b"hello", &a, &b, &c];
         let encoded = inputs.map(|string| {
             let mut buf = BytesWriter::new();
-            string.binary_encode(&mut buf);
+            string.encode_binary(&mut buf);
             buf.into_vec()
         });
         for (input, encoded) in inputs.iter().zip(&encoded) {
@@ -698,7 +698,7 @@ mod test {
         for (input, encoded) in inputs.iter().zip(&encoded) {
             output.clear();
             let boxed: Box<[u8]> = (*input).into();
-            boxed.binary_encode(&mut output);
+            boxed.encode_binary(&mut output);
             assert_eq!(output.buffer_slice(), *encoded);
             assert_eq!(
                 from_binary::<Box<[u8]>>(output.buffer_slice()).unwrap(),
@@ -708,7 +708,7 @@ mod test {
         for (input, encoded) in inputs.iter().zip(&encoded) {
             output.clear();
             let boxed: Vec<u8> = (*input).into();
-            boxed.binary_encode(&mut output);
+            boxed.encode_binary(&mut output);
             assert_eq!(output.buffer_slice(), *encoded);
             assert_eq!(
                 from_binary::<Vec<u8>>(output.buffer_slice()).unwrap(),
@@ -726,7 +726,7 @@ mod test {
         let inputs = [&[][..], &[1u32, 2, 3, 4, 5], &a, &b, &c];
         let encoded = inputs.map(|string| {
             let mut buf = BytesWriter::new();
-            string.binary_encode(&mut buf);
+            string.encode_binary(&mut buf);
             buf.into_vec()
         });
         for (input, encoded) in inputs.iter().zip(&encoded) {
@@ -736,7 +736,7 @@ mod test {
         for (input, encoded) in inputs.iter().zip(&encoded) {
             output.clear();
             let boxed: Box<[u32]> = (*input).into();
-            boxed.binary_encode(&mut output);
+            boxed.encode_binary(&mut output);
             assert_eq!(output.buffer_slice(), *encoded);
             assert_eq!(
                 from_binary::<Box<[u32]>>(output.buffer_slice()).unwrap(),
@@ -749,7 +749,7 @@ mod test {
         let inputs: [&[[u32; 2]]; 2] = [&[][..], &[[1u32, 2], [3, 4], [5, 3]]];
         let encoded = inputs.map(|array| {
             let mut buf = BytesWriter::new();
-            array.binary_encode(&mut buf);
+            array.encode_binary(&mut buf);
             buf.into_vec()
         });
         for (input, encoded) in inputs.iter().zip(&encoded) {
@@ -768,14 +768,14 @@ macro_rules! tuple_impls {
     ($(($($tn: ident: $ty: tt),*)),* $(,)?) => {
         $(
             unsafe impl<$($ty: ToBinary),*> ToBinary for ($($ty,)*) {
-                fn binary_encode(&self, encoder: &mut BytesWriter) {
+                fn encode_binary(&self, encoder: &mut BytesWriter) {
                     let ($($tn),*,) = self;
-                    $($tn.binary_encode(encoder);)*
+                    $($tn.encode_binary(encoder);)*
                 }
             }
             unsafe impl<'a, $($ty: FromBinary<'a>),*> FromBinary<'a> for ($($ty,)*) {
-                fn binary_decode(decoder: &mut Decoder<'a>) -> Self {
-                    ($( $ty::binary_decode(decoder), )*)
+                fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+                    ($( $ty::decode_binary(decoder), )*)
                 }
             }
         )*
