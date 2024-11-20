@@ -184,14 +184,14 @@ impl<'a> TextWriter<'a> {
     pub fn finite_f64(&mut self, value: f64) {
         unsafe {
             self.buffer.reserve_small(24);
-            let amount = ryu::raw::format64(value, self.buffer.head_ptr());
+            let amount = ryu::raw::format64(value, self.buffer.tail_ptr());
             self.buffer.advance(amount);
         }
     }
     pub fn finite_f32(&mut self, value: f32) {
         unsafe {
             self.buffer.reserve_small(16);
-            let amount = ryu::raw::format32(value, self.buffer.head_ptr());
+            let amount = ryu::raw::format32(value, self.buffer.tail_ptr());
             self.buffer.advance(amount);
         }
     }

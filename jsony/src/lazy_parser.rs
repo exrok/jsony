@@ -1,17 +1,3 @@
-//! Lazy JSON parsing that allows access keys of objects and arrays
-//! without parsing the entire string or intermediate objects.
-//!
-//! Ideal for when you have deeply nested json but only care about some
-//! inner part. Further, all index access implement null coalescing meaning
-//! when an
-//!
-//! Example:
-//! ```ignore
-//! let json = Value::new(r#"{"a": {"b": [{"c": "contents"}]}}"#);
-//! let contents: String = json["a"]["b"][0]["c"].parse().unwrap();
-//! assert_eq!(json[&"a"][&"name_of_missing_key"][0]["c"].key_error(), Some("name_of_missing_key"));
-//! ```
-
 use crate::{json::DecodeError, parser::InnerParser, text::Ctx, MaybeJson};
 
 use crate::{from_json_with_config, FromJson, JsonError, JsonParserConfig};
@@ -48,7 +34,7 @@ impl std::ops::Index<&'static &'static str> for MaybeJson {
         };
         match parser.index_object(key) {
             Ok(true) => MaybeJson::new(unsafe {
-                std::str::from_utf8_unchecked(&parser.ctx.data[parser.index..])
+                std::str::from_utf8_unchecked(&parser.ctx.input[parser.index..])
             }),
             Ok(false) => MaybeJson::from_object_index_error(key),
             Err(err) => MaybeJson::from_decode_error(err),
@@ -71,7 +57,7 @@ impl std::ops::Index<&str> for MaybeJson {
         };
         match parser.index_object(key) {
             Ok(true) => MaybeJson::new(unsafe {
-                std::str::from_utf8_unchecked(&parser.ctx.data[parser.index..])
+                std::str::from_utf8_unchecked(&parser.ctx.input[parser.index..])
             }),
             Ok(false) => MaybeJson::from_decode_error(&OBJECT_INDEX_ERROR),
             Err(err) => MaybeJson::from_decode_error(err),
@@ -94,7 +80,7 @@ impl std::ops::Index<usize> for MaybeJson {
         };
         match parser.index_array(index) {
             Ok(true) => MaybeJson::new(unsafe {
-                std::str::from_utf8_unchecked(&parser.ctx.data[parser.index..])
+                std::str::from_utf8_unchecked(&parser.ctx.input[parser.index..])
             }),
             Ok(false) => MaybeJson::from_decode_error(match index {
                 0 => &ARRAY_INDEX_ERROR_0,

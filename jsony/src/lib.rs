@@ -66,7 +66,7 @@ mod byte_writer;
 pub mod json;
 mod lazy_parser;
 pub mod parser;
-pub mod strings;
+mod strings;
 pub mod text;
 mod text_writer;
 
@@ -89,6 +89,7 @@ use parser::Parser;
 /// Works that sames `object!{}` except produces an array.
 #[cfg(feature = "macros")]
 pub use jsony_macros::array;
+
 #[cfg(feature = "macros")]
 pub use jsony_macros::{object, Jsony};
 pub use text_writer::IntoTextWriter;
@@ -266,7 +267,7 @@ pub trait ToJson {
     fn json_encode__jsony(&self, output: &mut TextWriter) -> Self::Kind;
 }
 
-/// Lazy JSON Parsing that has been validated
+/// A validated JSON string slice.
 #[repr(transparent)]
 pub struct RawJson {
     pub(crate) raw: str,
@@ -309,12 +310,39 @@ impl std::ops::Deref for RawJson {
     }
 }
 
-/// Lazy JSON Parsing that may not be valid json
+/// Either a JSON string slice or an error state.
+///
+/// `MaybeJson` provides lazy JSON parsing capabilities through index operators, allowing you to
+/// traverse JSON structures while deferring actual parsing until necessary. Conceptually, it's
+/// similar to the following enum:
+///
+/// ```
+/// # use jsony::json::DecodeError;
+/// enum MaybeJsonEnum<'a> {
+///    UnvalidatedJsonPrefix(&'a str),
+///    DecodeError(&'static DecodeError),
+///    ObjectKeyIndexError{ key: &'static str },
+/// }
+/// ```
+///
+/// See: [RawJson] which is similar to `MaybeJson` except is known to valid JSON.
+///
+/// The type implements index operators that allow traversal through JSON structures, automatically
+/// handling error propagation during navigation.
+///
+/// ### Example
+/// ```rust
+/// # use jsony::MaybeJson;
+/// let json = MaybeJson::new(r#"{"key": [{"inner": 42}]}"#);
+/// assert_eq!(42, json["key"][0]["inner"].parse::<u32>().unwrap());
+///
+/// // When indexing with a `&'static str`, missing object keys are tracked
+/// assert_eq!(json[&"key_typo"][0][&"inner"].key_error(), Some("key_typo"));
+/// ```
 #[repr(transparent)]
 pub struct MaybeJson {
-    /// We'll parsing the head of the string is a next json value (possibly with additional whitespace)
-    // Error are represented by empty string with pointer tagging
-    // (why? to work around std:ops::Index only returning references)
+    /// The raw string to be parsed as a JSON value, possibly including leading whitespace.
+    /// Empty strings are used to represent errors through pointer tagging.
     pub(crate) raw: str,
 }
 
@@ -324,7 +352,7 @@ pub struct MaybeJson {
 /// when you need to extract a single deeply nested value out of larger JSON object.
 ///
 ///
-/// See [LazyValue] for more info.
+/// See [MaybeJson] for more info.
 ///
 /// ## Example
 /// ```
@@ -408,7 +436,7 @@ impl JsonError {
                 context: parser.at.ctx.error.take().map(|x| x.to_string()),
                 parent_context: parser.parent_context,
                 index: parser.at.index,
-                surrounding: surrounding(parser.at.index, parser.at.ctx.data),
+                surrounding: surrounding(parser.at.index, parser.at.ctx.input),
             }),
         }
     }
@@ -549,7 +577,7 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
         match unsafe { func(value, &mut parser) } {
             Ok(()) => {
                 let _ = parser.at.peek();
-                Ok(parser.at.ctx.data.len() == parser.at.index || config.allow_trailing_data)
+                Ok(parser.at.ctx.input.len() == parser.at.index || config.allow_trailing_data)
             }
             Err(err) => Err(JsonError::extract(err, &mut parser)),
         }

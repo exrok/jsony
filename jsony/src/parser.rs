@@ -87,7 +87,7 @@ impl<'j> fmt::Debug for Parser<'j> {
         writeln!(
             f,
             "Remaining: {}",
-            &self.at.ctx.data[self.at.index..].escape_ascii()
+            &self.at.ctx.input[self.at.index..].escape_ascii()
         )
     }
 }
@@ -199,7 +199,7 @@ pub struct RetrySnapshot {
 
 impl<'j> InnerParser<'j> {
     pub fn enter_seen_object_key_eq(&mut self, value: &str) -> JsonResult<Option<bool>> {
-        debug_assert_eq!(self.ctx.data[self.index], b'{');
+        debug_assert_eq!(self.ctx.input[self.index], b'{');
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
             match next {
@@ -233,7 +233,7 @@ impl<'j> InnerParser<'j> {
         }
     }
     pub fn enter_seen_object_discarding_key(&mut self) -> JsonResult<Option<()>> {
-        debug_assert_eq!(self.ctx.data[self.index], b'{');
+        debug_assert_eq!(self.ctx.input[self.index], b'{');
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
             match next {
@@ -273,7 +273,7 @@ impl<'j> InnerParser<'j> {
     where
         'j: 'k,
     {
-        debug_assert_eq!(self.ctx.data[self.index], b'{');
+        debug_assert_eq!(self.ctx.input[self.index], b'{');
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
             match next {
@@ -353,7 +353,7 @@ impl<'j> InnerParser<'j> {
 
     pub fn read_seen_unquoted_object_key(&mut self) -> JsonResult<&'j str> {
         let start = self.index;
-        while let Some(ch) = self.ctx.data.get(self.index) {
+        while let Some(ch) = self.ctx.input.get(self.index) {
             if matches!(*ch, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') {
                 self.index += 1;
                 continue;
@@ -369,7 +369,7 @@ impl<'j> InnerParser<'j> {
         if let Some(next) = self.eat_whitespace() {
             if next == b':' {
                 self.index += 1;
-                Ok(unsafe { std::str::from_utf8_unchecked(&self.ctx.data[start..end]) })
+                Ok(unsafe { std::str::from_utf8_unchecked(&self.ctx.input[start..end]) })
             } else {
                 Err(&EXPECTED_COLON)
             }
@@ -500,7 +500,7 @@ impl<'j> InnerParser<'j> {
     pub fn try_zerocopy(&self, text: &str) -> Option<&'j str> {
         // todo
         unsafe {
-            if self.ctx.data.as_ptr_range().contains(&text.as_ptr()) {
+            if self.ctx.input.as_ptr_range().contains(&text.as_ptr()) {
                 Some(&*(text as *const str))
             } else {
                 None
@@ -510,12 +510,12 @@ impl<'j> InnerParser<'j> {
 
     fn skip_to_escape(&mut self) {
         // Immediately bail-out on empty strings and consecutive escapes (e.g. \u041b\u0435)
-        if self.index == self.ctx.data.len() || is_escape(self.ctx.data[self.index]) {
+        if self.index == self.ctx.input.len() || is_escape(self.ctx.input[self.index]) {
             return;
         }
         self.index += 1;
 
-        let rest = &self.ctx.data[self.index..];
+        let rest = &self.ctx.input[self.index..];
 
         // #[cfg(fast_arithmetic = "64")]
         type Chunk = u64;
@@ -535,7 +535,8 @@ impl<'j> InnerParser<'j> {
             let masked = (contains_ctrl | contains_quote | contains_backslash) & (ONE_BYTES << 7);
             if masked != 0 {
                 // SAFETY: chunk is in-bounds for slice
-                self.index = unsafe { chunk.as_ptr().offset_from(self.ctx.data.as_ptr()) } as usize
+                self.index = unsafe { chunk.as_ptr().offset_from(self.ctx.input.as_ptr()) }
+                    as usize
                     + masked.trailing_zeros() as usize / 8;
                 return;
             }
@@ -547,13 +548,13 @@ impl<'j> InnerParser<'j> {
     #[cold]
     #[inline(never)]
     fn skip_to_escape_slow(&mut self) {
-        while self.index < self.ctx.data.len() && !is_escape(self.ctx.data[self.index]) {
+        while self.index < self.ctx.input.len() && !is_escape(self.ctx.input[self.index]) {
             self.index += 1;
         }
     }
 
     fn discard_and_eq_seen_object_key(&mut self, value: &str) -> JsonResult<bool> {
-        debug_assert_eq!(self.ctx.data[self.index], b'"');
+        debug_assert_eq!(self.ctx.input[self.index], b'"');
         let eq = self.discard_and_eq_seen_string(value)?;
 
         if let Some(next) = self.eat_whitespace() {
@@ -569,7 +570,7 @@ impl<'j> InnerParser<'j> {
     }
 
     fn discard_seen_object_key(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.ctx.data[self.index], b'"');
+        debug_assert_eq!(self.ctx.input[self.index], b'"');
         self.discard_seen_string()?;
 
         if let Some(next) = self.eat_whitespace() {
@@ -608,15 +609,15 @@ impl<'j> InnerParser<'j> {
     }
 
     pub fn discard_seen_string<'k, 's: 'k>(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.ctx.data[self.index], b'"');
-        self.index = skip_json_string_and_validate(self.index + 1, self.ctx.data)?;
+        debug_assert_eq!(self.ctx.input[self.index], b'"');
+        self.index = skip_json_string_and_validate(self.index + 1, self.ctx.input)?;
         Ok(())
     }
 
     pub fn discard_and_eq_seen_string(&mut self, value: &str) -> JsonResult<bool> {
-        debug_assert_eq!(self.ctx.data[self.index], b'"');
+        debug_assert_eq!(self.ctx.input[self.index], b'"');
         let (after_index, is_equal) =
-            skip_json_string_and_eq(self.index + 1, self.ctx.data, value.as_bytes())?;
+            skip_json_string_and_eq(self.index + 1, self.ctx.input, value.as_bytes())?;
         self.index = after_index;
         Ok(is_equal)
     }
@@ -631,34 +632,34 @@ impl<'j> InnerParser<'j> {
     where
         'j: 'k,
     {
-        debug_assert_eq!(self.ctx.data[self.index], b'"');
+        debug_assert_eq!(self.ctx.input[self.index], b'"');
         self.index += 1;
         let mut start = self.index;
         scratch.clear();
         loop {
             self.skip_to_escape();
-            if self.index == self.ctx.data.len() {
+            if self.index == self.ctx.input.len() {
                 return Err(&EOF_WHILE_PARSING_STRING);
             }
             // match unsafe { self.ctx.data.get_unchecked(self.indexl } {
-            match self.ctx.data[self.index] {
+            match self.ctx.input[self.index] {
                 b'"' => {
                     if scratch.is_empty() {
                         let output = unsafe {
-                            std::str::from_utf8_unchecked(&self.ctx.data[start..self.index])
+                            std::str::from_utf8_unchecked(&self.ctx.input[start..self.index])
                         };
                         self.index += 1;
                         return Ok(output);
                     } else {
-                        scratch.extend_from_slice(&self.ctx.data[start..self.index]);
+                        scratch.extend_from_slice(&self.ctx.input[start..self.index]);
                         self.index += 1;
                         return Ok(unsafe { std::str::from_utf8_unchecked(&*scratch) });
                     }
                 }
                 b'\\' => {
-                    scratch.extend_from_slice(&self.ctx.data[start..self.index]);
+                    scratch.extend_from_slice(&self.ctx.input[start..self.index]);
                     self.index += 1;
-                    match crate::strings::parse_escape(self.index, self.ctx.data, scratch) {
+                    match crate::strings::parse_escape(self.index, self.ctx.input, scratch) {
                         Ok(index) => {
                             self.index = index;
                             start = index;
@@ -681,7 +682,7 @@ impl<'j> InnerParser<'j> {
     }
 
     pub fn enter_seen_object_at_first_key(&mut self) -> JsonResult<Option<()>> {
-        debug_assert_eq!(self.ctx.data[self.index], b'{');
+        debug_assert_eq!(self.ctx.input[self.index], b'{');
 
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
@@ -774,7 +775,7 @@ impl<'j> InnerParser<'j> {
     }
 
     pub fn enter_seen_array(&mut self) -> JsonResult<Option<Peek>> {
-        debug_assert_eq!(self.ctx.data[self.index], b'[');
+        debug_assert_eq!(self.ctx.input[self.index], b'[');
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
             if next == b']' {
@@ -824,7 +825,7 @@ impl<'j> InnerParser<'j> {
                     Ok(None)
                 }
                 _ => {
-                    println!("{}", self.ctx.data[self.index..].escape_ascii());
+                    println!("{}", self.ctx.input[self.index..].escape_ascii());
                     Err(&EXPECTED_LIST_COMMA_OR_END)
                 }
             }
@@ -834,7 +835,7 @@ impl<'j> InnerParser<'j> {
     }
 
     fn eat_whitespace(&mut self) -> Option<u8> {
-        let Some(mut next) = self.ctx.data.get(self.index).copied() else {
+        let Some(mut next) = self.ctx.input.get(self.index).copied() else {
             return None;
         };
         #[cfg(feature = "json_comments")]
@@ -852,7 +853,7 @@ impl<'j> InnerParser<'j> {
                 b'/' if self.config.allow_comments => self.eat_comment(),
                 _ => return Some(next),
             }
-            if let Some(next2) = self.ctx.data.get(self.index) {
+            if let Some(next2) = self.ctx.input.get(self.index) {
                 next = *next2;
             } else {
                 return None;
@@ -864,12 +865,12 @@ impl<'j> InnerParser<'j> {
     #[cold]
     fn eat_comment(&mut self) {
         self.index += 1;
-        let Some(ch) = self.ctx.data.get(self.index) else {
+        let Some(ch) = self.ctx.input.get(self.index) else {
             return;
         };
         if *ch == b'/' {
             self.index += 1;
-            while let Some(&ch) = self.ctx.data.get(self.index) {
+            while let Some(&ch) = self.ctx.input.get(self.index) {
                 self.index += 1;
                 if ch == b'\n' {
                     return;
@@ -878,9 +879,9 @@ impl<'j> InnerParser<'j> {
         }
         if *ch == b'*' {
             let mut index = self.index + 2;
-            while let Some(ch) = self.ctx.data.get(index) {
+            while let Some(ch) = self.ctx.input.get(index) {
                 if *ch == b'*' {
-                    if let Some(next) = self.ctx.data.get(index + 1) {
+                    if let Some(next) = self.ctx.input.get(index + 1) {
                         if *next == b'/' {
                             self.index = index + 2;
                             return;
@@ -889,25 +890,25 @@ impl<'j> InnerParser<'j> {
                 }
                 index += 1;
             }
-            self.index = self.ctx.data.len();
+            self.index = self.ctx.input.len();
         }
     }
     pub fn discard_seen_true(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.ctx.data[self.index], b't');
+        debug_assert_eq!(self.ctx.input[self.index], b't');
         self.consume_ident(TRUE_REST)
     }
 
     pub fn discard_seen_false(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.ctx.data[self.index], b'f');
+        debug_assert_eq!(self.ctx.input[self.index], b'f');
         self.consume_ident(FALSE_REST)
     }
 
     pub fn discard_seen_null(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.ctx.data[self.index], b'n');
+        debug_assert_eq!(self.ctx.input[self.index], b'n');
         self.consume_ident(NULL_REST)
     }
     fn consume_ident<const SIZE: usize>(&mut self, expected: [u8; SIZE]) -> JsonResult<()> {
-        self.index = consume_ident(self.ctx.data, self.index, expected)?;
+        self.index = consume_ident(self.ctx.input, self.index, expected)?;
         Ok(())
     }
     fn array_peek(&mut self) -> JsonResult<Option<Peek>> {
@@ -1119,7 +1120,7 @@ impl<'j> InnerParser<'j> {
     }
 
     pub fn consume_numeric_literal(&mut self) -> JsonResult<&'j str> {
-        let (output, index) = extract_numeric_literal(self.ctx.data, self.index)?;
+        let (output, index) = extract_numeric_literal(self.ctx.input, self.index)?;
         self.index = index;
         Ok(output)
     }
@@ -1163,7 +1164,7 @@ impl<'j> Parser<'j> {
 
     pub fn try_zerocopy(&self, text: &str) -> Option<&'j str> {
         unsafe {
-            if self.at.ctx.data.as_ptr_range().contains(&text.as_ptr()) {
+            if self.at.ctx.input.as_ptr_range().contains(&text.as_ptr()) {
                 Some(&*(text as *const str))
             } else {
                 None
@@ -1171,7 +1172,7 @@ impl<'j> Parser<'j> {
         }
     }
     pub fn slice(&self, range: Range<usize>) -> Option<&[u8]> {
-        self.at.ctx.data.get(range)
+        self.at.ctx.input.get(range)
     }
 
     pub fn finish(&mut self) -> JsonResult<()> {

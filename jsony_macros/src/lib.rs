@@ -85,7 +85,7 @@ pub fn array(input: TokenStream) -> TokenStream {
 
 /// Templating macro for creating JSON objects
 ///
-/// ```rust
+/// ```ignore
 /// let _player: String = jsony::object!{
 ///     name: "Jimmy",
 ///     health: 100,`

@@ -5,12 +5,22 @@ use std::marker::PhantomData;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ptr::{self, NonNull};
 
-/// Output buffer which is dynamically generic over:
-///     - Writing to an owned buffer
-///     - Writing to `std::io::Write`
-///     - Writing to a shared slice
-/// Similar to a `std::io::BufWriter<&dyn std::io::Write>`, but optimized
-///  for when writing in memory.
+/// An optimized output buffer with dynamic backing storage.
+///
+/// Similar to `dyn std::io::Write`, `BytesWriter` can be backed by various types including:
+/// - `Vec<u8>`
+/// - `&mut [MaybeUninit<u8>]`
+/// - `dyn std::io::Write`
+///
+/// The implementation minimizes dynamic dispatch by restricting it to out-of-capacity situations
+/// where the underlying buffer needs to be resized or flushed.
+///
+/// `BytesWriter` guarantees to maintain a buffer, and when backing storage is already viable,
+/// that backing will be used directly. Operations like `push` are guaranteed not to flush to
+/// the backing store, meaning pushed bytes remain available and can be popped and discarded.
+/// Note that `push_bytes` does not provide this same guarantee.
+///
+/// See [`crate::TextWriter`] for a UTF-8-specific version that guarantees valid UTF-8 content.
 #[repr(C)]
 pub struct BytesWriter<'a> {
     data: *mut u8,
@@ -18,7 +28,9 @@ pub struct BytesWriter<'a> {
     capacity: usize,
     backing: Backing<'a>,
 }
+
 impl<'a> Default for BytesWriter<'a> {
+    /// A empty BytesWriter backed by an owned buffer.
     fn default() -> Self {
         Self::new()
     }
@@ -68,7 +80,7 @@ impl<'a> Drop for BytesWriter<'a> {
     }
 }
 
-pub enum Backing<'a> {
+pub(crate) enum Backing<'a> {
     Owned,
     Vec {
         offset: usize,
@@ -85,6 +97,7 @@ pub enum Backing<'a> {
 }
 
 impl<'a> BytesWriter<'a> {
+    /// Creates a new `BytesWriter` backed by the provided writer.
     pub fn new_writer(writer: &'a mut (dyn std::io::Write + Send)) -> BytesWriter<'a> {
         BytesWriter {
             data: safe_alloc(4096),
@@ -97,34 +110,44 @@ impl<'a> BytesWriter<'a> {
             },
         }
     }
+    /// Returns a mutable reference to the last two bytes, if available.
     pub fn last_2(&mut self) -> Option<&mut [u8; 2]> {
         if self.len < 2 {
             return None;
         }
         Some(unsafe { &mut *self.data.add(self.len - 2).cast() })
     }
+    /// Returns a mutable reference to the last byte, if available.
     pub fn last(&mut self) -> Option<&mut u8> {
         if self.len == 0 {
             return None;
         }
         Some(unsafe { &mut *self.data.add(self.len - 1) })
     }
+    /// Clears the buffer, setting its length to zero.
     pub fn clear(&mut self) {
         self.len = 0;
     }
+    /// Returns true if the buffer is empty.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// Sets the length of the buffer.
+    ///
     /// # Safety
-    /// - new_len must be less than or equal to capacity().
-    /// - The elements at old_len..new_len must be initialized.
+    /// - `new_len` must not exceed the buffer's capacity
+    /// - All elements in the range `old_len..new_len` must be initialized
     pub unsafe fn set_len(&mut self, new_len: usize) {
         self.len = new_len;
     }
+
+    /// Decrements the length by 1, or does nothing if the buffer is empty.
     pub fn saturting_pop(&mut self) {
         self.len = self.len.saturating_sub(1);
     }
+
+    /// Creates a new empty `BytesWriter`, that will be backed by a owned buffer.
     pub fn new() -> BytesWriter<'a> {
         BytesWriter {
             data: NonNull::<u8>::dangling().as_ptr(),
@@ -133,6 +156,10 @@ impl<'a> BytesWriter<'a> {
             backing: Backing::Owned,
         }
     }
+
+    /// Creates a new `BytesWriter` with the specified capacity.
+    ///
+    /// The writer will be backed by an owned buffer with at least the specified capacity.
     pub fn with_capacity(capacity: usize) -> BytesWriter<'a> {
         let data = safe_alloc(capacity);
         BytesWriter {
@@ -142,48 +169,89 @@ impl<'a> BytesWriter<'a> {
             backing: Backing::Owned,
         }
     }
+
+    /// Returns a reference to the current contents as a byte slice.
+    ///
+    /// Note that any write operation except `push` may flush this buffer to the backing store.
     pub fn buffer_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.data, self.len) }
     }
+
+    /// Converts the writer into a `Vec<u8>`, consuming the writer.
     pub fn into_vec(self) -> Vec<u8> {
         let this = ManuallyDrop::new(self);
         if let Backing::Borrowed { .. } = this.backing {
             return this.buffer_slice().into();
         }
-        // todo document safety
+        // Saftey: Unless the backing is `Backing::Borrowed` then the internal
+        // buffer is always backed by an internal buffer allocated in the global
+        // allocator.
+        //
+        // One uncertain case is when the buffer has zero capacity. Once,
+        // Vec::into_raw_parts is stablized we switch to constructing empty
+        // buffers which so that this pattern is blessed.
         unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) }
     }
+
+    /// Consumes the writer and returns the owned buffer as a `Vec<u8>`.
+    ///
+    /// ### Errors
+    /// Panics if the writer is not backed by an owned buffer (e.g., when using a borrowed slice or writer).
     pub fn owned_into_vec(self) -> Vec<u8> {
         let mut this = ManuallyDrop::new(self);
         if let Backing::Owned = this.backing {
+            // Saftey: Unless the backing is `Backing::Borrowed` then the internal
+            // buffer is always backed by an internal buffer allocated in the global
+            // allocator.
+            //
+            // One uncertain case is when the buffer has zero capacity. Once,
+            // Vec::into_raw_parts is stablized we switch to constructing empty
+            // buffers which so that this pattern is blessed.
             unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) }
         } else {
             unsafe { ManuallyDrop::drop(&mut this) };
             panic!("Expected write buffer to backed by an owned allocation");
         }
     }
+
+    /// Consumes the writer and returns a reference to the backing slice with
+    /// content added since the creation of ByteWriter.
+    ///
+    /// ### Errors
+    /// Panics if the writer is not backed by a `Vec<u8>`.
     pub fn into_backed_with_extended_slice(self) -> &'a [u8] {
         let mut this = ManuallyDrop::new(self);
         let data = this.data;
         let len = this.len;
         let capacity = this.capacity;
         if let Backing::Vec { offset, bytes } = &mut this.backing {
+            // Saftey: Unless the backing is `Backing::Borrowed` then the internal
+            // buffer is always backed by an internal buffer allocated in the global
+            // allocator.
+            //
+            // One uncertain case is when the buffer has zero capacity. Once,
+            // Vec::into_raw_parts is stablized we switch to constructing empty
+            // buffers which so that this pattern is blessed.
             **bytes = unsafe { Vec::from_raw_parts(data, len, capacity) };
             return unsafe {
                 std::slice::from_raw_parts(bytes.as_ptr().add(*offset), len - *offset)
             };
         }
+        // Safety: We haven't dropped it yet.
         unsafe { ManuallyDrop::drop(&mut this) };
         panic!("Expected write buffer to backed by a Vec<u8>");
     }
+
+    /// Converts the writer into a `Cow<str>`.
+    ///
     /// # Safety
-    /// `self.buffer_slice()` must be valid UTF-8
+    /// The buffer must contain valid UTF-8 data
     pub unsafe fn into_cow_utf8_unchecked(self) -> Cow<'a, str> {
         let mut this = ManuallyDrop::new(self);
         let data = this.data;
         let len = this.len;
         let capacity = this.capacity;
-        match this.backing {
+        match &this.backing {
             Backing::Owned => {
                 return Cow::Owned(unsafe {
                     String::from_utf8_unchecked(Vec::from_raw_parts(data, len, capacity))
@@ -195,17 +263,22 @@ impl<'a> BytesWriter<'a> {
                 });
             }
             _ => {
+                // Safety: We haven't dropped it yet nor will use any of it's internals
                 unsafe { ManuallyDrop::drop(&mut this) };
                 panic!("Expected Borrowed or owneded Instance");
             }
         }
     }
+    /// Converts the writer into a `Cow<[u8]>`.
+    ///
+    /// # Panics
+    /// Panics if the writer is not backed by an owned buffer (e.g., when using a borrowed slice or writer).
     pub fn into_cow(self) -> Cow<'a, [u8]> {
         let mut this = ManuallyDrop::new(self);
         let data = this.data;
         let len = this.len;
         let capacity = this.capacity;
-        match this.backing {
+        match &this.backing {
             Backing::Owned => {
                 return Cow::Owned(unsafe { Vec::from_raw_parts(data, len, capacity) });
             }
@@ -213,11 +286,17 @@ impl<'a> BytesWriter<'a> {
                 return Cow::Borrowed(unsafe { std::slice::from_raw_parts(data, len) });
             }
             _ => {
+                // Safety: We haven't dropped it yet nor will use any of it's internals
                 unsafe { ManuallyDrop::drop(&mut this) };
                 panic!("Expected Borrowed or owneded Instance");
             }
         }
     }
+
+    /// Completes the write operation and returns the total number of bytes written.
+    ///
+    /// ### Errors
+    /// Returns an error if writing to the underlying writer fails.
     pub fn into_write_finish(mut self) -> Result<usize, std::io::Error> {
         self.flush();
         match &mut self.backing {
@@ -233,14 +312,19 @@ impl<'a> BytesWriter<'a> {
         }
     }
 
-    /// Returns an unsafe mutable pointer to the inner data
+    /// Returns a mutable pointer to the buffer's internal data.
     #[inline]
     pub fn as_mut_ptr(&self) -> *mut u8 {
         self.data
     }
 
+    /// Returns a pointer to the start of unused capacity.
+    ///
+    /// Note: May return a dangling pointer if the buffer is empty.
     #[inline]
-    pub fn head_ptr(&self) -> *mut u8 {
+    pub(crate) fn tail_ptr(&self) -> *mut u8 {
+        // Safety: length is guaranteed to be less then or equal to capacity and
+        // capacity is guaranteed meet the criteria of add
         unsafe { self.data.add(self.len) }
     }
 
@@ -291,6 +375,10 @@ impl<'a> BytesWriter<'a> {
         self.reserve_internal(size, true);
     }
 
+    /// Appends the given bytes to the end of this buffer.
+    ///
+    /// Note: may flush the buffer to the underlying IO. If flushing results in
+    /// error it will be stored in the writer and returned by `into_write_finish`.
     #[inline]
     pub fn push_bytes(&mut self, data: &[u8]) {
         let size = data.len();
@@ -338,6 +426,11 @@ impl<'a> BytesWriter<'a> {
             self.len += result.len();
         }
     }
+
+    /// If the backing store is writer, clear the internal buffer writing contents
+    /// to backing writer.
+    ///
+    /// If not backed by writer this `flush` is a no-op.
     fn flush(&mut self) {
         if let Backing::Write {
             written,

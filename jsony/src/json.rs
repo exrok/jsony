@@ -583,7 +583,7 @@ unsafe impl FromJson<'_> for Box<RawJson> {
         let start = parser.at.index;
         parser.at.skip_value()?;
         let raw =
-            unsafe { std::str::from_utf8_unchecked(&parser.at.ctx.data[start..parser.at.index]) };
+            unsafe { std::str::from_utf8_unchecked(&parser.at.ctx.input[start..parser.at.index]) };
         Ok(RawJson::new_boxed_unchecked(raw.into()))
     }
 }
@@ -593,7 +593,7 @@ unsafe impl<'de> FromJson<'de> for &'de RawJson {
         let start = parser.at.index;
         parser.at.skip_value()?;
         let raw =
-            unsafe { std::str::from_utf8_unchecked(&parser.at.ctx.data[start..parser.at.index]) };
+            unsafe { std::str::from_utf8_unchecked(&parser.at.ctx.input[start..parser.at.index]) };
         Ok(RawJson::new_unchecked(raw))
     }
 }
