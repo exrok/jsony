@@ -635,6 +635,7 @@ pub fn extract_derive_target<'a>(
         tok => throw!("Expected either body or where clause", tok),
     }
 }
+
 const TRAIT_COUNT: u64 = 4;
 fn parse_single_field_attr(
     attrs: &mut FieldAttrs,
@@ -1189,6 +1190,19 @@ pub fn parse_struct_fields<'a>(
                 _ => continue,
             }
         };
+        if let [TokenTree::Ident(ident), TokenTree::Punct(punct), ..] = &fields[i + 1..end] {
+            if punct.as_char() == '<' && ident.to_string() == "Option" {
+                let attr = next_attr.get_or_insert_with(|| attr_buf.alloc_default());
+                let oo_mask = (FROM_JSON as u64) << (3u64 * TRAIT_COUNT);
+                if attr.flags & oo_mask == 0 {
+                    attr.attrs.push(FieldAttr {
+                        enabled: FROM_JSON,
+                        span: ident.span(),
+                        inner: FieldAttrInner::Default(crate::default_call_tokens(ident.span())),
+                    });
+                }
+            }
+        }
         output.push(Field {
             name,
             ty: &fields[i + 1..end],

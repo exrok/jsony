@@ -520,14 +520,6 @@ fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) -> Result<(), 
     output.push('"');
     Ok(())
 }
-// fn unflattened_fields<'a>(
-//     field: &'a [Field],
-//     ctx: &'a Ctx<'a>,
-// ) -> impl Iterator<Item = &'a Field<'a>> {
-//     field
-//         .iter()
-//         .filter(move |f| ctx.attr(f).map_or(true, |a| !a.flatten))
-// }
 
 fn struct_schema(
     out: &mut RustWriter,

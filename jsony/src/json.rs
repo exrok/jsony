@@ -8,7 +8,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     hash::{BuildHasher, Hash},
     marker::PhantomData,
-    path::PathBuf,
+    path::{Path, PathBuf},
     ptr::NonNull,
     rc::Rc,
     sync::Arc,
@@ -574,6 +574,24 @@ unsafe impl<'de> FromJson<'de> for &'de RawJson {
     }
 }
 
+impl ToJson for std::path::Path {
+    type Kind = AlwaysString;
+
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
+        // TODO Should probably make this op in due to lossy nature
+        self.to_string_lossy().encode_json__jsony(output)
+    }
+}
+
+impl ToJson for PathBuf {
+    type Kind = AlwaysString;
+
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
+        // TODO Should probably make this op in due to lossy nature
+        let path: &Path = &*self;
+        path.encode_json__jsony(output)
+    }
+}
 impl ToJson for RawJson {
     type Kind = AnyValue;
 

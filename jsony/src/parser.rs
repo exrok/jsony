@@ -118,6 +118,10 @@ pub static TRAILING_COMMA: DecodeError = DecodeError {
     message: "Trailing Comma",
 };
 
+static EXPECTED_STRING: DecodeError = DecodeError {
+    message: "Expected string",
+};
+
 static EXPECTED_OBJECT_COMMA_OR_END: DecodeError = DecodeError {
     message: "Expected list comma or end",
 };
@@ -1064,7 +1068,7 @@ impl<'j> InnerParser<'j> {
         'j: 'k,
     {
         if self.peek()? != Peek::String {
-            return Err(&EOF_WHILE_PARSING_STRING);
+            return Err(&EXPECTED_STRING);
         }
         unsafe { self.read_seen_string(scratch) }
     }
@@ -1143,7 +1147,6 @@ impl<'j> Parser<'j> {
             Err(err) => return Err(err),
         };
         loop {
-            K::decode_json(self)?;
             match func(K::decode_json(self)?) {
                 Ok(()) => (),
                 Err(err) => return Err(err),

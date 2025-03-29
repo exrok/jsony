@@ -898,8 +898,8 @@ impl Codegen {
                     use ::jsony::ToJson;
                     let mut object_writer: &mut ::jsony::json::ObjectWriter = [~&writer];
                     // TODO, detect if mut is needed or not
-                    let [?(self.need_mut_builder) mut] builder = object_writer.inner_writer();
-                    builder.smart_object_comma();
+                    let [?(self.need_mut_builder) mut] [#self.builder] = object_writer.inner_writer();
+                    [#self.builder].smart_object_comma();
                     [@braced]
                 }
             };
