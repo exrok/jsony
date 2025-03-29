@@ -6,8 +6,9 @@ use crate::{
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    hash::Hash,
+    hash::{BuildHasher, Hash},
     marker::PhantomData,
+    path::PathBuf,
     ptr::NonNull,
     rc::Rc,
     sync::Arc,
@@ -211,6 +212,35 @@ macro_rules! direct_impl_integer_decode {
     };
 }
 
+unsafe impl<'a> FromJson<'a> for Box<std::path::Path> {
+    unsafe fn emplace_from_json(
+        dest: NonNull<()>,
+        parser: &mut Parser<'a>,
+    ) -> Result<(), &'static DecodeError> {
+        match parser.at.take_string(&mut parser.scratch) {
+            Ok(string) => {
+                dest.cast::<Box<std::path::Path>>()
+                    .write(std::path::Path::new(string).into());
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+}
+unsafe impl<'a> FromJson<'a> for PathBuf {
+    unsafe fn emplace_from_json(
+        dest: NonNull<()>,
+        parser: &mut Parser<'a>,
+    ) -> Result<(), &'static DecodeError> {
+        match parser.at.take_string(&mut parser.scratch) {
+            Ok(string) => {
+                dest.cast::<PathBuf>().write(PathBuf::from(string));
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+}
 unsafe impl<'a> FromJson<'a> for &'a str {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -285,60 +315,6 @@ unsafe impl<'a> FromJson<'a> for Cow<'a, str> {
     }
 }
 
-fn decode_array_sequence<'de, K: FromJson<'de>>(
-    parser: &mut Parser<'de>,
-    mut func: impl FnMut(K) -> Result<(), &'static DecodeError>,
-) -> Result<(), &'static DecodeError> {
-    match parser.at.enter_array() {
-        Ok(Some(_)) => (),
-        Ok(None) => return Ok(()),
-        Err(err) => return Err(err),
-    };
-    loop {
-        K::decode_json(parser)?;
-        match func(K::decode_json(parser)?) {
-            Ok(()) => (),
-            Err(err) => return Err(err),
-        }
-        match parser.at.array_step() {
-            Ok(Some(_)) => (),
-            Ok(None) => return Ok(()),
-            Err(err) => return Err(err),
-        }
-    }
-}
-
-pub(crate) fn decode_object_sequence<'de, K: FromJson<'de>, V: FromJson<'de>>(
-    parser: &mut Parser<'de>,
-    mut func: impl FnMut(K, V) -> Result<(), &'static DecodeError>,
-) -> Result<(), &'static DecodeError> {
-    match parser.at.enter_seen_object_at_first_key() {
-        Ok(Some(())) => (),
-        Ok(None) => return Ok(()),
-        Err(err) => return Err(err),
-    }
-    loop {
-        let key = match K::decode_json(parser) {
-            Ok(value) => value,
-            Err(err) => return Err(err),
-        };
-        parser.at.discard_colon()?;
-        let value = match V::decode_json(parser) {
-            Ok(value) => value,
-            Err(err) => return Err(err),
-        };
-        match func(key, value) {
-            Ok(()) => (),
-            Err(err) => return Err(err),
-        }
-        match parser.at.object_step_at_key() {
-            Ok(Some(())) => (),
-            Ok(None) => return Ok(()),
-            Err(err) => return Err(err),
-        }
-    }
-}
-
 unsafe impl<'de, T: FromJson<'de>> FromJson<'de> for Vec<T> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -373,7 +349,7 @@ unsafe impl<'de, K: FromJson<'de> + Ord, V: FromJson<'de>> FromJson<'de> for BTr
     ) -> Result<(), &'static DecodeError> {
         dest.cast::<BTreeMap<K, V>>().write(BTreeMap::new());
         let map = &mut *dest.cast::<BTreeMap<K, V>>().as_ptr();
-        let result = decode_object_sequence(parser, |k, v| {
+        let result = parser.decode_object_sequence(|k, v| {
             map.insert(k, v);
             Ok(())
         });
@@ -392,7 +368,7 @@ unsafe impl<'de, K: FromJson<'de> + Ord> FromJson<'de> for BTreeSet<K> {
     ) -> Result<(), &'static DecodeError> {
         dest.cast::<BTreeSet<K>>().write(BTreeSet::new());
         let map = &mut *dest.cast::<BTreeSet<K>>().as_ptr();
-        let result = decode_array_sequence(parser, |k| {
+        let result = parser.decode_array_sequence(|k| {
             map.insert(k);
             Ok(())
         });
@@ -411,7 +387,7 @@ unsafe impl<'de, K: FromJson<'de> + Eq + Hash> FromJson<'de> for HashSet<K> {
     ) -> Result<(), &'static DecodeError> {
         dest.cast::<HashSet<K>>().write(HashSet::new());
         let map = &mut *dest.cast::<HashSet<K>>().as_ptr();
-        let result = decode_array_sequence(parser, |k| {
+        let result = parser.decode_array_sequence(|k| {
             map.insert(k);
             Ok(())
         });
@@ -424,14 +400,16 @@ unsafe impl<'de, K: FromJson<'de> + Eq + Hash> FromJson<'de> for HashSet<K> {
     }
 }
 
-unsafe impl<'de, K: FromJson<'de> + Eq + Hash, V: FromJson<'de>> FromJson<'de> for HashMap<K, V> {
+unsafe impl<'de, K: FromJson<'de> + Eq + Hash, V: FromJson<'de>, S: Default + BuildHasher + 'de>
+    FromJson<'de> for HashMap<K, V, S>
+{
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        dest.cast::<HashMap<K, V>>().write(HashMap::new());
+        dest.cast::<HashMap<K, V>>().write(HashMap::default());
         let map = &mut *dest.cast::<HashMap<K, V>>().as_ptr();
-        let result = decode_object_sequence(parser, |k, v| {
+        let result = parser.decode_object_sequence(|k, v| {
             map.insert(k, v);
             Ok(())
         });

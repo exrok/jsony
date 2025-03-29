@@ -2,11 +2,11 @@ use std::borrow::Cow;
 use std::fmt;
 use std::ops::Range;
 
-use crate::strings::{skip_json_string_and_eq, skip_json_string_and_validate};
-use crate::JsonParserConfig;
 use crate::__internal::ObjectSchemaInner;
 use crate::json::DecodeError;
+use crate::strings::{skip_json_string_and_eq, skip_json_string_and_validate};
 use crate::text::Ctx;
+use crate::{FromJson, JsonParserConfig};
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Peek(u8);
@@ -682,7 +682,13 @@ impl<'j> InnerParser<'j> {
     }
 
     pub fn enter_seen_object_at_first_key(&mut self) -> JsonResult<Option<()>> {
-        debug_assert_eq!(self.ctx.input[self.index], b'{');
+        debug_assert_eq!(
+            self.ctx.input[self.index],
+            b'{',
+            "From: `{}`",
+            self.ctx.input[self.index - 5..(self.index + 20).min(self.ctx.input.len())]
+                .escape_ascii()
+        );
 
         self.index += 1;
         if let Some(next) = self.eat_whitespace() {
@@ -1127,6 +1133,63 @@ impl<'j> InnerParser<'j> {
 }
 
 impl<'j> Parser<'j> {
+    pub fn decode_array_sequence<K: FromJson<'j>>(
+        &mut self,
+        mut func: impl FnMut(K) -> Result<(), &'static DecodeError>,
+    ) -> Result<(), &'static DecodeError> {
+        match self.at.enter_array() {
+            Ok(Some(_)) => (),
+            Ok(None) => return Ok(()),
+            Err(err) => return Err(err),
+        };
+        loop {
+            K::decode_json(self)?;
+            match func(K::decode_json(self)?) {
+                Ok(()) => (),
+                Err(err) => return Err(err),
+            }
+            match self.at.array_step() {
+                Ok(Some(_)) => (),
+                Ok(None) => return Ok(()),
+                Err(err) => return Err(err),
+            }
+        }
+    }
+    pub fn decode_object_sequence<K: FromJson<'j>, V: FromJson<'j>>(
+        &mut self,
+        mut func: impl FnMut(K, V) -> Result<(), &'static DecodeError>,
+    ) -> Result<(), &'static DecodeError> {
+        if self.at.peek()? != Peek::Object {
+            return Err(&DecodeError {
+                message: "Expected an Object",
+            });
+        }
+        match self.at.enter_seen_object_at_first_key() {
+            Ok(Some(())) => (),
+            Ok(None) => return Ok(()),
+            Err(err) => return Err(err),
+        }
+        loop {
+            let key = match K::decode_json(self) {
+                Ok(value) => value,
+                Err(err) => return Err(err),
+            };
+            self.at.discard_colon()?;
+            let value = match V::decode_json(self) {
+                Ok(value) => value,
+                Err(err) => return Err(err),
+            };
+            match func(key, value) {
+                Ok(()) => (),
+                Err(err) => return Err(err),
+            }
+            match self.at.object_step_at_key() {
+                Ok(Some(())) => (),
+                Ok(None) => return Ok(()),
+                Err(err) => return Err(err),
+            }
+        }
+    }
     pub fn snapshot(&self) -> RetrySnapshot {
         RetrySnapshot {
             index: self.at.index,

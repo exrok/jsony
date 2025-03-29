@@ -16,7 +16,7 @@ use Kind::{Empty, False, Map, Null, Number, True};
 const HASH_MAP_THRESHOLD: usize = 8;
 
 use crate::{
-    json::{decode_object_sequence, AnyValue, DecodeError},
+    json::{AnyValue, DecodeError},
     parser::Peek,
     FromJson, ToJson,
 };
@@ -355,7 +355,7 @@ unsafe impl<'a> FromJson<'a> for JsonItem<'a> {
             )),
             Peek::Object => {
                 let mut data = Vec::<(JsonKey<'a>, JsonItem<'a>)>::new();
-                decode_object_sequence(parser, |k: JsonKey<'a>, v: JsonItem<'a>| {
+                parser.decode_object_sequence(|k: JsonKey<'a>, v: JsonItem<'a>| {
                     data.push((k, v));
                     Ok(())
                 })?;
