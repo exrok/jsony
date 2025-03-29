@@ -384,7 +384,7 @@ fn impl_to_json(
                     ToJsonKind::Forward(field) => {
                         output.blit_punct(3);
                         output.buf.extend_from_slice(field.ty);
-                        output.blit_ident(162);
+                        output.blit_ident(161);
                         output.buf.extend_from_slice(&crate_path);
                         output.blit(149, 7);
                     }
@@ -505,7 +505,7 @@ fn encode_binary_field(
                 {
                     output.blit_punct(3);
                     output.buf.extend_from_slice(field.ty);
-                    output.blit_ident(162);
+                    output.blit_ident(161);
                     output.buf.extend_from_slice(&ctx.crate_path);
                     output.blit(176, 4);
                 }
@@ -538,7 +538,7 @@ fn decode_binary_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
                 {
                     out.blit_punct(3);
                     out.buf.extend_from_slice(field.ty);
-                    out.blit_ident(162);
+                    out.blit_ident(161);
                     {
                         ctx.FromBinary(out)
                     };
@@ -761,7 +761,7 @@ fn struct_schema(
                             out.blit(286, 6);
                             {
                                 let at = out.buf.len();
-                                out.blit_ident(164);
+                                out.blit_ident(163);
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
                             out.blit_punct(0);
@@ -845,7 +845,7 @@ fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> 
                 out.blit(330, 5);
                 {
                     let at = out.buf.len();
-                    out.blit_ident(163);
+                    out.blit_ident(164);
                     if !match ctx.target.repr {
                         ast::Repr::Transparent | ast::Repr::C => true,
                         _ => false,
@@ -2091,7 +2091,7 @@ fn other_variant_key(out: &mut RustWriter, field: &Field) {
             out.blit_ident(167);
             {
                 let at = out.buf.len();
-                out.blit_ident(164);
+                out.blit_ident(163);
                 out.tt_group(Delimiter::Parenthesis, at);
             };
             out.blit(853, 5);
@@ -2142,7 +2142,7 @@ fn enum_variant_from_json(
                 ));
             };
             {
-                out.blit_ident(160);
+                out.blit_ident(159);
                 {
                     if let Some(with) = field.with(FROM_JSON) {
                         {
@@ -2169,7 +2169,7 @@ fn enum_variant_from_json(
                     out.blit_ident(167);
                     {
                         let at = out.buf.len();
-                        out.blit_ident(164);
+                        out.blit_ident(163);
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
                     out.blit(607, 2);
@@ -2187,7 +2187,7 @@ fn enum_variant_from_json(
                             out.buf.push(TokenTree::from(variant.name.clone()));
                             {
                                 let at = out.buf.len();
-                                out.blit_ident(164);
+                                out.blit_ident(163);
                                 out.tt_group(Delimiter::Parenthesis, at);
                             };
                             out.tt_group(Delimiter::Parenthesis, at);
@@ -2346,7 +2346,7 @@ fn stringly_enum_from_json(
                 out.blit(566, 4);
                 {
                     let at = out.buf.len();
-                    out.blit_ident(164);
+                    out.blit_ident(163);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
                 out.blit_punct(0);
@@ -2501,29 +2501,47 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
     let inline_tag = match &ctx.target.tag {
         Tag::Inline(literal) => Some(literal),
         Tag::Untagged => {
-            let body = {
-                let len = out.buf.len();
+            let outer = out.buf.len();
+            {
                 out.blit(921, 11);
-                {
-                    let at = out.buf.len();
-                    for (i, variant) in variants.iter().enumerate() {
+            };
+            let start = out.buf.len();
+            'always_succeed: {
+                for (i, variant) in variants.iter().enumerate() {
+                    if let EnumKind::None = variant.kind {
                         {
-                            let at = out.buf.len();
-                            if i != 0 {
-                                out.blit(932, 3);
-                                {
-                                    let at = out.buf.len();
-                                    out.blit(935, 2);
-                                    out.tt_group(Delimiter::Parenthesis, at);
-                                };
-                                out.blit_punct(0);
+                            out.blit(763, 6);
+                            {
+                                ctx.target_type(out)
                             };
-                            if let Err(err) = enum_variant_from_json(out, ctx, variant, true) {
-                                return Err(err);
+                            out.blit(566, 4);
+                            {
+                                let at = out.buf.len();
+                                out.buf.push(TokenTree::from(ctx.target.name.clone()));
+                                out.blit(3, 2);
+                                out.buf.push(TokenTree::from(variant.name.clone()));
+                                out.tt_group(Delimiter::Parenthesis, at);
                             };
-                            out.tt_group(Delimiter::Brace, at);
+                            out.blit_punct(0);
+                        };
+                        break 'always_succeed;
+                    }
+                    {
+                        if i != 0 {
+                            out.blit(932, 3);
+                            {
+                                let at = out.buf.len();
+                                out.blit(935, 2);
+                                out.tt_group(Delimiter::Parenthesis, at);
+                            };
+                            out.blit_punct(0);
+                        };
+                        if let Err(err) = enum_variant_from_json(out, ctx, variant, true) {
+                            return Err(err);
                         };
                     }
+                }
+                {
                     out.blit(559, 2);
                     {
                         let at = out.buf.len();
@@ -2538,17 +2556,19 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                         };
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
-                    out.tt_group(Delimiter::Brace, at);
-                };
+                }
+            }
+            out.tt_group(Delimiter::Brace, start);
+            {
                 out.blit_ident(167);
                 {
                     let at = out.buf.len();
                     out.tt_group_empty(Delimiter::Parenthesis);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.split_off_stream(len)
             };
-            impl_from_json(out, ctx, body)?;
+            let ts = out.split_off_stream(outer);
+            impl_from_json(out, ctx, ts)?;
             return Ok(());
         }
         Tag::Default => {
@@ -2636,7 +2656,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                                     out.blit_ident(167);
                                     {
                                         let at = out.buf.len();
-                                        out.blit_ident(164);
+                                        out.blit_ident(163);
                                         out.tt_group(Delimiter::Parenthesis, at);
                                     };
                                     out.blit(853, 4);
@@ -2926,7 +2946,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                         out.blit(566, 4);
                         {
                             let at = out.buf.len();
-                            out.blit_ident(164);
+                            out.blit_ident(163);
                             out.tt_group(Delimiter::Parenthesis, at);
                         };
                         out.blit(1055, 3);
@@ -3026,7 +3046,7 @@ fn handle_struct(
                 let len = output.buf.len();
                 output.blit_punct(3);
                 output.buf.extend_from_slice(single_field.ty);
-                output.blit_ident(162);
+                output.blit_ident(161);
                 output.buf.extend_from_slice(&ctx.crate_path);
                 output.blit(1058, 7);
                 {

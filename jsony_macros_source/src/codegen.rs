@@ -1510,23 +1510,35 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
     let inline_tag = match &ctx.target.tag {
         Tag::Inline(literal) => Some(literal),
         Tag::Untagged => {
-            let body = token_stream! {
-                out;
-                let snapshot = parser.snapshot();
-                #success: {
-                    [for ((i, variant) in variants.iter().enumerate()) {
-                        {
-                            [?(i != 0) parser.restore_for_retry(&snapshot); ]
-                            [try enum_variant_from_json(out, ctx, variant, true)]
-                        }
-                    }]
+            let outer = out.buf.len();
+            splat!(out; let snapshot = parser.snapshot(); #success:);
+            let start = out.buf.len();
+            'always_succeed: {
+                for (i, variant) in variants.iter().enumerate() {
+                    if let EnumKind::None = variant.kind {
+                        splat!(
+                            out;
+                            dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name]);
+                        );
+                        break 'always_succeed;
+                    }
+                    splat!(
+                        out;
+                        [?(i != 0) parser.restore_for_retry(&snapshot); ]
+                        [try enum_variant_from_json(out, ctx, variant, true)]
+                    )
+                }
+                splat!(
+                    out;
                     return Err(&::jsony::json::DecodeError{
                         message: [@Literal::string("Untagged enum didn't match any variant").into()]
                     })
-                }
-                Ok(())
-            };
-            impl_from_json(out, ctx, body)?;
+                )
+            }
+            out.tt_group(Delimiter::Brace, start);
+            splat!(out; Ok(()));
+            let ts = out.split_off_stream(outer);
+            impl_from_json(out, ctx, ts)?;
             return Ok(());
         }
         Tag::Default => {
