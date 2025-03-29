@@ -1692,10 +1692,36 @@ fn handle_struct(
 ) -> Result<(), Error> {
     let ctx = Ctx::new(output, target)?;
     if target.from_json {
-        struct_from_json(output, &ctx, fields)?;
+        if target.transparent_impl {
+            let [single_field] = fields else {
+                throw!("Struct must contain a single field to use transparent")
+            };
+            if !matches!(target.repr, ast::Repr::Transparent) {
+                throw!("transparent FromJson requires #[repr(transparent)]")
+            }
+            let body = token_stream! {
+                output;
+                <[~single_field.ty] as [~&ctx.crate_path]::FromJson>::emplace_from_json(
+                    dst, parser
+                )
+            };
+            impl_from_json(output, &ctx, body)?;
+        } else {
+            struct_from_json(output, &ctx, fields)?;
+        }
     }
     if target.to_json {
-        struct_to_json(output, &ctx, fields)?;
+        if target.transparent_impl {
+            let [single_field] = fields else {
+                throw!("Struct must contain a single field to use transparent")
+            };
+            let body = token_stream! {output;
+                self.[#single_field.name].encode_json__jsony(out)
+            };
+            impl_to_json(output, ToJsonKind::Forward(&single_field), &ctx, body)?;
+        } else {
+            struct_to_json(output, &ctx, fields)?;
+        }
     }
 
     if target.to_binary {
@@ -1871,6 +1897,7 @@ fn handle_enum(
 pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     let outer_tokens: Vec<TokenTree> = stream.into_iter().collect();
     let mut target = DeriveTargetInner {
+        transparent_impl: false,
         name: Ident::new("a", Span::call_site()),
         generics: Vec::new(),
         generic_field_types: Vec::new(),

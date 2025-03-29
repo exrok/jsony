@@ -115,7 +115,11 @@ fn main() {
     util::print_pretty_and_copy(codegen::derive(tokens! {
         // #[derive(Clone, Copy, Debug, Jsony)]
     #[derive(Jsony, Debug)]
-    struct NestedArray(Vec<NestedArray>);
+    #[jsony(Json, transparent)]
+    #[repr(transparent)]
+    struct String{
+        foo: u8
+    }
 
 
 

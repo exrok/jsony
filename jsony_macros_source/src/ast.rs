@@ -89,6 +89,7 @@ pub struct DeriveTargetInner<'a> {
     pub where_clauses: &'a [TokenTree],
     pub path_override: Option<Literal>,
     pub generic_field_types: Vec<&'a [TokenTree]>,
+    pub transparent_impl: bool,
     pub to_json: bool,
     pub from_json: bool,
     pub to_binary: bool,
@@ -303,6 +304,9 @@ fn parse_container_attr(
 ) -> Result<(), Error> {
     let key = attr.to_string();
     match key.as_str() {
+        "transparent" => {
+            target.transparent_impl = true;
+        }
         "ToJson" => {
             target.to_json = true;
         }
