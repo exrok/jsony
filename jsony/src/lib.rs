@@ -20,17 +20,16 @@
 //! }
 //!
 //! fn main() -> Result<(), jsony::JsonError> {
-//!     let input = r#"
-//!         {
-//!             "name": "Jimmy",
-//!             "health": 100,
-//!             "inventory": [
-//!                 "Rock",
-//!                 "Helmet"
-//!             ]
-//!         }"#;
+//!     let input: String = jsony::object!{
+//!         name: "Jimmy",
+//!         health: 100,
+//!         inventory: [
+//!             "Rock",
+//!             "Helmet"
+//!         ]
+//!     };
 //!
-//!     let mut player: Player = jsony::from_json(input)?;
+//!     let mut player: Player = jsony::from_json(&input)?;
 //!     player.health -= 10;
 //!
 //!     let output: String = jsony::to_json(&player);
@@ -348,7 +347,7 @@ pub struct MaybeJson {
 
 /// # Lazy JSON parser
 ///
-/// Interpret the given a string a JSON value to lazily parse. Particular useful,
+/// Interpret the given string as a JSON value to lazily parse. Particular useful,
 /// when you need to extract a single deeply nested value out of larger JSON object.
 ///
 ///

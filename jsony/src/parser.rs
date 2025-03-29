@@ -834,7 +834,7 @@ impl<'j> InnerParser<'j> {
         }
     }
 
-    fn eat_whitespace(&mut self) -> Option<u8> {
+    pub fn eat_whitespace(&mut self) -> Option<u8> {
         let Some(mut next) = self.ctx.input.get(self.index).copied() else {
             return None;
         };

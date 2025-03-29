@@ -13,7 +13,6 @@ pub enum Kind {
 use std::{ops::Index, ptr::NonNull};
 
 use Kind::{Empty, False, Map, Null, Number, True};
-
 const HASH_MAP_THRESHOLD: usize = 8;
 
 use crate::{
@@ -151,6 +150,7 @@ pub struct JsonKey<'a> {
     ptr: NonNull<u8>,
     marker: std::marker::PhantomData<&'a ()>,
 }
+
 unsafe impl<'a> FromJson<'a> for JsonKey<'a> {
     fn decode_json(
         parser: &mut crate::parser::Parser<'a>,
@@ -722,25 +722,6 @@ impl<'a> JsonItem<'a> {
                         return &EMPTY_ITEM;
                     }
                 }
-                for x in &hashes[..index] {
-                    let v = *x;
-                    let idx = v & 0x1FFF_FFFF;
-                    if items[idx as usize].0.as_str() == key {
-                        return &items[idx as usize].1;
-                    }
-                    if v < 0xC000_0000 {
-                        return &EMPTY_ITEM;
-                    }
-                }
-
-                // for (item_hash, item) in hashes.iter().zip(items) {
-                //     if hash != *item_hash {
-                //         continue;
-                //     }
-                //     if (item.0.as_str() == key) {
-                //         return &item.1;
-                //     }
-                // }
             }
         }
         &EMPTY_ITEM

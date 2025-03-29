@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::parser::{Parser, Peek};
+pub use crate::parser::{Parser, Peek};
 
 pub struct ParserWithBorrowedKey<'a, 'b> {
     key: *const str,
@@ -182,9 +182,7 @@ impl std::fmt::Display for DecodeError {
 static INVALID_NUMERIC_LITERAL: DecodeError = DecodeError {
     message: "Invalid numeric literal",
 };
-// static STRING_CONTAINS_ESCAPES: DecodeError = DecodeError {
-//     message: "String contains escapes",
-// };
+
 static STRING_CONTAINS_INVALID_ESCAPE_LITERALS: DecodeError = DecodeError {
     message: "String contains invalid escape literals",
 };

@@ -113,11 +113,21 @@ impl std::fmt::Debug for MaybeJson {
 impl MaybeJson {
     pub fn from_object_index_error(key: &'static &'static str) -> &'static MaybeJson {
         let ptr = key as *const &'static str as *const u8;
-        // todo switch to strict provenece once it lands
-        let ptr = (ptr as usize | 1) as *const u8;
+        let ptr = ptr.with_addr(ptr as usize | 1);
         unsafe { &*(core::ptr::slice_from_raw_parts(ptr, 0) as *const MaybeJson) }
     }
-    pub const fn from_decode_error(decode_error: &'static DecodeError) -> &'static MaybeJson {
+    pub fn from_decode_error(decode_error: &'static DecodeError) -> &'static MaybeJson {
+        // We use expose provenance here, so we can use with_exposed_provence when casting
+        // back the error.
+        let decode_error = (decode_error as *const DecodeError).expose_provenance();
+        unsafe {
+            &*(core::ptr::slice_from_raw_parts(
+                std::ptr::with_exposed_provenance::<u8>(decode_error),
+                0,
+            ) as *const MaybeJson)
+        }
+    }
+    pub const fn const_from_decode_error(decode_error: &'static DecodeError) -> &'static MaybeJson {
         unsafe {
             &*(core::ptr::slice_from_raw_parts(decode_error as *const _ as *const u8, 0)
                 as *const MaybeJson)
@@ -162,7 +172,7 @@ impl MaybeJson {
                 message: "Object Key Index Error",
             })
         } else {
-            Some(unsafe { &*(self.raw.as_ptr() as *const DecodeError) })
+            Some(unsafe { &*(std::ptr::with_exposed_provenance(self.raw.as_ptr().addr())) })
         }
     }
 
@@ -174,7 +184,7 @@ impl MaybeJson {
         }
         let tagged = self.raw.as_ptr() as usize;
         if tagged & 0b1 == 1 {
-            let ptr = (tagged & !0b1) as *const u8;
+            let ptr = std::ptr::with_exposed_provenance(self.raw.as_ptr().addr() & !0b1);
             Some(unsafe { *(ptr as *const &'static str) })
         } else {
             None
