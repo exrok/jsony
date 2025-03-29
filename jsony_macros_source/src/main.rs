@@ -117,9 +117,7 @@ fn main() {
     #[derive(Jsony, Debug)]
     #[jsony(Json, transparent)]
     #[repr(transparent)]
-    struct String{
-        foo: u8
-    }
+    struct String(pub u8)
 
 
 

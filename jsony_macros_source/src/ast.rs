@@ -1082,7 +1082,7 @@ pub fn parse_tuple_fields<'a>(
 ) -> Result<(), Error> {
     let mut f = fields.iter().enumerate();
     let mut next_attr: Option<&mut FieldAttrs> = None;
-    while let Some((i, tok)) = f.next() {
+    while let Some((mut i, tok)) = f.next() {
         if let TokenTree::Punct(punct) = tok {
             if punct.as_char() == '#' {
                 let Some((_, TokenTree::Group(group))) = f.next() else {
@@ -1109,6 +1109,21 @@ pub fn parse_tuple_fields<'a>(
                 _ => continue,
             }
         };
+
+        // Remove visiblity to store just the type
+        if let TokenTree::Ident(ident) = &fields[i] {
+            if ident.to_string() == "pub" {
+                i += 1;
+                if i + 1 != end {
+                    if let TokenTree::Group(group) = &fields[i] {
+                        if group.delimiter() == Delimiter::Parenthesis {
+                            i += 1;
+                        }
+                    }
+                }
+            }
+        }
+
         output.push(Field {
             name: fake_name,
             ty: &fields[i..end],
