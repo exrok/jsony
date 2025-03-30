@@ -230,6 +230,10 @@ impl<'a> TextWriter<'a> {
         // is guaranteed to be utf-8
         unsafe { String::from_utf8_unchecked(self.buffer.owned_into_vec()) }
     }
+
+    pub fn buffer_slice(&self) -> &str {
+        unsafe { std::str::from_utf8_unchecked(self.buffer.buffer_slice()) }
+    }
     fn into_backed_str(self) -> &'a str {
         // Safety:
         // This will contain only appended utf-8 strings
@@ -250,5 +254,12 @@ impl<'a> TextWriter<'a> {
     /// text must be valid UTF-8
     pub(crate) unsafe fn push_unchecked_utf8(&mut self, text: &[u8]) {
         self.buffer.push_bytes(text);
+    }
+
+    pub fn clear(&mut self) {
+        self.buffer.clear()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
     }
 }

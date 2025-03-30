@@ -75,6 +75,7 @@ pub use byte_writer::BytesWriter;
 use parser::JsonParentContext;
 use parser::MISSING_REQUIRED_FIELDS;
 pub use text_writer::TextWriter;
+pub mod error;
 pub mod value;
 use binary::{Decoder, FromBinaryError};
 use json::DecodeError;
@@ -555,6 +556,17 @@ pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, JsonError> {
             allow_trailing_data: false,
         },
     )
+}
+
+static INVALID_UTF8: DecodeError = DecodeError {
+    message: "Invalid UTF-8",
+};
+
+#[inline]
+pub fn from_json_bytes<'a, T: FromJson<'a>>(json: &'a [u8]) -> Result<T, JsonError> {
+    let json = std::str::from_utf8(json)
+        .map_err(|err| JsonError::new(&INVALID_UTF8, Some(err.to_string())))?;
+    from_json(json)
 }
 
 #[inline]

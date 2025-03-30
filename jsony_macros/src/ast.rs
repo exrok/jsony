@@ -1,7 +1,5 @@
 // mod template2;
 
-// #[derive(Clone, Copy, Debug, Jsony)]
-
 use crate::{case::RenameRule, util::Allocator, Error};
 use proc_macro::{Delimiter, Ident, Literal, Span, TokenStream, TokenTree};
 pub enum GenericKind {
@@ -42,6 +40,16 @@ pub struct FieldAttrs {
     flags: u64,
 }
 impl FieldAttrs {
+    pub fn rename(&self, for_trait: TraitSet) -> Option<&Literal> {
+        for attr in &self.attrs {
+            if attr.enabled & for_trait != 0 {
+                if let FieldAttrInner::Rename(lit) = &attr.inner {
+                    return Some(lit);
+                }
+            }
+        }
+        None
+    }
     pub fn has_other(&self) -> bool {
         self.flags & (0b1111 << (7u64 * TRAIT_COUNT)) != 0
     }
@@ -79,6 +87,7 @@ pub struct DeriveTargetInner<'a> {
     pub from_binary: bool,
     pub rename_all: RenameRule,
     pub flattenable: bool,
+    pub ignore_tag_adjacent_fields: bool,
     pub content: Option<String>,
     pub tag: Tag,
     pub repr: Repr,
@@ -161,16 +170,6 @@ impl<'a> Field<'a> {
         }
         None
     }
-    pub fn rename(&self, for_trait: TraitSet) -> Option<&Literal> {
-        for attr in &self.attr.attrs {
-            if attr.enabled & for_trait != 0 {
-                if let FieldAttrInner::Rename(lit) = &attr.inner {
-                    return Some(lit);
-                }
-            }
-        }
-        None
-    }
 }
 impl<'a> Field<'a> {
     pub const GENERIC: u32 = 1u32 << 0;
@@ -230,6 +229,9 @@ fn parse_container_attr(
         }
         "ToJson" => {
             target.to_json = true;
+        }
+        "ignore_tag_adjacent_fields" => {
+            target.ignore_tag_adjacent_fields = true;
         }
         "Flattenable" => {
             target.flattenable = true;

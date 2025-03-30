@@ -652,10 +652,7 @@ impl Codegen {
         };
         match first {
             TokenTree::Group(group) => match group.delimiter() {
-                Delimiter::Parenthesis => {
-                    self.set_err(span, "Unhandled");
-                    return;
-                }
+                Delimiter::Parenthesis => {}
                 Delimiter::Brace => {
                     match self.flatten {
                         Flatten::None => {

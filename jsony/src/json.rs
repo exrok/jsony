@@ -380,20 +380,22 @@ unsafe impl<'de, K: FromJson<'de> + Ord> FromJson<'de> for BTreeSet<K> {
         result
     }
 }
-unsafe impl<'de, K: FromJson<'de> + Eq + Hash> FromJson<'de> for HashSet<K> {
+unsafe impl<'de, K: FromJson<'de> + Eq + Hash, S: Default + BuildHasher + 'de> FromJson<'de>
+    for HashSet<K, S>
+{
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        dest.cast::<HashSet<K>>().write(HashSet::new());
-        let map = &mut *dest.cast::<HashSet<K>>().as_ptr();
+        dest.cast::<HashSet<K, S>>().write(HashSet::default());
+        let map = &mut *dest.cast::<HashSet<K, S>>().as_ptr();
         let result = parser.decode_array_sequence(|k| {
             map.insert(k);
             Ok(())
         });
         if result.is_err() {
             unsafe {
-                std::ptr::drop_in_place(dest.cast::<HashSet<K>>().as_ptr());
+                std::ptr::drop_in_place(dest.cast::<HashSet<K, S>>().as_ptr());
             }
         }
         result
@@ -407,15 +409,15 @@ unsafe impl<'de, K: FromJson<'de> + Eq + Hash, V: FromJson<'de>, S: Default + Bu
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        dest.cast::<HashMap<K, V>>().write(HashMap::default());
-        let map = &mut *dest.cast::<HashMap<K, V>>().as_ptr();
+        dest.cast::<HashMap<K, V, S>>().write(HashMap::default());
+        let map = &mut *dest.cast::<HashMap<K, V, S>>().as_ptr();
         let result = parser.decode_object_sequence(|k, v| {
             map.insert(k, v);
             Ok(())
         });
         if result.is_err() {
             unsafe {
-                std::ptr::drop_in_place(dest.cast::<HashMap<K, V>>().as_ptr());
+                std::ptr::drop_in_place(dest.cast::<HashMap<K, V, S>>().as_ptr());
             }
         }
         result

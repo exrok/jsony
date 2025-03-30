@@ -51,7 +51,18 @@ pub struct FieldAttrs {
     attrs: Vec<FieldAttr>,
     flags: u64,
 }
+
 impl FieldAttrs {
+    pub fn rename(&self, for_trait: TraitSet) -> Option<&Literal> {
+        for attr in &self.attrs {
+            if attr.enabled & for_trait != 0 {
+                if let FieldAttrInner::Rename(lit) = &attr.inner {
+                    return Some(lit);
+                }
+            }
+        }
+        None
+    }
     pub fn has_other(&self) -> bool {
         self.flags & (0b1111 << (7u64 * TRAIT_COUNT)) != 0
     }
@@ -96,6 +107,7 @@ pub struct DeriveTargetInner<'a> {
     pub from_binary: bool,
     pub rename_all: RenameRule,
     pub flattenable: bool,
+    pub ignore_tag_adjacent_fields: bool,
     pub content: Option<String>,
     pub tag: Tag, // pub untagged: bool,
     pub repr: Repr,
@@ -181,16 +193,6 @@ impl<'a> Field<'a> {
             if attr.enabled & for_trait != 0 {
                 if let FieldAttrInner::Default(tokens) = &attr.inner {
                     return Some(tokens);
-                }
-            }
-        }
-        None
-    }
-    pub fn rename(&self, for_trait: TraitSet) -> Option<&Literal> {
-        for attr in &self.attr.attrs {
-            if attr.enabled & for_trait != 0 {
-                if let FieldAttrInner::Rename(lit) = &attr.inner {
-                    return Some(lit);
                 }
             }
         }
@@ -309,6 +311,9 @@ fn parse_container_attr(
         }
         "ToJson" => {
             target.to_json = true;
+        }
+        "ignore_tag_adjacent_fields" => {
+            target.ignore_tag_adjacent_fields = true;
         }
         "Flattenable" => {
             target.flattenable = true;

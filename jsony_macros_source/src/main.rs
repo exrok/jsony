@@ -111,15 +111,15 @@ fn main() {
         template::object(tokens!());
         codegen::derive(tokens!());
     }
-
     util::print_pretty_and_copy(codegen::derive(tokens! {
-        // #[derive(Clone, Copy, Debug, Jsony)]
-    #[derive(Jsony, Debug)]
-    #[jsony(Json, transparent)]
-    #[repr(transparent)]
-    struct String(pub u8)
 
-
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    #[jsony(ignore_tag_adjacent_fields)]
+    enum IgnoringWithString {
+        Tuple(u32),
+        Struct { value: u32 },
+        Stringly,
+    }
 
         }));
 }

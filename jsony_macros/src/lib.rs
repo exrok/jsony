@@ -149,12 +149,13 @@ pub fn object(input: TokenStream) -> TokenStream {
 ///
 /// | Format | Supported Traits | Description |
 /// |--------|------------------|-------------|
-/// | `transparent` | All | Traits delegate to the single inner type.
+/// | `content = "..."` | `Json` | Field containing the data content of enum.
+/// | `Flattenable` | `FromJson` | Allows type to use `#[jsony(flatten)]` in `FromJson`.
+/// | `ignore_tag_adjacent_fields` | `Json` | Ignore extra fields in externally tagged enum object
 /// | `rename_all = "..."` | All | Renames variants and fields not explicitly renamed.
 /// | `tag = "..."` | `Json` | Field containing the enum variant.
-/// | `content = "..."` | `Json` | Field containing the data content of enum.
+/// | `transparent` | All | Traits delegate to the single inner type.
 /// | `untagged` | `Json` | Only data content of an enum is stored.
-/// | `Flattenable` | `FromJson` | Allows type to use `#[jsony(flatten)]` in `FromJson`.
 ///
 /// ## Enum Variant Attributes
 /// These are `jsony` attributes that appear above a variant in an enum.

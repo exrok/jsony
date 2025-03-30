@@ -458,7 +458,7 @@ fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) -> Result
 
 fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
     // todo pass context in
-    if let Some(name) = field.rename(FROM_JSON) {
+    if let Some(name) = field.attr.rename(FROM_JSON) {
         return name.clone();
     }
     if ctx.target.rename_all != RenameRule::None {
@@ -499,7 +499,7 @@ fn variant_name_json(ctx: &Ctx, field: &EnumVariant, output: &mut String) -> Res
 
 fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) -> Result<(), Error> {
     output.push('"');
-    if let Some(name) = &field.rename(TO_JSON) {
+    if let Some(name) = &field.attr.rename(TO_JSON) {
         match crate::lit::literal_inline(name.to_string()) {
             crate::lit::InlineKind::String(value) => {
                 crate::template::raw_escape(&value, output);
@@ -520,6 +520,14 @@ fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) -> Result<(), 
     output.push('"');
     Ok(())
 }
+// fn unflattened_fields<'a>(
+//     field: &'a [Field],
+//     ctx: &'a Ctx<'a>,
+// ) -> impl Iterator<Item = &'a Field<'a>> {
+//     field
+//         .iter()
+//         .filter(move |f| ctx.attr(f).map_or(true, |a| !a.flatten))
+// }
 
 fn struct_schema(
     out: &mut RustWriter,
@@ -1001,10 +1009,19 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
     Ok(())
 }
 
-fn variant_key_literal(_ctx: &Ctx, variant: &EnumVariant) -> Literal {
-    // todo add all transforms and renames etc
-    let buf = variant.name.to_string();
-    Literal::string(&buf)
+fn variant_key_literal(ctx: &Ctx, variant: &EnumVariant) -> Literal {
+    if let Some(name) = variant.attr.rename(FROM_JSON) {
+        return name.clone();
+    }
+    if ctx.target.rename_all != RenameRule::None {
+        Literal::string(
+            &ctx.target
+                .rename_all
+                .apply_to_field(&variant.name.to_string()),
+        )
+    } else {
+        Literal::string(&variant.name.to_string())
+    }
 }
 
 fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
@@ -1273,7 +1290,7 @@ fn enum_variant_from_json_struct(
                         splat!(out; [#field.name]: [field_from_default(out, field, FROM_JSON)],)
                     }]
                 });
-                [?(untagged) break #success]
+                [?(untagged || ctx.target.ignore_tag_adjacent_fields) break #success]
             }
         }
     } else {
@@ -1305,7 +1322,7 @@ fn enum_variant_from_json_struct(
                         splat!(out; [#field.name]: [field_from_default(out, field, FROM_JSON)],)
                     }]
                 });
-                [?(untagged) break #success]
+                [?(untagged || ctx.target.ignore_tag_adjacent_fields) break #success]
             }
         }
     };
@@ -1360,7 +1377,7 @@ fn enum_variant_from_json(
                 ]::decode_json(parser) {
                     Ok(value) => {
                         dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name](value));
-                        [?(untagged) break #success]
+                        [?(untagged || ctx.target.ignore_tag_adjacent_fields) break #success]
                     },
                     Err(_err) => {
                         [?(!untagged) return Err(_err);]
@@ -1396,12 +1413,10 @@ fn enum_variant_from_json(
                 }
             ]
             dst.cast::<[ctx.target_type(out)]>().write([#ctx.target.name]::[#variant.name]);
-            [?(untagged) break #success]
+            [?(untagged || ctx.target.ignore_tag_adjacent_fields) break #success]
         },
     };
-    let ts = TokenStream::from_iter(out.buf.drain(start..));
-    out.buf
-        .push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
+    out.tt_group(Delimiter::Brace, start);
     Ok(())
 }
 
@@ -1445,59 +1460,73 @@ fn enum_from_json_unknown_variant(
     other: Option<&EnumVariant>,
     stringly: bool,
 ) -> Result<(), Error> {
-    splat!(out;
-        _ => {
-            [
-                if let Some(other) = &other {
-                    match other.fields {
-                        [] => (),
-                        [field] => other_variant_key(out, field),
-                        [_f1, f2, ..] => {
-                            throw!("Other variants may only have upto a single field" @ f2.name.span())
-                        }
-                    }
-                    if !stringly {
-                        let start = out.buf.len();
-                        splat!(
-                            out;
-                            if let Err(err) = parser.skip_value() {
-                                return Err(err)
-                            }
-                        );
-                        if ctx.target.content.is_some() {
-                            let skipbody = out.split_off_stream(start);
-                            splat!(out; if at_content [@TokenTree::Group(Group::new(Delimiter::Brace, skipbody))])
-                        }
-                    }
-                    let start = out.buf.len();
-                    splat!(
-                        out;
-                        [#ctx.target.name]::[#other.name]
-                        [if let [field] = other.fields {
-                            match other.kind {
-                                EnumKind::Tuple => splat!(out; (other_tag)),
-                                EnumKind::Struct => splat!(out; {[#field.name]: other_tag}),
-                                EnumKind::None => (),
-                            }
-                        }]
-                    );
-                    if !stringly {
-                        let value = out.split_off_stream(start);
-                        splat!(out; dst.cast::<[ctx.target_type(out)]>().write [
+    splat!(out; _ =>);
+    let start = out.buf.len();
+    if let Some(other) = &other {
+        match other.fields {
+            [] => (),
+            [field] => other_variant_key(out, field),
+            [_f1, f2, ..] => {
+                throw!("Other variants may only have upto a single field" @ f2.name.span())
+            }
+        }
+        if !stringly {
+            let start = out.buf.len();
+            splat!(
+                out;
+                if let Err(err) = parser.skip_value() {
+                    return Err(err)
+                }
+            );
+            if ctx.target.content.is_some() {
+                let skipbody = out.split_off_stream(start);
+                splat!(out; if at_content [@TokenTree::Group(Group::new(Delimiter::Brace, skipbody))])
+            }
+        }
+        let start = out.buf.len();
+        splat!(
+            out;
+            [#ctx.target.name]::[#other.name]
+            [if let [field] = other.fields {
+                match other.kind {
+                    EnumKind::Tuple => splat!(out; (other_tag)),
+                    EnumKind::Struct => splat!(out; {[#field.name]: other_tag}),
+                    EnumKind::None => (),
+                }
+            }]
+        );
+        if !stringly {
+            let value = out.split_off_stream(start);
+            splat!(out; dst.cast::<[ctx.target_type(out)]>().write [
                             @TokenTree::Group(Group::new(Delimiter::Parenthesis, value))
                         ];)
-                    }
-                } else {
-                    splat!(
-                        out;
-                        let variant = variant.to_string();
-                        parser.report_error(variant);
-                        return Err(&::jsony::parser::UNKNOWN_VARIANT);
-                    )
-                }
-            ]
         }
-    );
+    } else {
+        if ctx.target.ignore_tag_adjacent_fields && !stringly {
+            splat!(
+                out;
+                if let Err(err) = parser.skip_value() {
+                    return Err(err)
+                }
+                match parser.object_step() {
+                    Ok(None) => return Err(&jsony::error::NO_FIELD_MATCHED_AN_ENUM_VARIANT),
+                    Ok(Some(next_field)) => {
+                        variant = next_field;
+                        continue;
+                    },
+                    Err(err) => return Err(err),
+                };
+            )
+        } else {
+            splat!(
+                out;
+                let variant = variant.to_string();
+                parser.report_error(variant);
+                return Err(&::jsony::error::UNKNOWN_VARIANT);
+            )
+        }
+    }
+    out.tt_group(Delimiter::Brace, start);
     Ok(())
 }
 
@@ -1505,7 +1534,6 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
     if ctx.target.flattenable {
         throw!("Flattening enums not supported yet.")
     }
-
     let mut mixed_strings_and_objects = false;
     let inline_tag = match &ctx.target.tag {
         Tag::Inline(literal) => Some(literal),
@@ -1564,52 +1592,53 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
             other = Some(variant);
         }
     }
-    let mut body = token_stream! { out;
-        [
-            if let Some(tag) = inline_tag {
-                splat!(
-                    out;
-                    [?(ctx.target.content.is_some()) let at_content: bool;]
-                    let variant = match parser.
-                    [
-                        if let Some(content) = &ctx.target.content {
-                            splat!(out; tag_query_at_content_next_object([@Literal::string(tag).into()], [@Literal::string(content).into()]))
-                        } else {
-                            splat!(out; tag_query_next_object([@Literal::string(tag).into()]))
-                        }
-                    ]
+    let body_start = out.buf.len();
+    if let Some(tag) = inline_tag {
+        splat!(
+            out;
+            [?(ctx.target.content.is_some()) let at_content: bool;]
+            let variant = match parser.
+            [
+                if let Some(content) = &ctx.target.content {
+                    splat!(out; tag_query_at_content_next_object([@Literal::string(tag).into()], [@Literal::string(content).into()]))
+                } else {
+                    splat!(out; tag_query_next_object([@Literal::string(tag).into()]))
+                }
+            ]
 
-                     {
-                        [if let Some(..) = &ctx.target.content {
-                            splat!(out; Ok((value, is_at_content)) => {
-                                at_content = is_at_content;
-                                value
-                            })
-                        } else {
-                            splat!(out; Ok(value) => value,)
-                        }]
-                        Err(err) => return Err(err),
-                    };
-                )
-            } else {
-                splat!(
-                    out;
-                    let Ok(Some(variant)) = parser.[
-                        //todo could opt this
-                        if mixed_strings_and_objects {
-                            splat!(out; enter_seen_object)
-                        } else {
-                            splat!(out; enter_object)
-                        }
-                    ]() else {
-                        //todo better errors
-                        return Err(&jsony::json::DecodeError {
-                            message: [@Literal::string("Expected single field object for enum").into()]
-                        });
-                    };
-                )
-            }
-        ]
+             {
+                [if let Some(..) = &ctx.target.content {
+                    splat!(out; Ok((value, is_at_content)) => {
+                        at_content = is_at_content;
+                        value
+                    })
+                } else {
+                    splat!(out; Ok(value) => value,)
+                }]
+                Err(err) => return Err(err),
+            };
+        )
+    } else {
+        splat!(
+            out;
+            let Ok(Some([?(ctx.target.ignore_tag_adjacent_fields) mut] variant)) = parser.[
+                //todo could opt this
+                if mixed_strings_and_objects {
+                    splat!(out; enter_seen_object)
+                } else {
+                    splat!(out; enter_object)
+                }
+            ]() else {
+                //todo better errors
+                return Err(&::jsony::error::EMPTY_OBJECT_FOR_EXTERNALLY_TAGGED_ENUM);
+            };
+        )
+    }
+    if ctx.target.ignore_tag_adjacent_fields {
+        splat!(out; #success: loop)
+    }
+    let variant_dispatch_start = out.buf.len();
+    splat! { out;
         match variant {
             [for variant in variants {
                 if mixed_strings_and_objects {
@@ -1628,30 +1657,44 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
             }]
             [try enum_from_json_unknown_variant(out, ctx, other, false)]
         }
-        [
-            if let Some(_) = inline_tag {
-                if ctx.target.content.is_some() {
-                    //todo this leaks?
-                    splat!(out; if at_content {parser.discard_remaining_object_fields()} else {Ok(())})
-                } else {
-                    splat!(out; Ok(()))
-                }
-            } else {
-                splat!(
-                    out;
-                    let err = match parser.object_step() {
-                        Ok(None) => {return Ok(())},
-                        Err(err) => {Err(err)},
-                        Ok(Some(_)) => {
-                            Err(&jsony::json::DecodeError {  message: [@Literal::string("More the one field in enum tab object").into()] })
-                        },
-                    };
-                    std::ptr::drop_in_place::<[ctx.target_type(out)]>(dst.cast().as_mut());
-                    return err;
-                )
-            }
-        ]
     };
+
+    if let Some(_) = inline_tag {
+        if ctx.target.content.is_some() {
+            //todo this leaks?
+            splat!(out; if at_content {parser.discard_remaining_object_fields()} else {Ok(())})
+        } else {
+            splat!(out; Ok(()))
+        }
+    } else if ctx.target.ignore_tag_adjacent_fields {
+        // computed from the above splat!(out; #success: loop)
+        out.tt_group(Delimiter::Brace, variant_dispatch_start);
+        splat!(
+            out;
+            match parser.discard_remaining_object_fields() {
+                Ok(()) => return Ok(()),
+                err => {
+                    std::ptr::drop_in_place::<[ctx.target_type(out)]>(dst.cast().as_mut());
+                    return err
+                },
+            };
+        )
+    } else {
+        splat!(
+            out;
+            let err = match parser.object_step() {
+                Ok(None) => {return Ok(())},
+                Err(err) => {Err(err)},
+                Ok(Some(_)) => {
+                    Err(&jsony::error::MULTIPLE_FIELDS_FOR_EXTERNALLY_TAGGED_ENUM)
+                },
+            };
+            std::ptr::drop_in_place::<[ctx.target_type(out)]>(dst.cast().as_mut());
+            return err;
+        )
+    }
+
+    let mut body = out.split_off_stream(body_start);
 
     if mixed_strings_and_objects {
         body = token_stream!(
@@ -1905,6 +1948,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
         name: Ident::new("a", Span::call_site()),
         generics: Vec::new(),
         generic_field_types: Vec::new(),
+        ignore_tag_adjacent_fields: false,
         where_clauses: &[],
         path_override: None,
         from_binary: false,

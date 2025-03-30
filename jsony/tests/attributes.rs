@@ -23,6 +23,19 @@ macro_rules! assert_encode_json_eq {
     };
 }
 
+macro_rules! assert_decode_failure {
+    ($json:tt, $ty:ty, $error_name:ident ) => {
+        assert_eq!(
+            jsony::from_json::<$ty>(compact_stringify!($json))
+                .err()
+                .expect("decoding to fail")
+                .decoding_error(),
+            &jsony::error::$error_name,
+            "JSON Decode Error to match"
+        )
+    };
+}
+
 macro_rules! assert_decode_json_eq {
     ($json:tt, $($input:tt)* ) => {
         assert_eq!(
@@ -676,4 +689,87 @@ fn other_variant() {
             ContentCapture::Beta
         ]
     );
+}
+
+#[test]
+fn ignore_tag_adjacent_fields() {
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    enum Failing {
+        Tuple(u32),
+        Struct { value: u32 },
+    }
+    assert_decode_failure! {
+        { },
+        Failing,
+        EMPTY_OBJECT_FOR_EXTERNALLY_TAGGED_ENUM
+    }
+
+    assert_decode_failure! {
+        { "Tuple": 43, "Nice": 43 },
+        Failing,
+        MULTIPLE_FIELDS_FOR_EXTERNALLY_TAGGED_ENUM
+    }
+
+    assert_decode_failure! {
+        { "Nice": 43, "Tuple": 43 },
+        Failing,
+        UNKNOWN_VARIANT
+    }
+
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    #[jsony(ignore_tag_adjacent_fields)]
+    enum Ignoring {
+        Tuple(u32),
+        Struct { value: u32 },
+    }
+
+    assert_decode_failure! {
+        { },
+        Ignoring,
+        EMPTY_OBJECT_FOR_EXTERNALLY_TAGGED_ENUM
+    }
+    assert_decode_json_eq! {
+        { "Tuple": 43, "Nice": 43 },
+        Ignoring::Tuple(43)
+    }
+
+    assert_decode_json_eq! {
+        { "Nice": 43, "Tuple": 43 },
+        Ignoring::Tuple(43)
+    }
+
+    assert_decode_failure! {
+        { "Foo": 43 },
+        Ignoring,
+        NO_FIELD_MATCHED_AN_ENUM_VARIANT
+    }
+
+    assert_decode_failure! {
+        { "Foo": 43, "wow": {"Tuple": 55} },
+        Ignoring,
+        NO_FIELD_MATCHED_AN_ENUM_VARIANT
+    }
+
+    assert_decode_json_eq! {
+        { "Nice": 43, "Struct": { "value": 99 }  },
+        Ignoring::Struct{value: 99}
+    }
+
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    #[jsony(ignore_tag_adjacent_fields)]
+    enum IgnoringWithString {
+        Tuple(u32),
+        Struct { value: u32 },
+        Stringly,
+    }
+
+    assert_decode_json_eq! {
+        { "Nice": 43, "Struct": { "value": 99 }  },
+        IgnoringWithString::Struct{value: 99}
+    }
+
+    assert_decode_json_eq! {
+        "Stringly",
+        IgnoringWithString::Stringly
+    }
 }
