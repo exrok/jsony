@@ -386,7 +386,6 @@ impl Codegen {
 
                     // continue 'outer;
                 }
-
                 // Accumulate Expression in
                 value_tokens.clear();
                 for tok in input.by_ref() {
@@ -646,7 +645,7 @@ impl Codegen {
     }
 
     fn insert_value(&mut self, span: Span, values: &mut Vec<TokenTree>) {
-        let [first, ..] = &**values else {
+        let [first, rest @ ..] = &**values else {
             self.set_err(span, "Expected value after colon");
             return;
         };
@@ -674,11 +673,31 @@ impl Codegen {
                             return;
                         }
                     }
+                    if let [first_after_brace, ..] = rest {
+                        self.set_err(
+                            first_after_brace.span(),
+                            "Trailing tokens found after object value, expected a comma",
+                        );
+                    }
                     return;
                 }
                 Delimiter::Bracket => {
-                    if self.parse_inline_array(group.span(), group.stream()) {
-                        return;
+                    if rest.is_empty() {
+                        if self.parse_inline_array(group.span(), group.stream()) {
+                            return;
+                        }
+                    } else {
+                        // give specific error for common case of forgeting a comma.
+                        // in surface rust syntax the following is invalid.
+                        if let [TokenTree::Ident(key), TokenTree::Punct(punct), ..] = rest {
+                            if punct.as_char() == ':' {
+                                self.set_err(
+                                    key.span(),
+                                    "Ident token found after array value, expected a comma",
+                                );
+                                return;
+                            }
+                        }
                     }
                 }
                 Delimiter::None => (),
@@ -930,36 +949,8 @@ impl Codegen {
     fn flush_error(&mut self) {
         if let Some(err) = self.error.take() {
             self.out.buf.extend(err.to_compiler_error());
-            // err.to_compiler_error()
-            // let error = err.0.
-            // let mut group = TokenTree::Group(Group::new(
-            //     Delimiter::Parenthesis,
-            //     TokenStream::from_iter([TokenTree::Literal(Literal::string(&error))]),
-            // ));
-            // let mut punc = TokenTree::Punct(Punct::new('!', Spacing::Alone));
-            // punc.set_span(span);
-            // group.set_span(span);
-
-            // self.out.extend([
-            //     TokenTree::Ident(Ident::new("compile_error", span)),
-            //     punc,
-            //     group,
-            //     TokenTree::Punct(Punct::new(';', Spacing::Alone)),
-            // ]);
         }
     }
-    // fn finish_append_object(mut self, name: Ident) -> TokenStream {
-    //     self.flush_error();
-    //     self.flush_text();
-
-    //     let res = TokenStream::from_iter(toks![
-    //         use jsony%:{braces!(OutputBuffer, ToJson)};
-    //         let {self.builder()} = &mut {TokenTree::Ident(name.clone())}.buffer;
-    //         {{braced(self.out)}}
-    //     ]);
-
-    //     TokenStream::from_iter([TokenTree::Group(Group::new(Delimiter::Brace, res))])
-    // }
 }
 
 pub fn array(input: TokenStream) -> TokenStream {
@@ -968,6 +959,7 @@ pub fn array(input: TokenStream) -> TokenStream {
 
     codegen.finish_creating()
 }
+
 pub fn object(input: TokenStream) -> TokenStream {
     let mut codegen = Codegen::new(Ident::new("builder", Span::call_site()));
     codegen.begin_inline_object();

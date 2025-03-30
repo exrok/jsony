@@ -591,7 +591,7 @@ impl Codegen {
         }
     }
     fn insert_value(&mut self, span: Span, values: &mut Vec<TokenTree>) {
-        let [first, ..] = &**values else {
+        let [first, rest @ ..] = &**values else {
             self.set_err(span, "Expected value after colon");
             return;
         };
@@ -619,11 +619,29 @@ impl Codegen {
                             return;
                         }
                     }
+                    if let [first_after_brace, ..] = rest {
+                        self.set_err(
+                            first_after_brace.span(),
+                            "Trailing tokens found after object value, expected a comma",
+                        );
+                    }
                     return;
                 }
                 Delimiter::Bracket => {
-                    if self.parse_inline_array(group.span(), group.stream()) {
-                        return;
+                    if rest.is_empty() {
+                        if self.parse_inline_array(group.span(), group.stream()) {
+                            return;
+                        }
+                    } else {
+                        if let [TokenTree::Ident(key), TokenTree::Punct(punct), ..] = rest {
+                            if punct.as_char() == ':' {
+                                self.set_err(
+                                    key.span(),
+                                    "Ident token found after array value, expected a comma",
+                                );
+                                return;
+                            }
+                        }
                     }
                 }
                 Delimiter::None => (),

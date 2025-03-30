@@ -45,12 +45,16 @@ impl Error {
         punc.set_span(self.0.span);
         group.set_span(self.0.span);
 
-        TokenStream::from_iter([
+        let stmt = TokenStream::from_iter([
             TokenTree::Ident(Ident::new("compile_error", self.0.span)),
             punc,
             group,
             TokenTree::Punct(Punct::new(';', Spacing::Alone)),
-        ])
+        ]);
+        TokenStream::from_iter([TokenTree::Group(Group::new(
+            Delimiter::Brace,
+            TokenStream::from_iter([stmt]),
+        ))])
     }
     pub(crate) fn msg(message: &str) -> Error {
         Error(InnerError {
