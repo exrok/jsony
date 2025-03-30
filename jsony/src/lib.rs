@@ -50,7 +50,6 @@
 //! - [JSON template macros](crate::object): Flexibly generate a JSON string directly.
 //! - [Binary format](crate::binary): Encode data in a fast, compact binary representation.
 //! - [Lazy JSON Parsing](crate::drill): Dynamically parse only what you need.
-//! - [Compact loosely typed Value](crate::value::JsonItem): Represent arbitrary JSON values in memory.
 //! - [Flexible encode destination](crate::to_json_into): Encode to a file or stack-allocating buffer.
 
 #![allow(
@@ -76,7 +75,6 @@ use parser::JsonParentContext;
 use parser::MISSING_REQUIRED_FIELDS;
 pub use text_writer::TextWriter;
 pub mod error;
-pub mod value;
 use binary::{Decoder, FromBinaryError};
 use json::DecodeError;
 use json::JsonValueKind;

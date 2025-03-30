@@ -92,7 +92,8 @@ pub fn array(input: TokenStream) -> TokenStream {
 /// ```ignore
 /// let _player: String = jsony::object!{
 ///     name: "Jimmy",
-///     health: 100,`
+///     health: 100,
+/// };
 /// let array_example: String = jsony::array![
 ///     true,
 ///     // Flatten arrays and loops
@@ -104,6 +105,7 @@ pub fn array(input: TokenStream) -> TokenStream {
 ///         other => other,
 ///     }
 /// ];
+///
 /// println!("array_example:\n{array_example}")
 ///
 /// let map: std::collections::BTreeMap::<&str, u32> = [
@@ -126,6 +128,7 @@ pub fn array(input: TokenStream) -> TokenStream {
 ///     @[if let Some(data) = value]
 ///     "data-len": data.len()
 /// };
+///
 /// println!("object_example:\n{object_example}")
 /// ```
 #[proc_macro]
