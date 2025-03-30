@@ -112,14 +112,23 @@ fn main() {
         codegen::derive(tokens!());
     }
     util::print_pretty_and_copy(codegen::derive(tokens! {
-
-    #[derive(Debug, Jsony, PartialEq, Eq)]
-    #[jsony(ignore_tag_adjacent_fields)]
-    enum IgnoringWithString {
-        Tuple(u32),
-        Struct { value: u32 },
-        Stringly,
-    }
-
-        }));
+        #[derive(Debug, PartialEq, Jsony)]
+        #[jsony(Binary)]
+        #[cfg_attr(feature = "fuzz", derive(Arbitrary))]
+        pub enum TrackUpdateType {
+            NewTrack(NewTrack),
+            FinishTrack,
+            AddEstimate(Estimate),
+            ClassificationChange {
+                classification: Option<Classification>,
+            },
+            AlarmInfoChange {
+                alarm: bool,
+            },
+            FlightInfoChange,
+            DroneAlarmInfoChange {
+                alarm: bool,
+            },
+        }
+    }));
 }

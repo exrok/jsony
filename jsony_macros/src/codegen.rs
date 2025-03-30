@@ -140,7 +140,7 @@ fn bodyless_impl_from(
 }
 fn impl_from_binary(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
     {
-        output.blit_punct(11);
+        output.blit_punct(12);
         {
             let at = output.buf.len();
             output.blit_ident(126);
@@ -223,7 +223,7 @@ fn impl_from_json_field_visitor(
 }
 fn impl_from_json(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
     {
-        output.blit_punct(11);
+        output.blit_punct(12);
         {
             let at = output.buf.len();
             output.blit_ident(126);
@@ -267,7 +267,7 @@ fn impl_to_binary(
 ) -> Result<(), Error> {
     let any_generics = !target.generics.is_empty();
     {
-        output.blit_punct(11);
+        output.blit_punct(12);
         {
             let at = output.buf.len();
             output.blit_ident(126);
@@ -334,7 +334,7 @@ fn impl_to_json(
 ) -> Result<(), Error> {
     let any_generics = !target.generics.is_empty();
     {
-        output.blit_punct(11);
+        output.blit_punct(12);
         {
             let at = output.buf.len();
             output.blit_ident(126);
@@ -977,11 +977,11 @@ fn with_injected_closure_arg_type(out: &mut RustWriter, attr_value: &[Tok], ty: 
     if let [Tok::Punct(bar1), Tok::Ident(binding), Tok::Punct(bar2), rest @ ..] = attr_value {
         if bar1.as_char() == '|' && bar2.as_char() == '|' {
             {
-                out.blit_punct(12);
+                out.blit_punct(11);
                 out.buf.push(TokenTree::from(binding.clone()));
                 out.blit(12, 2);
                 out.buf.extend_from_slice(ty);
-                out.blit_punct(12);
+                out.blit_punct(11);
                 out.buf.extend_from_slice(rest);
             };
             return;
@@ -3371,7 +3371,7 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                                 };
                                 out.blit_punct(0);
                                 {
-                                    for field in variant.fields {
+                                    for (i, field) in variant.fields.iter().enumerate() {
                                         encode_binary_field(
                                             out,
                                             ctx,
@@ -3599,7 +3599,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     let ts = rust_writer.split_off_stream(0);
     Ok({
         let len = (&mut rust_writer).buf.len();
-        (&mut rust_writer).blit_punct(11);
+        (&mut rust_writer).blit_punct(12);
         {
             let at = (&mut rust_writer).buf.len();
             (&mut rust_writer).blit_ident(18);

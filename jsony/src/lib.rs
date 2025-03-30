@@ -558,6 +558,83 @@ pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, JsonError> {
     )
 }
 
+#[inline]
+pub fn iter_from_json_bytes<'a, T: FromJson<'a>>(
+    json: &'a [u8],
+) -> impl Iterator<Item = Result<T, JsonError>> + 'a {
+    let mut parser: Option<Parser> = None;
+    std::iter::from_fn(move || {
+        let parser = match &mut parser {
+            Some(parser) => parser,
+            None => {
+                parser = Some(Parser::new(
+                    match std::str::from_utf8(json) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            return Some(Err(JsonError::new(&INVALID_UTF8, Some(err.to_string()))));
+                        }
+                    },
+                    JsonParserConfig {
+                        recursion_limit: 128,
+                        allow_trailing_commas: false,
+                        allow_comments: false,
+                        allow_unquoted_field_keys: false,
+                        allow_trailing_data: true,
+                    },
+                ));
+                parser.as_mut().unwrap()
+            }
+        };
+        let mut value = std::mem::MaybeUninit::<T>::uninit();
+        if parser.at.eat_whitespace().is_none() {
+            return None;
+        }
+        match unsafe {
+            T::emplace_from_json(NonNull::new_unchecked(value.as_mut_ptr()).cast(), parser)
+        } {
+            Ok(()) => return Some(Ok(unsafe { value.assume_init() })),
+            Err(err) => {
+                let error = JsonError::extract(err, parser);
+                Some(Err(error))
+            }
+        }
+    })
+}
+
+#[inline]
+pub fn iter_from_json<'a, T: FromJson<'a>>(
+    json: &'a str,
+) -> impl Iterator<Item = Result<T, JsonError>> + 'a {
+    let mut parser = Parser::new(
+        json,
+        JsonParserConfig {
+            recursion_limit: 128,
+            allow_trailing_commas: false,
+            allow_comments: false,
+            allow_unquoted_field_keys: false,
+            allow_trailing_data: true,
+        },
+    );
+    std::iter::from_fn(move || {
+        let mut value = std::mem::MaybeUninit::<T>::uninit();
+        if parser.at.eat_whitespace().is_none() {
+            return None;
+        }
+        match unsafe {
+            T::emplace_from_json(
+                NonNull::new_unchecked(value.as_mut_ptr()).cast(),
+                &mut parser,
+            )
+        } {
+            Ok(()) => return Some(Ok(unsafe { value.assume_init() })),
+            Err(err) => {
+                let error = JsonError::extract(err, &mut parser);
+                Some(Err(error))
+            }
+        }
+    })
+}
+
 static INVALID_UTF8: DecodeError = DecodeError {
     message: "Invalid UTF-8",
 };
@@ -586,10 +663,7 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
             panic!("jsony: 'json_comments' feature is not enabled but is required for `allow_comments`.")
         }
         match unsafe { func(value, &mut parser) } {
-            Ok(()) => {
-                let _ = parser.at.peek();
-                Ok(parser.at.ctx.input.len() == parser.at.index || config.allow_trailing_data)
-            }
+            Ok(()) => Ok(config.allow_trailing_data || parser.at.eat_whitespace().is_none()),
             Err(err) => Err(JsonError::extract(err, &mut parser)),
         }
     }

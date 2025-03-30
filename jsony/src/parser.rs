@@ -6,7 +6,7 @@ use crate::__internal::ObjectSchemaInner;
 use crate::json::DecodeError;
 use crate::strings::{skip_json_string_and_eq, skip_json_string_and_validate};
 use crate::text::Ctx;
-use crate::{FromJson, JsonParserConfig};
+use crate::{FromJson, JsonError, JsonParserConfig};
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Peek(u8);
@@ -1234,6 +1234,19 @@ impl<'j> Parser<'j> {
                 Some(&*(text as *const str))
             } else {
                 None
+            }
+        }
+    }
+
+    pub fn next_value<T: FromJson<'j>>(&mut self) -> Option<Result<T, JsonError>> {
+        if self.at.eat_whitespace().is_none() {
+            return None;
+        }
+        match T::decode_json(self) {
+            Ok(value) => Some(Ok(value)),
+            Err(err) => {
+                let error = JsonError::extract(err, self);
+                Some(Err(error))
             }
         }
     }

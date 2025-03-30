@@ -1855,7 +1855,7 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                             [for (i, field) in variant.fields.iter().enumerate() { splat!(out; [#field.name]: [#ctx.temp[i]],) }]
                         } => {
                             encoder.push([#Literal::u8_unsuffixed(i as u8)]);
-                            [for field in variant.fields {
+                            [for (i, field) in variant.fields.iter().enumerate() {
                                 encode_binary_field(out, ctx, field, &|out| splat!{out; [#ctx.temp[i]]})
                             }]
                         }}
