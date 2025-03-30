@@ -1,13 +1,13 @@
 [package]
 name = "jsony_macros"
-version = "0.0.2"
+version = "0.1.0"
 edition = "2021"
 authors = ["Thomas Dagenais <exrok@i64.dev>"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/exrok/jsony"
 description = "proc-macro crate for jsony"
-rust-version = "1.82"
+rust-version = "1.84"
 
 [dependencies]
 

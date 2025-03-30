@@ -6,8 +6,7 @@ An **experimental** fast compiling serialization and deserialization rust librar
 [![Crates.io](https://img.shields.io/docsrs/jsony?style=flat-square)](https://docs.rs/jsony/latest/jsony/)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
-**WARNING:** Jsony is currently only a prototype, makes extensive use of unsafe and lacks extensive testing.
-It is not recommended to be used for external facing systems at this time.
+**WARNING:** Jsony is currently in early development and makes extensive use of unsafe.
 
 ## Features
 
