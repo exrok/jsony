@@ -88,7 +88,7 @@ impl<'a> IntoTextWriter<'a> for &'a mut [MaybeUninit<u8>] {
     }
 }
 
-impl<'a> Default for TextWriter<'a> {
+impl Default for TextWriter<'_> {
     fn default() -> Self {
         Self::new()
     }
@@ -229,6 +229,10 @@ impl<'a> TextWriter<'a> {
         // is for it to start empty, and we only append utf-8, the vec
         // is guaranteed to be utf-8
         unsafe { String::from_utf8_unchecked(self.buffer.owned_into_vec()) }
+    }
+
+    pub fn as_str(&self) -> &str {
+        unsafe { std::str::from_utf8_unchecked(self.buffer.buffer_slice()) }
     }
 
     pub fn buffer_slice(&self) -> &str {

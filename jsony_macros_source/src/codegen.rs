@@ -449,9 +449,6 @@ fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) -> Result
         }
     } else {
         splat! { out; [~&ctx.crate_path]::__internal::erased_emplace_from_json::<#[#ctx.lifetime], [~field.ty]>() }
-        // splat! { out; [~&ctx.crate_path]::__internal::erase(
-        //     <[~field.ty] as [ctx.FromJson(out)]>::emplace_from_json
-        // ) }
     }
     Ok(())
 }
@@ -1357,7 +1354,7 @@ fn enum_variant_from_json(
                 splat! {
                     out;
                     if !at_content {
-                        return Err(&::jsony::parser::MISSING_CONTENT_TAG)
+                        return Err(&::jsony::error::MISSING_CONTENT_TAG)
                     }
                 }
             }
@@ -1390,7 +1387,7 @@ fn enum_variant_from_json(
                 splat! {
                     out;
                     if !at_content {
-                        return Err(&::jsony::parser::MISSING_CONTENT_TAG)
+                        return Err(&::jsony::error::MISSING_CONTENT_TAG)
                     }
                 }
             }

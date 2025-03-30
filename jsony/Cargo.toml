@@ -9,7 +9,7 @@ repository = "https://github.com/exrok/jsony"
 description = "An experimental fast compiling serialization and deserialization libary for JSON like formats."
 keywords = ["serialization"]
 categories = ["encoding"]
-rust-version = "1.82"
+rust-version = "1.84"
 
 [dependencies]
 jsony_macros = { path = "../jsony_macros", optional = true }

@@ -1,5 +1,23 @@
-// #[cfg(test)]
-// mod tests;
+//! # Lower level JSON utilities and definitions
+//!
+//! ## Example
+//! ```rust
+//! use jsony::json;
+//! let mut buffer = jsony::TextWriter::new();
+//! {
+//!     let mut object = json::ObjectWriter::new(&mut buffer);
+//!     object.key("ten").value(&true);
+//!
+//!     let mut array = object.key("list").array();
+//!     array.push(&0u32);
+//!     array.extend(&[true, false]);
+//! }
+//! assert_eq!(
+//!     buffer.as_str(),
+//!     r#"{"ten":true,"list":[0,true,false]}"#
+//! );
+//!
+//! ```
 use crate::{
     parser::InnerParser, text::FromText, text_writer::TextWriter, FromJson, RawJson, ToJson,
 };
@@ -590,7 +608,7 @@ impl ToJson for PathBuf {
 
     fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
         // TODO Should probably make this op in due to lossy nature
-        let path: &Path = &*self;
+        let path: &Path = self;
         path.encode_json__jsony(output)
     }
 }
@@ -1080,7 +1098,7 @@ impl<T: ToJson> ToJson for [T] {
     }
 }
 
-impl<'a, T: ToJson + ToOwned + ?Sized> ToJson for Cow<'a, T> {
+impl<T: ToJson + ToOwned + ?Sized> ToJson for Cow<'_, T> {
     type Kind = T::Kind;
 
     fn encode_json__jsony(&self, output: &mut TextWriter) -> T::Kind {
@@ -1231,40 +1249,56 @@ impl ToJson for bool {
     }
 }
 
+/// JSON Array Helper for constructing a JSON array in a TextWriter.
 pub struct ArrayWriter<'a, 'b> {
     writer: &'a mut TextWriter<'b>,
 }
-impl<'a, 'b> Drop for ArrayWriter<'a, 'b> {
+
+impl Drop for ArrayWriter<'_, '_> {
     fn drop(&mut self) {
         self.writer.end_json_array();
     }
 }
+
 impl<'a, 'b> ArrayWriter<'a, 'b> {
+    /// Create new ArrayWriter appending to the provided TextWriter.
     pub fn new(writer: &'a mut TextWriter<'b>) -> Self {
         writer.start_json_array();
         ArrayWriter { writer }
     }
+
+    /// Construct a reference to an ArrayWriter that will avoid calling the drop handler.
+    /// Useful, when you want the internals of an array with the opening and closing brackets,.
+    /// useful when flattening an array.
     pub fn non_terminating<'k>(value: &'k mut &'a mut TextWriter<'b>) -> &'k mut Self {
         unsafe { std::mem::transmute(value) }
     }
+
+    /// Push a value onto the array via an ValueWriter
     pub fn value_writer<'k>(&'k mut self) -> ValueWriter<'k, 'b> {
         self.writer.smart_array_comma();
         ValueWriter {
             writer: self.writer,
         }
     }
+
+    /// Push a object onto array via an ObjectWriter.
     pub fn object<'k>(&'k mut self) -> ObjectWriter<'k, 'b> {
         self.writer.smart_array_comma();
         ObjectWriter::new(self.writer)
     }
+
+    /// Push a nested array onto array via an ObjectWriter.
     pub fn array<'k>(&'k mut self) -> ArrayWriter<'k, 'b> {
         self.writer.smart_array_comma();
         ArrayWriter::new(self.writer)
     }
+
     #[doc(hidden)]
     pub fn inner_writer<'j>(&'j mut self) -> &'j mut TextWriter<'b> {
         self.writer
     }
+
     pub fn push<'k, Kind: JsonValueKind>(
         &'k mut self,
         a: &(impl ToJson<Kind = Kind> + ?Sized),
@@ -1276,6 +1310,8 @@ impl<'a, 'b> ArrayWriter<'a, 'b> {
             phantom: PhantomData,
         }
     }
+
+    /// Flatten an array implementing ToJson into current array.
     pub fn extend(&mut self, a: &dyn ToJson<Kind = AlwaysArray>) {
         self.writer.smart_array_comma();
         self.writer.join_parent_json_value_with_next();
@@ -1284,10 +1320,12 @@ impl<'a, 'b> ArrayWriter<'a, 'b> {
         self.writer.joining = false;
     }
 }
+
+/// JSON Object Helper for constructing a JSON Object in a TextWriter.
 pub struct ObjectWriter<'a, 'b> {
     writer: &'a mut TextWriter<'b>,
 }
-impl<'a, 'b> Drop for ObjectWriter<'a, 'b> {
+impl Drop for ObjectWriter<'_, '_> {
     fn drop(&mut self) {
         self.writer.end_json_object();
     }
@@ -1337,27 +1375,27 @@ pub struct ValueExtender<'a, 'b, T> {
     phantom: PhantomData<T>,
 }
 
-impl<'a, 'b> Drop for ValueWriter<'a, 'b> {
+impl Drop for ValueWriter<'_, '_> {
     fn drop(&mut self) {
         self.writer.push_str("null");
     }
 }
 
-impl<'a, 'b> ValueExtender<'a, 'b, AlwaysObject> {
+impl ValueExtender<'_, '_, AlwaysObject> {
     pub fn extend(&mut self, value: &dyn ToJson<Kind = AlwaysObject>) {
         self.writer.join_object_with_next_value();
         value.encode_json__jsony(self.writer);
     }
 }
 
-impl<'a, 'b> ValueExtender<'a, 'b, AlwaysArray> {
+impl ValueExtender<'_, '_, AlwaysArray> {
     pub fn extend(&mut self, value: &dyn ToJson<Kind = AlwaysArray>) {
         self.writer.join_array_with_next_value();
         value.encode_json__jsony(self.writer);
     }
 }
 
-impl<'a, 'b> ValueExtender<'a, 'b, AlwaysString> {
+impl ValueExtender<'_, '_, AlwaysString> {
     pub fn extend(&mut self, value: &dyn ToJson<Kind = AlwaysString>) {
         self.writer.join_string_with_next_value();
         value.encode_json__jsony(self.writer);

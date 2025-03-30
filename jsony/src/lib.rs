@@ -72,9 +72,11 @@ mod third_party;
 
 pub use byte_writer::BytesWriter;
 use parser::JsonParentContext;
-use parser::MISSING_REQUIRED_FIELDS;
 pub use text_writer::TextWriter;
+
+/// Error definitions
 pub mod error;
+
 use binary::{Decoder, FromBinaryError};
 use json::DecodeError;
 use json::JsonValueKind;
@@ -460,7 +462,7 @@ impl std::fmt::Display for JsonError {
                 write!(f, " @ key {:?}", key)?;
             }
             JsonParentContext::Schema { schema, mask } => {
-                if std::ptr::eq(self.inner.error, &MISSING_REQUIRED_FIELDS) {
+                if std::ptr::eq(self.inner.error, &crate::error::MISSING_REQUIRED_FIELDS) {
                     write!(f, ": ")?;
                     let mut first = true;
                     for (index, field) in schema.fields.iter().enumerate() {
@@ -542,7 +544,6 @@ impl Default for JsonParserConfig {
 /// - There is a default recursion limit for parsing.
 ///
 /// For more flexible parsing options, see `from_json_with_config`.
-#[inline]
 pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, JsonError> {
     from_json_with_config(
         json,
@@ -556,94 +557,22 @@ pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, JsonError> {
     )
 }
 
-#[inline]
-pub fn iter_from_json_bytes<'a, T: FromJson<'a>>(
-    json: &'a [u8],
-) -> impl Iterator<Item = Result<T, JsonError>> + 'a {
-    let mut parser: Option<Parser> = None;
-    std::iter::from_fn(move || {
-        let parser = match &mut parser {
-            Some(parser) => parser,
-            None => {
-                parser = Some(Parser::new(
-                    match std::str::from_utf8(json) {
-                        Ok(value) => value,
-                        Err(err) => {
-                            return Some(Err(JsonError::new(&INVALID_UTF8, Some(err.to_string()))));
-                        }
-                    },
-                    JsonParserConfig {
-                        recursion_limit: 128,
-                        allow_trailing_commas: false,
-                        allow_comments: false,
-                        allow_unquoted_field_keys: false,
-                        allow_trailing_data: true,
-                    },
-                ));
-                parser.as_mut().unwrap()
-            }
-        };
-        let mut value = std::mem::MaybeUninit::<T>::uninit();
-        if parser.at.eat_whitespace().is_none() {
-            return None;
-        }
-        match unsafe {
-            T::emplace_from_json(NonNull::new_unchecked(value.as_mut_ptr()).cast(), parser)
-        } {
-            Ok(()) => return Some(Ok(unsafe { value.assume_init() })),
-            Err(err) => {
-                let error = JsonError::extract(err, parser);
-                Some(Err(error))
-            }
-        }
-    })
-}
-
-#[inline]
-pub fn iter_from_json<'a, T: FromJson<'a>>(
-    json: &'a str,
-) -> impl Iterator<Item = Result<T, JsonError>> + 'a {
-    let mut parser = Parser::new(
-        json,
-        JsonParserConfig {
-            recursion_limit: 128,
-            allow_trailing_commas: false,
-            allow_comments: false,
-            allow_unquoted_field_keys: false,
-            allow_trailing_data: true,
-        },
-    );
-    std::iter::from_fn(move || {
-        let mut value = std::mem::MaybeUninit::<T>::uninit();
-        if parser.at.eat_whitespace().is_none() {
-            return None;
-        }
-        match unsafe {
-            T::emplace_from_json(
-                NonNull::new_unchecked(value.as_mut_ptr()).cast(),
-                &mut parser,
-            )
-        } {
-            Ok(()) => return Some(Ok(unsafe { value.assume_init() })),
-            Err(err) => {
-                let error = JsonError::extract(err, &mut parser);
-                Some(Err(error))
-            }
-        }
-    })
-}
-
-static INVALID_UTF8: DecodeError = DecodeError {
-    message: "Invalid UTF-8",
-};
-
-#[inline]
+/// Parses a value implementing `FromJson` from a byte of slice of JSON.
+///
+/// See [from_json]
 pub fn from_json_bytes<'a, T: FromJson<'a>>(json: &'a [u8]) -> Result<T, JsonError> {
     let json = std::str::from_utf8(json)
         .map_err(|err| JsonError::new(&INVALID_UTF8, Some(err.to_string())))?;
     from_json(json)
 }
 
+static INVALID_UTF8: DecodeError = DecodeError {
+    message: "Invalid UTF-8",
+};
+
+/// Parses a value implementing `FromJson` from a string with a custom parser configuration.
+///
+/// See [from_json] and [JsonParserConfig].
 #[inline]
 pub fn from_json_with_config<'a, T: FromJson<'a>>(
     json: &'a str,

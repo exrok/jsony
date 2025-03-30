@@ -110,8 +110,9 @@ impl<'a> FieldVisitor<'a> for DynamicFieldDecoder<'a> {
 }
 
 use crate::{
+    error::{DUPLICATE_FIELD, MISSING_REQUIRED_FIELDS},
     json::{FieldVisitor, ParserWithBorrowedKey},
-    parser::{JsonParentContext, Parser, DUPLICATE_FIELD, MISSING_REQUIRED_FIELDS},
+    parser::{JsonParentContext, Parser},
 };
 
 type DecodeFn<'a> = unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>;

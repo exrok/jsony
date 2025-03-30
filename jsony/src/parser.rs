@@ -1,3 +1,4 @@
+use crate::error::*;
 use std::borrow::Cow;
 use std::fmt;
 use std::ops::Range;
@@ -82,7 +83,7 @@ pub struct Parser<'j> {
     pub scratch: Vec<u8>,
 }
 
-impl<'j> fmt::Debug for Parser<'j> {
+impl fmt::Debug for Parser<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
@@ -144,24 +145,6 @@ static EXPECTED_SOME_IDENT: DecodeError = DecodeError {
     message: "Expected some ident",
 };
 
-pub static UNKNOWN_VARIANT: DecodeError = DecodeError {
-    message: "Unknown enum variant",
-};
-
-pub static DUPLICATE_FIELD: DecodeError = DecodeError {
-    message: "Duplicate field",
-};
-pub static RECURSION_LIMIT_EXCEEDED: DecodeError = DecodeError {
-    message: "Recursion limit exceeded",
-};
-
-pub static MISSING_REQUIRED_FIELDS: DecodeError = DecodeError {
-    message: "Missing required fields",
-};
-pub static MISSING_CONTENT_TAG: DecodeError = DecodeError {
-    message: "Missing content tag",
-};
-
 fn extract_numeric_literal(
     bytes: &[u8],
     mut index: usize,
@@ -187,10 +170,10 @@ fn extract_numeric_literal(
         index += 1;
     }
 
-    return Ok((
+    Ok((
         unsafe { std::str::from_utf8_unchecked(&bytes[mark..index]) },
         index,
-    ));
+    ))
 }
 fn is_escape(ch: u8) -> bool {
     ch == b'"' || ch == b'\\' || ch < 0x20
@@ -299,7 +282,7 @@ impl<'j> InnerParser<'j> {
                         if self.config.recursion_limit < 0 {
                             return Err(&RECURSION_LIMIT_EXCEEDED);
                         }
-                        return self.read_seen_unquoted_object_key().map(Some);
+                        self.read_seen_unquoted_object_key().map(Some)
                     } else {
                         Err(&KEY_MUST_BE_A_STRING)
                     }
@@ -482,7 +465,7 @@ impl<'j> InnerParser<'j> {
                         }
                         Some(_) => {
                             if self.config.allow_unquoted_field_keys {
-                                return self.read_seen_unquoted_object_key().map(Some);
+                                self.read_seen_unquoted_object_key().map(Some)
                             } else {
                                 Err(&KEY_MUST_BE_A_STRING)
                             }

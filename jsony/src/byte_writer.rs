@@ -29,7 +29,7 @@ pub struct BytesWriter<'a> {
     backing: Backing<'a>,
 }
 
-impl<'a> Default for BytesWriter<'a> {
+impl Default for BytesWriter<'_> {
     /// A empty BytesWriter backed by an owned buffer.
     fn default() -> Self {
         Self::new()
@@ -64,7 +64,7 @@ impl<'a> From<&'a mut Vec<u8>> for BytesWriter<'a> {
     }
 }
 
-impl<'a> Drop for BytesWriter<'a> {
+impl Drop for BytesWriter<'_> {
     fn drop(&mut self) {
         if matches!(self.backing, Backing::Borrowed { .. }) {
             return;
@@ -253,14 +253,14 @@ impl<'a> BytesWriter<'a> {
         let capacity = this.capacity;
         match &this.backing {
             Backing::Owned => {
-                return Cow::Owned(unsafe {
+                Cow::Owned(unsafe {
                     String::from_utf8_unchecked(Vec::from_raw_parts(data, len, capacity))
-                });
+                })
             }
             Backing::Borrowed { .. } => {
-                return Cow::Borrowed(unsafe {
+                Cow::Borrowed(unsafe {
                     std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len))
-                });
+                })
             }
             _ => {
                 // Safety: We haven't dropped it yet nor will use any of it's internals
@@ -280,10 +280,10 @@ impl<'a> BytesWriter<'a> {
         let capacity = this.capacity;
         match &this.backing {
             Backing::Owned => {
-                return Cow::Owned(unsafe { Vec::from_raw_parts(data, len, capacity) });
+                Cow::Owned(unsafe { Vec::from_raw_parts(data, len, capacity) })
             }
             Backing::Borrowed { .. } => {
-                return Cow::Borrowed(unsafe { std::slice::from_raw_parts(data, len) });
+                Cow::Borrowed(unsafe { std::slice::from_raw_parts(data, len) })
             }
             _ => {
                 // Safety: We haven't dropped it yet nor will use any of it's internals
@@ -534,7 +534,7 @@ unsafe fn safe_realloc(ptr: *mut u8, capacity: usize, new_capacity: usize) -> *m
     data
 }
 
-impl<'a> fmt::Write for BytesWriter<'a> {
+impl fmt::Write for BytesWriter<'_> {
     #[inline]
     fn write_str(&mut self, s: &str) -> fmt::Result {
         BytesWriter::push_bytes(self, s.as_bytes());
@@ -542,5 +542,5 @@ impl<'a> fmt::Write for BytesWriter<'a> {
     }
 }
 
-unsafe impl<'a> Send for BytesWriter<'a> {}
-unsafe impl<'a> Sync for BytesWriter<'a> {}
+unsafe impl Send for BytesWriter<'_> {}
+unsafe impl Sync for BytesWriter<'_> {}

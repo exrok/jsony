@@ -480,13 +480,13 @@ unsafe impl<T: ToBinary> ToBinary for Vec<T> {
     }
 }
 
-unsafe impl<'a, T: ToBinary + ?Sized> ToBinary for &'a mut T {
+unsafe impl<T: ToBinary + ?Sized> ToBinary for &mut T {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         (**self).encode_binary(encoder)
     }
 }
 
-unsafe impl<'a, T: ToBinary + ?Sized> ToBinary for &'a T {
+unsafe impl<T: ToBinary + ?Sized> ToBinary for &T {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         (**self).encode_binary(encoder)
     }
@@ -596,7 +596,7 @@ mod test {
     struct Tester<'a> {
         buffer: BytesWriter<'a>,
     }
-    impl<'k> Tester<'k> {
+    impl Tester<'_> {
         #[track_caller]
         fn assert_roundtrip<'a, T: FromBinary<'a> + ToBinary + PartialEq + Debug>(
             &'a mut self,
