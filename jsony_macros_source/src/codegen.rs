@@ -214,12 +214,12 @@ fn impl_from_json_field_visitor(
             Ident::new("FromJsonFieldVisitor", Span::call_site()),
             ctx
         )] {
-            type Vistor = [ty(output)];
+            type Visitor = [ty(output)];
 
             unsafe fn new_field_visitor(
                 dst: ::std::ptr::NonNull<()>,
                 parser: & [~&ctx.crate_path]::parser::Parser<#[#ctx.lifetime]>
-            ) -> Self::Vistor [
+            ) -> Self::Visitor [
                 output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }

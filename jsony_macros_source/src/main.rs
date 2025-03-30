@@ -48,12 +48,16 @@ impl Error {
         punc.set_span(self.0.span);
         group.set_span(self.0.span);
 
-        TokenStream::from_iter([
+        let stmt = TokenStream::from_iter([
             TokenTree::Ident(Ident::new("compile_error", self.0.span)),
             punc,
             group,
             TokenTree::Punct(Punct::new(';', Spacing::Alone)),
-        ])
+        ]);
+        TokenStream::from_iter([TokenTree::Group(Group::new(
+            Delimiter::Brace,
+            TokenStream::from_iter([stmt]),
+        ))])
     }
     #[cold]
     #[inline(never)]
@@ -111,24 +115,10 @@ fn main() {
         template::object(tokens!());
         codegen::derive(tokens!());
     }
-    util::print_pretty_and_copy(codegen::derive(tokens! {
-        #[derive(Debug, PartialEq, Jsony)]
-        #[jsony(Binary)]
-        #[cfg_attr(feature = "fuzz", derive(Arbitrary))]
-        pub enum TrackUpdateType {
-            NewTrack(NewTrack),
-            FinishTrack,
-            AddEstimate(Estimate),
-            ClassificationChange {
-                classification: Option<Classification>,
-            },
-            AlarmInfoChange {
-                alarm: bool,
-            },
-            FlightInfoChange,
-            DroneAlarmInfoChange {
-                alarm: bool,
-            },
-        }
+    util::print_pretty(template::object(tokens! {
+        data: [
+            "asdf"
+        ],
+        what: "asdf"
     }));
 }

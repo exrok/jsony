@@ -38,7 +38,7 @@ impl<'a, 'b> ParserWithBorrowedKey<'a, 'b> {
     }
 }
 
-pub trait FieldVistor<'a> {
+pub trait FieldVisitor<'a> {
     fn visit(
         &mut self,
         borrowed: ParserWithBorrowedKey<'a, '_>,
@@ -59,7 +59,7 @@ pub struct FuncFieldVisitor<'a> {
     ptr: NonNull<()>,
 }
 
-impl<'a> FieldVistor<'a> for FuncFieldVisitor<'a> {
+impl<'a> FieldVisitor<'a> for FuncFieldVisitor<'a> {
     fn visit(
         &mut self,
         borrowed: ParserWithBorrowedKey<'a, '_>,
@@ -79,9 +79,9 @@ where
     K: FromText<'a> + Ord + Eq,
     T: FromJson<'a>,
 {
-    type Vistor = FuncFieldVisitor<'a>;
+    type Visitor = FuncFieldVisitor<'a>;
 
-    unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Vistor {
+    unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Visitor {
         ptr.cast::<Self>().write(Self::new());
         // this common pattern can be generlized safely once we get safe transmute
         FuncFieldVisitor {
@@ -107,9 +107,9 @@ where
     K: FromText<'a> + Hash + Eq,
     T: FromJson<'a>,
 {
-    type Vistor = FuncFieldVisitor<'a>;
+    type Visitor = FuncFieldVisitor<'a>;
 
-    unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Vistor {
+    unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Visitor {
         ptr.cast::<Self>().write(Self::new());
         // this common pattern can be generlized safely once we get safe transmute
         FuncFieldVisitor {
@@ -135,9 +135,9 @@ where
     K: FromText<'a>,
     T: FromJson<'a>,
 {
-    type Vistor = FuncFieldVisitor<'a>;
+    type Visitor = FuncFieldVisitor<'a>;
 
-    unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Vistor {
+    unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Visitor {
         ptr.cast::<Self>().write(Self::new());
         // this common pattern can be generlized safely once we get safe transmute
         FuncFieldVisitor {
@@ -159,14 +159,14 @@ where
 }
 
 /// # Safety
-/// If the Self::Vistor complete method returns `Ok(())` then `Self` must be have
+/// If the Self::Visitor complete method returns `Ok(())` then `Self` must be have
 /// initialized within the given ptr.
 pub unsafe trait FromJsonFieldVisitor<'a> {
-    type Vistor: FieldVistor<'a>;
+    type Visitor: FieldVisitor<'a>;
     /// # Safety
     /// dest, must be a pointer to Self although possilibly uninitialized
     /// and be valid for writes.
-    unsafe fn new_field_visitor(ptr: NonNull<()>, parser: &Parser<'a>) -> Self::Vistor;
+    unsafe fn new_field_visitor(ptr: NonNull<()>, parser: &Parser<'a>) -> Self::Visitor;
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -1,5 +1,5 @@
 use std::{marker::PhantomData, ptr::NonNull};
-pub struct NestedDynamicFieldDecoder<'a, T: FieldVistor<'a>> {
+pub struct NestedDynamicFieldDecoder<'a, T: FieldVisitor<'a>> {
     pub inner: T,
     pub destination: NonNull<()>,
     pub schema: ObjectSchema<'a>,
@@ -41,7 +41,7 @@ pub struct SkipFieldVisitor<F> {
     pub visitor: F,
 }
 
-impl<'a, F: FieldVistor<'a>> FieldVistor<'a> for SkipFieldVisitor<F> {
+impl<'a, F: FieldVisitor<'a>> FieldVisitor<'a> for SkipFieldVisitor<F> {
     fn complete(&mut self) -> Result<(), &'static DecodeError> {
         self.visitor.complete()
     }
@@ -60,7 +60,7 @@ impl<'a, F: FieldVistor<'a>> FieldVistor<'a> for SkipFieldVisitor<F> {
     }
 }
 
-impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
+impl<'a> FieldVisitor<'a> for DynamicFieldDecoder<'a> {
     fn complete(&mut self) -> Result<(), &'static DecodeError> {
         if self.bitset & self.required != self.required {
             return Err(&DecodeError {
@@ -110,7 +110,7 @@ impl<'a> FieldVistor<'a> for DynamicFieldDecoder<'a> {
 }
 
 use crate::{
-    json::{FieldVistor, ParserWithBorrowedKey},
+    json::{FieldVisitor, ParserWithBorrowedKey},
     parser::{JsonParentContext, Parser, DUPLICATE_FIELD, MISSING_REQUIRED_FIELDS},
 };
 
@@ -157,7 +157,7 @@ impl<'a> ObjectSchema<'a> {
         &self,
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
-        mut unused: Option<&mut dyn FieldVistor<'a>>,
+        mut unused: Option<&mut dyn FieldVisitor<'a>>,
     ) -> Result<(), &'static DecodeError> {
         let all = (1u64 << self.inner.fields.len()) - 1;
         let mut bitset = 0;
@@ -249,8 +249,8 @@ impl<'a> ObjectSchema<'a> {
                 drop(dest.byte_add(field.offset));
             }
         }
-        if let Some(vistor) = unused {
-            vistor.destroy()
+        if let Some(visitor) = unused {
+            visitor.destroy()
         }
         Err(error)
     }

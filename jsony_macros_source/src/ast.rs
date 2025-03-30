@@ -1116,7 +1116,7 @@ pub fn parse_tuple_fields<'a>(
             }
         };
 
-        // Remove visiblity to store just the type
+        // Remove visibility to store just the type
         if let TokenTree::Ident(ident) = &fields[i] {
             if ident.to_string() == "pub" {
                 i += 1;

@@ -157,10 +157,8 @@ impl Codegen {
                             self.eof(Span::call_site());
                             return;
                         }) else {
-                            {
-                                self.set_err(ch.span(), "Expected [] attr");
-                                return;
-                            };
+                            self.set_err(ch.span(), "Expected [] attr");
+                            return;
                         };
                         let contents: Vec<TokenTree> = group.stream().into_iter().collect();
                         if let Some(TokenTree::Ident(ident)) = contents.first() {
@@ -178,13 +176,11 @@ impl Codegen {
                         let contents = &value.to_string();
                         if contents == "in" {
                             if !first_token || !top_most {
-                                {
-                                    self.set_err(
-                                        value.span(),
-                                        "in keyword only allowed at beginning of template macro",
-                                    );
-                                    return;
-                                }
+                                self.set_err(
+                                    value.span(),
+                                    "in keyword only allowed at beginning of template macro",
+                                );
+                                return;
                             }
                             let mut toks: Vec<TokenTree> = Vec::new();
                             loop {
@@ -248,26 +244,20 @@ impl Codegen {
                     if let TokenTree::Ident(ident) = &t {
                         #[allow(clippy::cmp_owned)]
                         if ident.to_string() != "for" {
-                            {
-                                self.set_err(col.span(), "Unexpected 1");
-                                return;
-                            }
+                            self.set_err(col.span(), "Unexpected 1");
+                            return;
                         } else {
                             if !first_token {
-                                {
-                                    self.set_err(
-                                        col.span(),
-                                        "For comprehensions must be in there own object",
-                                    );
-                                    return;
-                                }
+                                self.set_err(
+                                    col.span(),
+                                    "For comprehensions must be in there own object",
+                                );
+                                return;
                             }
                         }
                     } else {
-                        {
-                            self.set_err(col.span(), "Unexpected 2");
-                            return;
-                        }
+                        self.set_err(col.span(), "Unexpected 2");
+                        return;
                     }
                     value_tokens.clear();
                     value_tokens.push(t);
@@ -308,10 +298,8 @@ impl Codegen {
                 match &t {
                     TokenTree::Group(g) => {
                         if g.delimiter() != Delimiter::Bracket {
-                            {
-                                self.set_err(g.span(), "Expected [key], key or \"key\".");
-                                return;
-                            }
+                            self.set_err(g.span(), "Expected [key], key or \"key\".");
+                            return;
                         }
                         self.dyn_key(g.span(), g.stream());
                     }
@@ -409,16 +397,12 @@ impl Codegen {
             let byte = self.text.as_bytes()[0];
             match byte {
                 b':' => {
-                    {
-                        out.buf.push(TokenTree::from(self.builder.clone()));
-                        out.blit(401, 4);
-                    };
+                    out.buf.push(TokenTree::from(self.builder.clone()));
+                    out.blit(401, 4);
                 }
                 b',' => {
-                    {
-                        out.buf.push(TokenTree::from(self.builder.clone()));
-                        out.blit(371, 4);
-                    };
+                    out.buf.push(TokenTree::from(self.builder.clone()));
+                    out.blit(371, 4);
                 }
                 _ => {
                     {

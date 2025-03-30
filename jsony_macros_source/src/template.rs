@@ -687,7 +687,7 @@ impl Codegen {
                             return;
                         }
                     } else {
-                        // give specific error for common case of forgeting a comma.
+                        // give specific error for common case of forgetting a comma.
                         // in surface rust syntax the following is invalid.
                         if let [TokenTree::Ident(key), TokenTree::Punct(punct), ..] = rest {
                             if punct.as_char() == ':' {

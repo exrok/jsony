@@ -675,12 +675,18 @@ fn structural_replace(
     ];
     let mut iter = tokens.iter();
     let mut output: Vec<u8> = Vec::new();
-    let mut written = 0;
+    let mut written = 0usize;
     loop {
         let mut trial = iter.clone();
         if let Some(mat) = try_match(input_string, &mut trial, &match_entries, &mut vars) {
             iter = trial;
             let start = unsafe { mat.text.as_ptr().offset_from(input_string.as_ptr()) };
+            if (written as usize) >= start as usize {
+                if iter.next().is_none() {
+                    break;
+                }
+                continue;
+            }
             output.extend_from_slice(&input_string.as_bytes()[written..start as usize]);
             written = start as usize + mat.text.len();
             mapper(&mut output, mat);
@@ -693,78 +699,78 @@ fn structural_replace(
     output
 }
 
-#[allow(dead_code, unused)]
-fn replace_text() {
-    let pattern = stringify!(
-        {
-            let at = V_BUFFER.buf.len();
-            V_BUFFER.V_METHOD(V_PARAMS);
-            V_BUFFER.tt_group(V_DELIM, at);
-        };
-    );
-    let pattern = stringify!(TokenTree::from(V_BUFFER.clone()));
-    let input = stringify!(
-        println!("{}", );
-        fn main() {
-            out.blit(567, 4);
-            {
-                let at = out.buf.len();
-                out.blit_ident(115);
-                out.tt_group(Delimiter::Parenthesis, at);
-            };
-            out.blit(571, 4);
-        }
-    );
-    let file = std::fs::read_to_string("/home/user/Projects/git/jsony/jsony_macros/src/codegen.rs")
-        .unwrap();
-    let mut count = 0;
+fn collapse_extra_parens(input: String) -> Vec<u8> {
     let gen = structural_replace(
-        pattern,
-        &file,
-        &[
-            ("V_BUFFER", |x| {
-                matches!(
-                    x.kind,
-                    TokenKind::Ident
-                        | TokenKind::Dot
-                        | TokenKind::OpenParen
-                        | TokenKind::CloseParen
-                )
-            }),
-            ("V_METHOD", |x| x.kind == TokenKind::Ident),
-            ("V_PARAMS", |x| x.kind != TokenKind::CloseParen),
-            ("V_DELIM", |x| {
-                matches!(x.kind, TokenKind::Ident | TokenKind::Colon)
-            }),
-        ],
-        &mut |output,
-              Match {
-                  text,
-                  components: [buffer, method, params, delim],
-              }| {
-            count += 1;
-            println!("{} {}", method.text, params.text);
-            // println!("{:?}", method);
-            // println!("{:?}", params);
-            // println!("{:?}", delim);
-            // write!(
-            //     output,
-            //     "{}.grouped_ident_blit({}, {});",
-            //     components[0].text, components[1].text, components[2].text,
-            // )
-            // .unwrap();
+        stringify!({
+            {
+                V_INNER
+            }
+        }),
+        &input,
+        &[("V_INNER", |x| {
+            x.kind != TokenKind::CloseBrace && x.kind != TokenKind::OpenBrace
+        })],
+        &mut |output, Match { components, .. }| {
+            let _ = write!(output, "{{ {} }}", components[0].text);
             false
         },
     );
-    println!("{}", count);
-    // println!("{}", String::from_utf8(pipe_rustfmt(&gen)).unwrap());
+    let input = String::from_utf8(gen).unwrap();
+    let gen = structural_replace(
+        stringify!({
+            {
+                V_INNER
+            };
+        }),
+        &input,
+        &[("V_INNER", |x| {
+            x.kind != TokenKind::CloseBrace && x.kind != TokenKind::OpenBrace
+        })],
+        &mut |output, Match { components, .. }| {
+            let _ = write!(output, "{{ {} }}", components[0].text);
+            false
+        },
+    );
+    let input = String::from_utf8(gen).unwrap();
+    let gen = structural_replace(
+        "; { V_INNER } }",
+        &input,
+        &[("V_INNER", |x| {
+            x.kind != TokenKind::CloseBrace && x.kind != TokenKind::OpenBrace
+        })],
+        &mut |output, Match { components, .. }| {
+            let _ = write!(output, "; {} }}", components[0].text);
+            false
+        },
+    );
+    let input = String::from_utf8(gen).unwrap();
+    let gen = structural_replace(
+        "V_ST { V_METHOD ( V_ARGS ) } ;",
+        &input,
+        &[
+            ("V_ST", |x| {
+                matches!(x.kind, TokenKind::OpenBrace | TokenKind::Semi)
+            }),
+            ("V_METHOD", |x| {
+                matches!(x.kind, TokenKind::Ident | TokenKind::Dot)
+            }),
+            ("V_ARGS", |x| {
+                !matches!(x.kind, TokenKind::OpenParen | TokenKind::CloseParen)
+            }),
+        ],
+        &mut |output, Match { components, .. }| {
+            let _ = write!(
+                output,
+                "{} {} ( {});",
+                components[0].text, components[1].text, components[2].text
+            );
+            false
+        },
+    );
+    return gen;
 }
 
 fn main() {
-    // flicky();
-    // if true {
-    //     return;
-    // }
     let mut args = std::env::args();
     let _ = args.next();
     let source_crate_path: PathBuf = args.next().unwrap().into();
@@ -782,7 +788,8 @@ fn main() {
     };
     let base_transform = |data: &[u8]| {
         let res = line_by_line_transform(data);
-        apply_replacements(&res)
+        let res = apply_replacements(&res);
+        collapse_extra_parens(String::from_utf8(res).unwrap())
     };
     let output = std::process::Command::new("cargo")
         .args([
@@ -830,4 +837,6 @@ fn main() {
         pipe_rustfmt(&processed[1]),
     )
     .unwrap();
+
+    return;
 }

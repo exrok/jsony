@@ -183,12 +183,12 @@ impl<'a> BytesWriter<'a> {
         if let Backing::Borrowed { .. } = this.backing {
             return this.buffer_slice().into();
         }
-        // Saftey: Unless the backing is `Backing::Borrowed` then the internal
+        // Safety: Unless the backing is `Backing::Borrowed` then the internal
         // buffer is always backed by an internal buffer allocated in the global
         // allocator.
         //
         // One uncertain case is when the buffer has zero capacity. Once,
-        // Vec::into_raw_parts is stablized we switch to constructing empty
+        // Vec::into_raw_parts is stabilized we switch to constructing empty
         // buffers which so that this pattern is blessed.
         unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) }
     }
@@ -200,12 +200,12 @@ impl<'a> BytesWriter<'a> {
     pub fn owned_into_vec(self) -> Vec<u8> {
         let mut this = ManuallyDrop::new(self);
         if let Backing::Owned = this.backing {
-            // Saftey: Unless the backing is `Backing::Borrowed` then the internal
+            // Safety: Unless the backing is `Backing::Borrowed` then the internal
             // buffer is always backed by an internal buffer allocated in the global
             // allocator.
             //
             // One uncertain case is when the buffer has zero capacity. Once,
-            // Vec::into_raw_parts is stablized we switch to constructing empty
+            // Vec::into_raw_parts is stabilized we switch to constructing empty
             // buffers which so that this pattern is blessed.
             unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) }
         } else {
@@ -225,12 +225,12 @@ impl<'a> BytesWriter<'a> {
         let len = this.len;
         let capacity = this.capacity;
         if let Backing::Vec { offset, bytes } = &mut this.backing {
-            // Saftey: Unless the backing is `Backing::Borrowed` then the internal
+            // Safety: Unless the backing is `Backing::Borrowed` then the internal
             // buffer is always backed by an internal buffer allocated in the global
             // allocator.
             //
             // One uncertain case is when the buffer has zero capacity. Once,
-            // Vec::into_raw_parts is stablized we switch to constructing empty
+            // Vec::into_raw_parts is stabilized we switch to constructing empty
             // buffers which so that this pattern is blessed.
             **bytes = unsafe { Vec::from_raw_parts(data, len, capacity) };
             return unsafe {
