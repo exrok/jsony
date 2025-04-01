@@ -337,6 +337,14 @@ unsafe impl<'a> FromJson<'a> for Cow<'a, str> {
     }
 }
 
+impl<'a, T: ToJson + ToOwned + ?Sized> ToJson for Cow<'a, T> {
+    type Kind = T::Kind;
+
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
+        self.as_ref().encode_json__jsony(output)
+    }
+}
+
 unsafe impl<'de, T: FromJson<'de>> FromJson<'de> for Vec<T> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -1098,13 +1106,6 @@ impl<T: ToJson> ToJson for [T] {
     }
 }
 
-impl<T: ToJson + ToOwned + ?Sized> ToJson for Cow<'_, T> {
-    type Kind = T::Kind;
-
-    fn encode_json__jsony(&self, output: &mut TextWriter) -> T::Kind {
-        <T as ToJson>::encode_json__jsony(self.as_ref(), output)
-    }
-}
 impl<T: ToJson + ?Sized> ToJson for Rc<T> {
     type Kind = T::Kind;
 
@@ -1112,6 +1113,7 @@ impl<T: ToJson + ?Sized> ToJson for Rc<T> {
         <T as ToJson>::encode_json__jsony(self, output)
     }
 }
+
 impl<T: ToJson + ?Sized> ToJson for Box<T> {
     type Kind = T::Kind;
 

@@ -368,17 +368,6 @@ unsafe impl ToBinary for String {
     }
 }
 
-unsafe impl ToBinary for Cow<'_, str> {
-    fn encode_binary(&self, encoder: &mut BytesWriter) {
-        self.as_bytes().encode_binary(encoder);
-    }
-}
-
-unsafe impl<'a> FromBinary<'a> for Cow<'a, str> {
-    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
-        Cow::Borrowed(<&'a str>::decode_binary(decoder))
-    }
-}
 unsafe impl ToBinary for str {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         self.as_bytes().encode_binary(encoder);
@@ -620,6 +609,26 @@ unsafe impl<'a> FromBinary<'a> for Duration {
         let secs = u64::decode_binary(decoder);
         let nanos = u32::decode_binary(decoder);
         Duration::new(secs, nanos)
+    }
+}
+
+unsafe impl<'a, T: ToBinary + ToOwned + ?Sized> ToBinary for Cow<'a, T> {
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
+        self.as_ref().encode_binary(encoder)
+    }
+}
+
+// Note we don't implement the blank impl for Cow so that we do the optimized thing
+// for the following. However, we provide a helper todo the owned version
+unsafe impl<'a> FromBinary<'a> for Cow<'a, [u8]> {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        Cow::Borrowed(<&'a [u8]>::decode_binary(decoder))
+    }
+}
+
+unsafe impl<'a> FromBinary<'a> for Cow<'a, str> {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        Cow::Borrowed(<&'a str>::decode_binary(decoder))
     }
 }
 
