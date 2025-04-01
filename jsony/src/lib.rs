@@ -639,7 +639,7 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
 /// let json_string = to_json(&person);
 /// assert_eq!(json_string, r#"{"name":"Alice","age":30}"#);
 /// ```
-pub fn to_json<T: ?Sized + ToJson>(value: &T) -> String {
+pub fn to_json<T: ToJson + ?Sized>(value: &T) -> String {
     let mut buf = TextWriter::new();
     value.encode_json__jsony(&mut buf);
     buf.into_string()
@@ -675,7 +675,10 @@ pub fn to_json<T: ?Sized + ToJson>(value: &T) -> String {
 /// assert_eq!(jsony::to_json_into(&false, writer)?, 5, "returns number of bytes written");
 /// # Ok::<_, std::io::Error>(())
 /// ```
-pub fn to_json_into<'a, T: ToJson, W: IntoTextWriter<'a>>(value: &T, output: W) -> W::Output {
+pub fn to_json_into<'a, T: ToJson + ?Sized, W: IntoTextWriter<'a>>(
+    value: &T,
+    output: W,
+) -> W::Output {
     let mut buffer = W::into_text_writer(output);
     value.encode_json__jsony(&mut buffer);
     W::finish_writing(buffer)
