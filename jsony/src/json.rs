@@ -230,6 +230,10 @@ macro_rules! direct_impl_integer_decode {
     };
 }
 
+direct_impl_integer_decode! {
+    i128, u128, u64, i64, f32, f64, u32, i32, u16, i16, u8, i8, isize, usize
+}
+
 unsafe impl<'a> FromJson<'a> for Box<std::path::Path> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -472,10 +476,6 @@ unsafe impl<'a, T: FromJson<'a>> FromJson<'a> for Option<T> {
             Err(err) => Err(err),
         }
     }
-}
-
-direct_impl_integer_decode! {
-    i128, u128, u64, i64, f32, f64, u32, i32, u16, i16, u8, i8, isize, usize
 }
 
 unsafe impl<'a> FromJson<'a> for bool {

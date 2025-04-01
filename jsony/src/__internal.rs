@@ -154,6 +154,122 @@ impl<'a> ObjectSchema<'a> {
 }
 
 impl<'a> ObjectSchema<'a> {
+    pub unsafe fn decode_with_alias(
+        &self,
+        dest: NonNull<()>,
+        parser: &mut Parser<'a>,
+        mut unused: Option<&mut dyn FieldVisitor<'a>>,
+        alias: &[(usize, &'static str)],
+    ) -> Result<(), &'static DecodeError> {
+        let all = (1u64 << self.inner.fields.len()) - 1;
+        let mut bitset = 0;
+
+        let error = 'with_next_key: {
+            match parser.at.enter_object(&mut parser.scratch) {
+                Ok(Some(mut key)) => {
+                    'key_loop: loop {
+                        'next: {
+                            'unused: {
+                                let (index, field) = 'found: {
+                                    let fields = self.fields();
+                                    for (index, field) in fields.iter().enumerate() {
+                                        if field.name != key {
+                                            continue;
+                                        }
+                                        break 'found (index, field);
+                                    }
+                                    for (index, alias_name) in alias {
+                                        println!("{} {}", alias_name, key);
+                                        if *alias_name != key {
+                                            continue;
+                                        }
+                                        break 'found (*index, &fields[*index]);
+                                    }
+                                    break 'unused;
+                                };
+                                let mask = 1 << index;
+                                if bitset & mask != 0 {
+                                    if let JsonParentContext::None = parser.parent_context {
+                                        parser.parent_context =
+                                            JsonParentContext::ObjectKey(field.name);
+                                    }
+
+                                    break 'with_next_key &DUPLICATE_FIELD;
+                                }
+                                //todo porpotogate error
+                                if let Err(err) =
+                                    (field.decode)(dest.byte_add(field.offset), parser)
+                                {
+                                    if let JsonParentContext::None = parser.parent_context {
+                                        parser.parent_context =
+                                            JsonParentContext::ObjectKey(field.name);
+                                    }
+                                    break 'with_next_key err;
+                                }
+                                bitset |= mask;
+                                break 'next;
+                            }
+                            if let Some(ref mut unused_processor) = unused {
+                                // Safety: Safe since the `key` was provided by the same parses and still
+                                // valid here (since it compiles and wasn't casted to a pointer earlier).
+                                let borrowed = unsafe { ParserWithBorrowedKey::new(key, parser) };
+                                if let Err(err) = unused_processor.visit(borrowed) {
+                                    break 'with_next_key err;
+                                }
+                            } else if let Err(error) = parser.at.skip_value() {
+                                break 'with_next_key error;
+                            }
+                        }
+
+                        match parser.at.object_step(&mut parser.scratch) {
+                            Ok(Some(next_key2)) => {
+                                key = next_key2;
+                                continue 'key_loop;
+                            }
+                            Ok(None) => {
+                                break 'key_loop;
+                            }
+                            Err(err) => break 'with_next_key err,
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => break 'with_next_key err,
+            };
+            let default = (1u64 << self.inner.defaults.len()) - 1;
+            if (bitset | default) & all != all {
+                parser.parent_context = JsonParentContext::Schema {
+                    schema: self.inner,
+                    mask: all & !(bitset | default),
+                };
+                break 'with_next_key &MISSING_REQUIRED_FIELDS;
+            }
+            if let Some(visitor) = &mut unused {
+                if let Err(err) = visitor.complete() {
+                    break 'with_next_key err;
+                }
+            }
+            // todo can optimize
+            for (i, (emplace_default, field)) in
+                self.inner.defaults.iter().zip(self.fields()).enumerate()
+            {
+                if bitset & (1 << i) == 0 {
+                    emplace_default(dest.byte_add(field.offset));
+                }
+            }
+            return Ok(());
+        };
+
+        for (i, (drop, field)) in self.inner.drops.iter().zip(self.fields()).enumerate() {
+            if bitset & (1 << i) != 0 {
+                drop(dest.byte_add(field.offset));
+            }
+        }
+        if let Some(visitor) = unused {
+            visitor.destroy()
+        }
+        Err(error)
+    }
     pub unsafe fn decode(
         &self,
         dest: NonNull<()>,

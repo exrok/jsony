@@ -773,3 +773,24 @@ fn ignore_tag_adjacent_fields() {
         IgnoringWithString::Stringly
     }
 }
+
+#[test]
+fn struct_field_alias() {
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    struct Sys {
+        #[jsony(alias = "james")]
+        alpha: u32,
+        #[jsony(alias = "alan", rename = "greg")]
+        beta: bool,
+    }
+
+    assert_decode_json_eq! {
+        { "alpha": 42, "alan": true },
+        Sys{alpha: 42, beta: true}
+    }
+
+    assert_decode_json_eq! {
+        { "james": 42, "greg": true },
+        Sys{alpha: 42, beta: true}
+    }
+}

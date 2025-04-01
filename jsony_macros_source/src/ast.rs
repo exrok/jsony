@@ -44,6 +44,7 @@ enum FieldAttrInner {
     Via(Via),
     Default(Vec<TokenTree>),
     With(Vec<TokenTree>),
+    Alias(Literal),
 }
 
 #[cfg_attr(feature = "debug", derive(Debug))]
@@ -53,7 +54,25 @@ pub struct FieldAttrs {
 }
 
 impl FieldAttrs {
+    pub fn alias(&self, for_trait: TraitSet) -> Option<&Literal> {
+        let mask = const { 0b1111u64 << (8 * TRAIT_COUNT) };
+        if mask & self.flags == 0 {
+            return None;
+        }
+        for attr in &self.attrs {
+            if attr.enabled & for_trait != 0 {
+                if let FieldAttrInner::Alias(lit) = &attr.inner {
+                    return Some(lit);
+                }
+            }
+        }
+        None
+    }
     pub fn rename(&self, for_trait: TraitSet) -> Option<&Literal> {
+        // ranem is at bottom
+        if self.flags & for_trait as u64 == 0 {
+            return None;
+        }
         for attr in &self.attrs {
             if attr.enabled & for_trait != 0 {
                 if let FieldAttrInner::Rename(lit) = &attr.inner {
@@ -211,6 +230,8 @@ impl<'a> Field<'a> {
     pub const WITH_FROM_JSON_SKIP: u32 = 1u32 << 7;
     pub const WITH_TO_BINARY_SKIP: u32 = 1u32 << 8;
     pub const WITH_FROM_BINARY_SKIP: u32 = 1u32 << 9;
+
+    pub const WITH_FROM_JSON_ALIAS: u32 = 1u32 << 10;
     // pub const WITH_DEFAULT: u32 = 1u32 << 5;
     #[allow(dead_code)]
     pub fn is(&self, flags: u32) -> bool {
@@ -753,6 +774,20 @@ fn parse_single_field_attr(
             // Todo use less error prone mechanism to store this.
             7u64 * TRAIT_COUNT
         }
+        "alias" => {
+            let Some(TokenTree::Literal(alias)) = value.pop() else {
+                throw!("Expected a literal" @ ident.span())
+            };
+            if !value.is_empty() {
+                throw!("Unexpected a single literal" @ ident.span())
+            }
+            attrs.attrs.push(FieldAttr {
+                enabled: trait_set,
+                span: ident.span(),
+                inner: FieldAttrInner::Alias(alias),
+            });
+            8u64 * TRAIT_COUNT
+        }
         _ => throw!("Unknown attr field" @ ident.span()),
     };
     let mask = (trait_set as u64) << offset;
@@ -1073,6 +1108,11 @@ fn flags_from_attr(attr: &Option<&mut FieldAttrs>) -> u32 {
                 FieldAttrInner::Flatten => f |= (enabled & 0b11) << 2,
                 FieldAttrInner::Default(..) => f |= (enabled & 0b11) << 4,
                 FieldAttrInner::Skip(..) => f |= (enabled & 0b1111) << 6,
+                FieldAttrInner::Alias(..) => {
+                    if attr.enabled & FROM_JSON != 0 {
+                        f |= Field::WITH_FROM_JSON_ALIAS;
+                    }
+                }
                 _ => (),
             }
         }

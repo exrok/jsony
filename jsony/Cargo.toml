@@ -22,3 +22,6 @@ default = ["json_comments", "macros"]
 uuid = ["dep:uuid"]
 macros = ["dep:jsony_macros"]
 json_comments = []
+
+[patch.crates-io]
+jsony_macros = { path = "../jsony_macros" }

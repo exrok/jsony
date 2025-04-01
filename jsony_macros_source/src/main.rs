@@ -115,10 +115,15 @@ fn main() {
         template::object(tokens!());
         codegen::derive(tokens!());
     }
-    util::print_pretty(template::object(tokens! {
-        data: [
-            "asdf"
-        ],
-        what: "asdf"
+    util::print_pretty(codegen::derive(tokens! {
+
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    struct Sys {
+        #[jsony(alias = "james")]
+        alpha: u32,
+        #[jsony(alias = "alan", rename = "greg")]
+        beta: bool,
+    }
+
     }));
 }

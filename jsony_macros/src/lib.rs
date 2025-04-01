@@ -175,15 +175,16 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// ## Field Attributes
 /// These are `jsony` attributes that appear above a field inside a struct or enum variant.
 ///
-/// | Format | Supported Traits | Description |
-/// |-------------------|--------|---------------------------------------------------------------------------------|
-/// | `default [= ...]` | `From` | Use `Default::default()` or provided expression if field is missing.
-/// | `flatten`         | `Json` | Flatten the contents of the field into the container it is defined in.
-/// | `rename = "..."`  | `Json` | Use provided string as field name.
-/// | `via = ...`       | All    | Implement conversion through provided trait.
-/// | `skip`            | All    | Omit field while serializing, use default value when deserializing.
-/// | `skip_if = ...`   | ToJson | Omit field while serializing if provided function returns true.
-/// | `with = ...`      | All    | Use methods from specified module instead of trait. [read more](#jsonywith---on-fields)
+/// | Format | Supported Traits    | Description |
+/// |-------------------|----------|---------------------------------------------------------------------------------|
+/// | `alias = "..."`   | FromJson | Use provided string as a alternative field name when decoding.
+/// | `default [= ...]` | `From`   | Use `Default::default()` or provided expression if field is missing.
+/// | `flatten`         | `Json`   | Flatten the contents of the field into the container it is defined in.
+/// | `rename = "..."`  | `Json`   | Use provided string as field name.
+/// | `via = ...`       | All      | Implement conversion through provided trait.
+/// | `skip`            | All      | Omit field while serializing, use default value when deserializing.
+/// | `skip_if = ...`   | ToJson   | Omit field while serializing if provided function returns true.
+/// | `with = ...`      | All      | Use methods from specified module instead of trait. [read more](#jsonywith---on-fields)
 ///
 /// ## Format Aliases
 /// In the container attributes to specify the traits to derive and on the prefix of

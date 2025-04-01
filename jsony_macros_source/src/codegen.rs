@@ -949,11 +949,35 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                     phantom: ::std::marker::PhantomData
                 })
             }
-            splat!(out; .decode(dst, parser, [if flattening.is_some() {
+            let mut any_field_flag = 0;
+            for field in fields {
+                any_field_flag |= field.flags;
+            }
+            let has_alias = any_field_flag & Field::WITH_FROM_JSON_ALIAS != 0;
+            splat!(out; .[
+                if has_alias {
+                    splat!(out; decode_with_alias)
+                } else {
+                    splat!(out; decode)
+                }
+            ](dst, parser, [if flattening.is_some() {
                 splat!(out; Some(&mut __flatten_visitor_jsony))
             } else {
                 splat!(out; None)
-            }]));
+            }]
+            [?(has_alias) , &[[
+                [
+                    for (i, field) in ordered_fields.iter().enumerate() {
+                        if let Some(alias) = field.attr.alias(FROM_JSON) {
+                            splat!(out; (
+                                [@Literal::usize_unsuffixed(i).into()],
+                                [#alias]
+                            ),)
+                        }
+                    }
+                ]
+            ]] ]
+            ));
             if has_skips {
                 splat!(out;
                     ; //<-- close off let stmt
