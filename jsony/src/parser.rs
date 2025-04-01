@@ -817,10 +817,7 @@ impl<'j> InnerParser<'j> {
                     self.config.recursion_limit += 1;
                     Ok(None)
                 }
-                _ => {
-                    println!("{}", self.ctx.input[self.index..].escape_ascii());
-                    Err(&EXPECTED_LIST_COMMA_OR_END)
-                }
+                _ => Err(&EXPECTED_LIST_COMMA_OR_END),
             }
         } else {
             Err(&EOF_WHILE_PARSING_LIST)

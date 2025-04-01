@@ -179,7 +179,6 @@ impl<'a> ObjectSchema<'a> {
                                         break 'found (index, field);
                                     }
                                     for (index, alias_name) in alias {
-                                        println!("{} {}", alias_name, key);
                                         if *alias_name != key {
                                             continue;
                                         }
