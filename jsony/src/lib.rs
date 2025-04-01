@@ -90,6 +90,7 @@ use parser::Parser;
 #[cfg(feature = "macros")]
 pub use jsony_macros::array;
 
+pub use byte_writer::IntoByteWriter;
 #[cfg(feature = "macros")]
 pub use jsony_macros::{object, Jsony};
 pub use text_writer::IntoTextWriter;
@@ -698,4 +699,13 @@ pub fn to_binary<T: ToBinary + ?Sized>(value: &T) -> Vec<u8> {
     let mut encoder = BytesWriter::new();
     value.encode_binary(&mut encoder);
     encoder.into_vec()
+}
+
+pub fn to_binary_into<'a, T: ToBinary + ?Sized, W: IntoByteWriter<'a>>(
+    value: &T,
+    output: W,
+) -> W::Output {
+    let mut buffer = W::into_byte_writer(output);
+    value.encode_binary(&mut buffer);
+    W::finish_writing(buffer)
 }

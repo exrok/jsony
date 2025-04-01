@@ -252,16 +252,12 @@ impl<'a> BytesWriter<'a> {
         let len = this.len;
         let capacity = this.capacity;
         match &this.backing {
-            Backing::Owned => {
-                Cow::Owned(unsafe {
-                    String::from_utf8_unchecked(Vec::from_raw_parts(data, len, capacity))
-                })
-            }
-            Backing::Borrowed { .. } => {
-                Cow::Borrowed(unsafe {
-                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len))
-                })
-            }
+            Backing::Owned => Cow::Owned(unsafe {
+                String::from_utf8_unchecked(Vec::from_raw_parts(data, len, capacity))
+            }),
+            Backing::Borrowed { .. } => Cow::Borrowed(unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len))
+            }),
             _ => {
                 // Safety: We haven't dropped it yet nor will use any of it's internals
                 unsafe { ManuallyDrop::drop(&mut this) };
@@ -279,9 +275,7 @@ impl<'a> BytesWriter<'a> {
         let len = this.len;
         let capacity = this.capacity;
         match &this.backing {
-            Backing::Owned => {
-                Cow::Owned(unsafe { Vec::from_raw_parts(data, len, capacity) })
-            }
+            Backing::Owned => Cow::Owned(unsafe { Vec::from_raw_parts(data, len, capacity) }),
             Backing::Borrowed { .. } => {
                 Cow::Borrowed(unsafe { std::slice::from_raw_parts(data, len) })
             }
@@ -544,3 +538,52 @@ impl fmt::Write for BytesWriter<'_> {
 
 unsafe impl Send for BytesWriter<'_> {}
 unsafe impl Sync for BytesWriter<'_> {}
+
+/// Conversion into a `ByteWriter` with content extraction.
+///
+/// This is primaryily used in [crate::to_binary_into].
+pub trait IntoByteWriter<'a> {
+    type Output;
+
+    /// Convert Self into TextWriter, preserving the contents.
+    fn into_byte_writer(self) -> BytesWriter<'a>;
+
+    /// Should return Output corresponding to added context since the
+    /// creation from `into_text_writer()`.
+    ///
+    /// If `finish_writing` is called on an instance of TextWriter
+    /// not create via [IntoTextWriter::into_text_writer] of the same type then this
+    /// method may panic.
+    fn finish_writing(buffer: BytesWriter<'a>) -> Self::Output;
+}
+
+impl<'a> IntoByteWriter<'a> for &'a mut Vec<u8> {
+    type Output = &'a [u8];
+    fn into_byte_writer(self) -> BytesWriter<'a> {
+        BytesWriter::from(self)
+    }
+    fn finish_writing(buffer: BytesWriter<'a>) -> &'a [u8] {
+        buffer.into_backed_with_extended_slice()
+    }
+}
+
+pub type DynWrite<'a> = &'a mut (dyn std::io::Write + Send);
+impl<'a> IntoByteWriter<'a> for DynWrite<'a> {
+    type Output = Result<usize, std::io::Error>;
+    fn into_byte_writer(self) -> BytesWriter<'a> {
+        BytesWriter::new_writer(self)
+    }
+    fn finish_writing(buffer: BytesWriter<'a>) -> Result<usize, std::io::Error> {
+        buffer.into_write_finish()
+    }
+}
+
+impl<'a> IntoByteWriter<'a> for &'a mut [MaybeUninit<u8>] {
+    type Output = Cow<'a, [u8]>;
+    fn into_byte_writer(self) -> BytesWriter<'a> {
+        BytesWriter::from(self)
+    }
+    fn finish_writing(buffer: BytesWriter<'a>) -> Cow<'a, [u8]> {
+        buffer.into_cow()
+    }
+}
