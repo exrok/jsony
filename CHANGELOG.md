@@ -7,6 +7,9 @@ Enhancements:
 - Added `owned_cow` and `json_string` for use in the `with` attribute.
 - Added blanket ToJson/ToBinary impls for `Cow<'_, T>`.
 - Introduced `to_binary_into` the binary version of `to_json_into`.
+- `Vec<u8>` backed BytesWriter now commits the underlying buffer on drop
+  if the `Vec<u8>` BytesWriter is leaked, the `Vec<u8>` will contain the
+  same length, as it had when provided to the BytesWriter.
 
 # 0.1.1 (2025-04-01)
 

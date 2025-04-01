@@ -140,3 +140,22 @@ fn flatten_via_iterator() {
         "d1": 1
     });
 }
+
+#[test]
+fn to_vec() {
+    let mut data = vec![b'a', b'b', b'c'];
+    assert_eq!(
+        jsony::to_json_into(&"hello_this_is_a_long_string", &mut data),
+        "\"hello_this_is_a_long_string\""
+    );
+    assert_eq!(jsony::to_json_into(&false, &mut data), "false");
+    assert_eq!(
+        String::from_utf8(data).unwrap(),
+        "abc\"hello_this_is_a_long_string\"false"
+    );
+
+    let mut data = Vec::new();
+    assert_eq!(jsony::to_json_into(&100u32, &mut data), "100");
+    assert_eq!(jsony::to_json_into(&false, &mut data), "false");
+    assert_eq!(String::from_utf8(data).unwrap(), "100false");
+}

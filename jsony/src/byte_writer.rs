@@ -13,8 +13,7 @@ use std::ptr::{self, NonNull};
 /// - `dyn std::io::Write`
 ///
 /// The implementation minimizes dynamic dispatch by restricting it to out-of-capacity situations
-/// where the underlying buffer needs to be resized or flushed.
-///
+/// where the underlying buffer needs to be resized or flushed.  ///
 /// `BytesWriter` guarantees to maintain a buffer, and when backing storage is already viable,
 /// that backing will be used directly. Operations like `push` are guaranteed not to flush to
 /// the backing store, meaning pushed bytes remain available and can be popped and discarded.
@@ -51,14 +50,13 @@ impl<'a> From<&'a mut [MaybeUninit<u8>]> for BytesWriter<'a> {
 
 impl<'a> From<&'a mut Vec<u8>> for BytesWriter<'a> {
     fn from(value: &'a mut Vec<u8>) -> Self {
-        let mut this = ManuallyDrop::new(std::mem::take(value));
         BytesWriter {
-            data: this.as_mut_ptr(),
-            len: this.len(),
-            capacity: this.capacity(),
+            data: value.as_mut_ptr(),
+            len: value.len(),
+            capacity: value.capacity(),
             backing: Backing::Vec {
-                bytes: value,
-                offset: this.len(),
+                bytes: NonNull::from(value),
+                marker: PhantomData,
             },
         }
     }
@@ -66,16 +64,22 @@ impl<'a> From<&'a mut Vec<u8>> for BytesWriter<'a> {
 
 impl Drop for BytesWriter<'_> {
     fn drop(&mut self) {
-        if matches!(self.backing, Backing::Borrowed { .. }) {
-            return;
-        }
-        unsafe {
-            if self.capacity != 0 {
-                // SAFETY: when `self.capacity > 0`, `self.capacity` is the same value
-                // used for allocate the block of memory pointed by `self.data`.
-                let layout = Layout::from_size_align_unchecked(self.capacity, 1);
-                dealloc(self.data, layout);
+        match self.backing {
+            Backing::Owned | Backing::Write { .. } => {
+                unsafe {
+                    if self.capacity != 0 {
+                        // SAFETY: when `self.capacity > 0`, `self.capacity` is the same value
+                        // used for allocate the block of memory pointed by `self.data`.
+                        let layout = Layout::from_size_align_unchecked(self.capacity, 1);
+                        dealloc(self.data, layout);
+                    }
+                }
             }
+            Backing::Vec { mut bytes, .. } => unsafe {
+                let vec = bytes.as_mut();
+                vec.set_len(self.len);
+            },
+            Backing::Borrowed { .. } => (),
         }
     }
 }
@@ -83,8 +87,10 @@ impl Drop for BytesWriter<'_> {
 pub(crate) enum Backing<'a> {
     Owned,
     Vec {
-        offset: usize,
-        bytes: &'a mut Vec<u8>,
+        bytes: NonNull<Vec<u8>>,
+        // Life time as Vec<u8>... we store it as pointer
+        // to avoid issues alaising issues. Although it should be fine.
+        marker: PhantomData<&'a ()>,
     },
     Borrowed {
         marker: PhantomData<&'a ()>,
@@ -148,6 +154,7 @@ impl<'a> BytesWriter<'a> {
     }
 
     /// Creates a new empty `BytesWriter`, that will be backed by a owned buffer.
+    #[inline]
     pub fn new() -> BytesWriter<'a> {
         BytesWriter {
             data: NonNull::<u8>::dangling().as_ptr(),
@@ -180,17 +187,24 @@ impl<'a> BytesWriter<'a> {
     /// Converts the writer into a `Vec<u8>`, consuming the writer.
     pub fn into_vec(self) -> Vec<u8> {
         let this = ManuallyDrop::new(self);
-        if let Backing::Borrowed { .. } = this.backing {
-            return this.buffer_slice().into();
+        match this.backing {
+            Backing::Vec { mut bytes, .. } => unsafe {
+                let vec = bytes.as_mut();
+                vec.set_len(this.len);
+                std::mem::take(vec)
+            },
+            Backing::Borrowed { .. } => this.buffer_slice().into(),
+            Backing::Write { .. } | Backing::Owned => {
+                // Safety: Unless the backing is `Backing::Borrowed` or Vec then the internal
+                // buffer is always backed by an internal buffer allocated in the global
+                // allocator.
+                //
+                // One uncertain case is when the buffer has zero capacity. Once,
+                // Vec::into_raw_parts is stabilized we switch to constructing empty
+                // buffers which so that this pattern is blessed.
+                unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) }
+            }
         }
-        // Safety: Unless the backing is `Backing::Borrowed` then the internal
-        // buffer is always backed by an internal buffer allocated in the global
-        // allocator.
-        //
-        // One uncertain case is when the buffer has zero capacity. Once,
-        // Vec::into_raw_parts is stabilized we switch to constructing empty
-        // buffers which so that this pattern is blessed.
-        unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) }
     }
 
     /// Consumes the writer and returns the owned buffer as a `Vec<u8>`.
@@ -200,10 +214,6 @@ impl<'a> BytesWriter<'a> {
     pub fn owned_into_vec(self) -> Vec<u8> {
         let mut this = ManuallyDrop::new(self);
         if let Backing::Owned = this.backing {
-            // Safety: Unless the backing is `Backing::Borrowed` then the internal
-            // buffer is always backed by an internal buffer allocated in the global
-            // allocator.
-            //
             // One uncertain case is when the buffer has zero capacity. Once,
             // Vec::into_raw_parts is stabilized we switch to constructing empty
             // buffers which so that this pattern is blessed.
@@ -223,8 +233,7 @@ impl<'a> BytesWriter<'a> {
         let mut this = ManuallyDrop::new(self);
         let data = this.data;
         let len = this.len;
-        let capacity = this.capacity;
-        if let Backing::Vec { offset, bytes } = &mut this.backing {
+        if let Backing::Vec { bytes, .. } = &mut this.backing {
             // Safety: Unless the backing is `Backing::Borrowed` then the internal
             // buffer is always backed by an internal buffer allocated in the global
             // allocator.
@@ -232,10 +241,13 @@ impl<'a> BytesWriter<'a> {
             // One uncertain case is when the buffer has zero capacity. Once,
             // Vec::into_raw_parts is stabilized we switch to constructing empty
             // buffers which so that this pattern is blessed.
-            **bytes = unsafe { Vec::from_raw_parts(data, len, capacity) };
-            return unsafe {
-                std::slice::from_raw_parts(bytes.as_ptr().add(*offset), len - *offset)
+            let offset = unsafe {
+                let bytes = bytes.as_mut();
+                let oldlen = bytes.len();
+                bytes.set_len(len);
+                oldlen
             };
+            return unsafe { std::slice::from_raw_parts(data.add(offset), len - offset) };
         }
         // Safety: We haven't dropped it yet.
         unsafe { ManuallyDrop::drop(&mut this) };
@@ -467,6 +479,7 @@ impl<'a> BytesWriter<'a> {
                 }
             }
         }
+
         let new_capacity = std::cmp::max(self.capacity * 2, self.capacity + size);
         debug_assert!(new_capacity > self.capacity);
         if let Backing::Borrowed { .. } = &self.backing {
@@ -480,6 +493,14 @@ impl<'a> BytesWriter<'a> {
             self.data = unsafe { safe_realloc(self.data, self.capacity, new_capacity) };
         }
         self.capacity = new_capacity;
+
+        if let Backing::Vec { bytes, .. } = &mut self.backing {
+            let original_len = unsafe { bytes.as_mut().len() };
+            unsafe {
+                bytes.write(Vec::from_raw_parts(self.data, original_len, self.capacity));
+            }
+            return;
+        }
 
         debug_assert!(!self.data.is_null());
         debug_assert!(self.len <= self.capacity);
