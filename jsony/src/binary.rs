@@ -35,6 +35,7 @@ use std::{
     collections::{HashMap, HashSet},
     hash::{BuildHasher, Hash},
     ptr::NonNull,
+    time::Duration,
 };
 
 pub struct FromBinaryError {
@@ -507,7 +508,7 @@ unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, V: FromBinary<'a>, S: BuildHasher
 {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         let len = decoder.read_length();
-        let mut map = HashMap::with_capacity_and_hasher(len.min(4096), Default::default());
+        let mut map: Self = HashMap::with_capacity_and_hasher(len.min(4096), Default::default());
         for _ in 0..len {
             let k = K::decode_binary(decoder);
             let v = V::decode_binary(decoder);
@@ -531,7 +532,7 @@ unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, S: BuildHasher + Default> FromBin
 {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         let len = decoder.read_length();
-        let mut map = HashSet::with_capacity_and_hasher(len.min(4096), Default::default());
+        let mut map: Self = HashSet::with_capacity_and_hasher(len.min(4096), Default::default());
         for _ in 0..len {
             map.insert(K::decode_binary(decoder));
         }
@@ -581,6 +582,44 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Option<T> {
         } else {
             None
         }
+    }
+}
+
+unsafe impl ToBinary for char {
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
+        (*self as u32).encode_binary(encoder)
+    }
+}
+
+unsafe impl<'a> FromBinary<'a> for char {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        let raw = u32::decode_binary(decoder);
+        if let Some(ch) = char::from_u32(raw) {
+            ch
+        } else {
+            decoder.report_error(format_args!(
+                "Invalid char not a Unicode scalar value: 0x{:04x}",
+                raw
+            ));
+            '\0'
+        }
+    }
+}
+
+unsafe impl ToBinary for Duration {
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
+        let secs = self.as_secs();
+        let nanos = self.subsec_nanos();
+        secs.encode_binary(encoder);
+        nanos.encode_binary(encoder);
+    }
+}
+
+unsafe impl<'a> FromBinary<'a> for Duration {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        let secs = u64::decode_binary(decoder);
+        let nanos = u32::decode_binary(decoder);
+        Duration::new(secs, nanos)
     }
 }
 
@@ -678,6 +717,23 @@ mod test {
                 boxed
             );
         }
+    }
+
+    #[test]
+    fn duration() {
+        let mut tester = Tester::default();
+        tester.assert_roundtrip_all(&[Duration::from_millis(58345), Duration::MAX, Duration::ZERO]);
+    }
+
+    #[test]
+    fn char() {
+        let mut tester = Tester::default();
+        tester.assert_roundtrip_all(&['a', '𝄞']);
+        assert_eq!(
+            crate::from_binary::<char>(&['x' as u8, 0, 0, 0]).unwrap(),
+            'x'
+        );
+        assert!(crate::from_binary::<char>(&['x' as u8, 0, 0, 0xff]).is_err());
     }
 
     #[test]
