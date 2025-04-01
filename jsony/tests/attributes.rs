@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 
 use jsony::{FromBinary, Jsony, ToBinary};
 
@@ -60,6 +60,18 @@ macro_rules! assert_json_eq {
     ($json:tt, $($input:tt)* ) => {
         assert_decode_json_eq!($json, $($input)*);
         assert_encode_json_eq!($json, $($input)*);
+    };
+}
+
+macro_rules! assert_binary_round_trip {
+    ($($input:tt)*) => {
+        {
+            let value = $($input)*;
+            assert_eq!(
+                value,
+                jsony::from_binary(&jsony::to_binary(&value)).expect("to decode")
+            )
+        }
     };
 }
 
@@ -172,19 +184,6 @@ mod utf8_as_bytes {
         <&'a str>::decode_binary(decoder).as_bytes()
     }
 }
-
-// #[track_caller]
-// fn assert_bin_roundtrip<T: ToBinary + for<'a> FromBinary<'a> + PartialEq + std::fmt::Debug>(
-//     value: &T,
-// ) {
-//     let mut writer = jsony::BytesWriter::new();
-//     value.encode_binary(&mut writer);
-//     {
-//         let mut decoder = jsony::binary::Decoder::new(writer.buffer_slice());
-//         let decoded = T::decode_binary(&mut decoder);
-//         assert_eq!(value, &decoded);
-//     }
-// }
 
 #[track_caller]
 fn assert_bin_equiv<
@@ -793,4 +792,54 @@ fn struct_field_alias() {
         { "james": 42, "greg": true },
         Sys{alpha: 42, beta: true}
     }
+}
+
+#[test]
+fn with_owned_cow_helper() {
+    use jsony::helper::owned_cow;
+
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    #[jsony(Binary, Json)]
+    struct Sys<'a> {
+        #[jsony(From with = owned_cow)]
+        shared: Cow<'a, [&'a str]>,
+    }
+
+    assert_json_eq!(
+        {"shared": ["hello", "nice"]},
+        Sys{ shared: Cow::Borrowed(&["hello", "nice"])}
+    );
+
+    assert_binary_round_trip!(Sys {
+        shared: Cow::Borrowed(&["hello", "nice"])
+    })
+}
+
+#[test]
+fn with_json_string_helper() {
+    use jsony::helper::json_string;
+    #[derive(Debug, Jsony, PartialEq, Eq, Default)]
+    #[jsony(Json)]
+    struct Inner {
+        a: i32,
+        b: i32,
+    }
+
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    #[jsony(Binary, Json)]
+    struct Sys {
+        #[jsony(with = json_string)]
+        double_json: Inner,
+    }
+
+    assert_json_eq!(
+        {"double_json":"{\"a\":10,\"b\":5}"},
+        Sys {
+            double_json: Inner{a: 10, b: 5}
+        }
+    );
+
+    assert_binary_round_trip!(Sys {
+        double_json: Inner { a: 10, b: 5 }
+    })
 }

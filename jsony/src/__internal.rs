@@ -378,7 +378,7 @@ pub const unsafe fn emplace_json_for_with_attribute<P, T, F>(
     _func: &F,
 ) -> for<'b> unsafe fn(NonNull<()>, &mut Parser<'b>) -> Result<(), &'static DecodeError>
 where
-    F: 'static + Fn(P) -> Result<T, &'static DecodeError>,
+    F: Fn(P) -> Result<T, &'static DecodeError>,
 {
     const { assert!(std::mem::size_of::<F>() == 0) }
     let func: unsafe fn(dest: NonNull<()>, parser: P) -> Result<(), &'static DecodeError> = unsafe {

@@ -61,6 +61,7 @@ use std::ptr::NonNull;
 pub mod __internal;
 pub mod binary;
 mod byte_writer;
+pub mod helper;
 pub mod json;
 mod lazy_parser;
 pub mod parser;

@@ -1,5 +1,13 @@
 # CHANGELOG
 
+# Unreleased
+
+Enhancements:
+
+- Added `owned_cow` and `json_string` for use in the `with` attribute.
+- Added blanket ToJson/ToBinary impls for `Cow<'_, T>`.
+- Introduced `to_binary_into` the binary version of `to_json_into`.
+
 # 0.1.1 (2025-04-01)
 
 Enhancements:
