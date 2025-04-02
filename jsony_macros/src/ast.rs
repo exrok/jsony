@@ -27,12 +27,16 @@ struct FieldAttr {
     span: Span,
     inner: FieldAttrInner,
 }
+pub enum DefaultKind {
+    Default,
+    Custom(Vec<TokenTree>),
+}
 enum FieldAttrInner {
     Rename(Literal),
     Flatten,
     Skip(Vec<TokenTree>),
     Via(Via),
-    Default(Vec<TokenTree>),
+    Default(DefaultKind),
     With(Vec<TokenTree>),
     Alias(Literal),
 }
@@ -178,7 +182,7 @@ impl<'a> Field<'a> {
         }
         false
     }
-    pub fn default(&self, for_trait: TraitSet) -> Option<&[TokenTree]> {
+    pub fn default(&self, for_trait: TraitSet) -> Option<&DefaultKind> {
         for attr in &self.attr.attrs {
             if attr.enabled & for_trait != 0 {
                 if let FieldAttrInner::Default(tokens) = &attr.inner {
@@ -695,9 +699,9 @@ fn parse_single_field_attr(
                 enabled: trait_set,
                 span: ident.span(),
                 inner: FieldAttrInner::Default(if value.is_empty() {
-                    crate::default_call_tokens(ident.span())
+                    DefaultKind::Default
                 } else {
-                    std::mem::take(value)
+                    DefaultKind::Custom(std::mem::take(value))
                 }),
             });
             3u64 * TRAIT_COUNT
@@ -1233,7 +1237,7 @@ pub fn parse_struct_fields<'a>(
                     attr.attrs.push(FieldAttr {
                         enabled: FROM_JSON,
                         span: ident.span(),
-                        inner: FieldAttrInner::Default(crate::default_call_tokens(ident.span())),
+                        inner: FieldAttrInner::Default(DefaultKind::Default),
                     });
                 }
             }

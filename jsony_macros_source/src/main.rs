@@ -120,10 +120,8 @@ fn main() {
     #[derive(Debug, Jsony, PartialEq, Eq)]
     #[jsony(Binary, Json)]
     struct Sys<'a> {
-        #[jsony(From with = owned_cow)]
-        shared: Cow<'a, [&'a str]>,
-        beta: bool,
+        shared: Option<&'a str>,
     }
 
-    }));
+        }));
 }

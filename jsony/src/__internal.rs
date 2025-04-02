@@ -17,6 +17,14 @@ pub struct DynamicFieldDecoder<'a> {
     pub required: u64,
 }
 
+/// helper function used for writing the default value from the Jsony derive macros
+pub unsafe fn default_default<T: Default>(ptr: ::std::ptr::NonNull<()>) -> UnsafeReturn {
+    unsafe {
+        (ptr.as_ptr() as *mut T).write(T::default());
+    }
+    UnsafeReturn
+}
+
 pub const unsafe fn erase<'a>(
     input: unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>,
 ) -> for<'b> unsafe fn(NonNull<()>, &mut Parser<'b>) -> Result<(), &'static DecodeError> {

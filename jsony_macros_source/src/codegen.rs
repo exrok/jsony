@@ -586,15 +586,26 @@ fn struct_schema(
             let Some(default) = &field.default(FROM_JSON) else {
                 break;
             };
-            splat!{
-                out;
-                |ptr: ::std::ptr::NonNull<()>| {
-                    //todo need to guard gaainst returns and such
-                    let value: [~field.ty] = [~default];
-                    unsafe {
-                        ptr.cast().write(value);
+            match default {
+                ast::DefaultKind::Default => {
+                    splat!{
+                        out;
+                        ::jsony::__internal::default_default::<[~field.ty]>,
                     }
-                    ::jsony::__internal::UnsafeReturn
+
+                },
+                ast::DefaultKind::Custom(expr) => {
+                    splat!{
+                        out;
+                        |ptr: ::std::ptr::NonNull<()>| {
+                            //todo need to guard gaainst returns and such
+                            let value: [~field.ty] = [~expr];
+                            unsafe {
+                                ptr.cast().write(value);
+                            }
+                            ::jsony::__internal::UnsafeReturn
+                        },
+                    }
                 },
             }
         }
@@ -867,7 +878,16 @@ fn field_from_default(out: &mut RustWriter, field: &Field, set: TraitSet) {
                     out;
                     {
                         let __scope_jsony = | | -> [~field.ty] {
-                            return [~explicit_default]
+                            [
+                                match explicit_default {
+                                    ast::DefaultKind::Default => {
+                                        splat!(out; Default::default())
+                                    },
+                                    ast::DefaultKind::Custom(expr) => {
+                                        splat!(out; [~expr])
+                                    },
+                                }
+                            ]
                         };
                         __scope_jsony()
                     }
