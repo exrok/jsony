@@ -1,6 +1,7 @@
 use crate::ast::{
     self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttrs, Generic,
-    GenericKind, Tag, TraitSet, Via, FROM_BINARY, FROM_JSON, TO_BINARY, TO_JSON,
+    GenericKind, Tag, TraitSet, Via, ENUM_CONTAINS_TUPLE_VARIANT, ENUM_CONTAINS_UNIT_VARIANT,
+    ENUM_HAS_EXTERNAL_TAG, FROM_BINARY, FROM_JSON, TO_BINARY, TO_JSON,
 };
 use crate::case::RenameRule;
 use crate::util::MemoryPool;
@@ -520,14 +521,6 @@ fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) -> Result<(), 
     output.push('"');
     Ok(())
 }
-// fn unflattened_fields<'a>(
-//     field: &'a [Field],
-//     ctx: &'a Ctx<'a>,
-// ) -> impl Iterator<Item = &'a Field<'a>> {
-//     field
-//         .iter()
-//         .filter(move |f| ctx.attr(f).map_or(true, |a| !a.flatten))
-// }
 
 fn struct_schema(
     out: &mut RustWriter,
@@ -1071,14 +1064,9 @@ fn variant_key_literal(ctx: &Ctx, variant: &EnumVariant) -> Literal {
 fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
     let mut text = String::with_capacity(64);
     let start = out.buf.len();
-    let mut all_objects = true;
-    for variant in variants {
-        if let EnumKind::Struct = variant.kind {
-            continue;
-        }
-        all_objects = false;
-        break;
-    }
+    // TODO make this logic smarter
+    let all_objects =
+        ctx.target.enum_flags & (ENUM_CONTAINS_UNIT_VARIANT | ENUM_CONTAINS_TUPLE_VARIANT) == 0;
     if let Tag::Inline(tag_name) = &ctx.target.tag {
         splat!(out; out.start_json_object(););
         text.push('"');
@@ -1131,7 +1119,7 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
     let kind = if all_objects {
         "AlwaysObject"
     } else {
-        "AlwaysString"
+        "AnyValue"
     };
     impl_to_json(out, ToJsonKind::Static(kind), ctx, stream)
 }
@@ -1878,6 +1866,61 @@ fn handle_tuple_struct(
     Ok(())
 }
 
+fn enum_to_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
+    let target = &ctx.target;
+    let any_generics = !target.generics.is_empty();
+    if target.enum_flags != (ENUM_CONTAINS_UNIT_VARIANT | ENUM_HAS_EXTERNAL_TAG) {
+        throw!("FromStr enum must not have any tuple or struct variants nor a tag configuratino")
+    }
+    splat! {
+        out;
+        ~[[automatically_derived]]
+        impl [?(any_generics) < [fmt_generics(out, &target.generics, DEF)] >]
+          [##&target.name][?(any_generics) <
+            [fmt_generics( out, &target.generics, USE)]
+        >]  [?(!target.where_clauses.is_empty())
+            where [] [~&target.where_clauses]] {
+            pub fn to_str(&self) -> & # static str {
+                match self {
+                    [for (variant in variants) {
+                        [##&target.name]::[##variant.name] => [@variant_key_literal(ctx, variant).into()],
+                    }]
+                }
+            }
+        }
+    };
+    Ok(())
+}
+
+fn enum_from_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
+    let target = &ctx.target;
+    if target.enum_flags != (ENUM_CONTAINS_UNIT_VARIANT | ENUM_HAS_EXTERNAL_TAG) {
+        throw!("FromStr enum must not have any tuple or struct variants nor a tag configuratino")
+    }
+    let any_generics = !target.generics.is_empty();
+    splat! {
+        out;
+        ~[[automatically_derived]]
+        impl [?(any_generics) < [fmt_generics(out, &target.generics, DEF)] >]
+        ::std::str::FromStr for
+          [##&target.name][?(any_generics) <
+            [fmt_generics( out, &target.generics, USE)]
+        >]  [?(!target.where_clauses.is_empty())
+            where [] [~&target.where_clauses]] {
+                type Err = ();
+            pub fn from_str(&self) -> Result<Self, ()> {
+                Ok(match self {
+                    [for (variant in variants) {
+                        [@variant_key_literal(ctx, variant).into()] => [##&target.name]::[##variant.name],
+                    }]
+                    _ => return Err(())
+                })
+            }
+        }
+    };
+    Ok(())
+}
+
 fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
     let body = token_stream! { out;
         match self {[
@@ -1970,6 +2013,12 @@ fn handle_enum(
         }
     }
     ctx.temp = (0..max_tuples).map(var).collect::<Vec<_>>();
+    if target.from_str {
+        enum_from_str(output, &ctx, variants)?;
+    }
+    if target.to_str {
+        enum_to_str(output, &ctx, variants)?;
+    }
     if target.to_json {
         enum_to_json(output, &ctx, variants)?;
     }
@@ -1985,6 +2034,7 @@ fn handle_enum(
 
     Ok(())
 }
+
 pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     let outer_tokens: Vec<TokenTree> = stream.into_iter().collect();
     let mut target = DeriveTargetInner {
@@ -1999,6 +2049,9 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
         from_json: false,
         to_binary: false,
         to_json: false,
+        to_str: false,
+        from_str: false,
+        enum_flags: 0,
         content: None,
         flattenable: false,
         tag: Tag::Default,
@@ -2008,7 +2061,13 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     let (kind, body) = ast::extract_derive_target(&mut target, &outer_tokens)?;
 
     // Default to from json
-    if !(target.from_binary || target.to_binary || target.to_json || target.from_json) {
+    if !(target.from_binary
+        || target.to_binary
+        || target.to_json
+        || target.from_json
+        || target.from_str
+        || target.to_str)
+    {
         target.from_json = true;
     }
     let field_toks: Vec<TokenTree> = body.into_iter().collect();

@@ -96,6 +96,13 @@ pub enum Repr {
     Default,
     Unknown,
 }
+type EnumFlag = u8;
+pub const ENUM_CONTAINS_UNIT_VARIANT: u8 = 0b0000_0001;
+pub const ENUM_CONTAINS_STRUCT_VARIANT: u8 = 0b0000_0010;
+pub const ENUM_CONTAINS_TUPLE_VARIANT: u8 = 0b0000_0100;
+pub const ENUM_HAS_EXTERNAL_TAG: u8 = 0b0000_1000;
+pub const ENUM_HAS_INLINE_TAG: u8 = 0b0001_0000;
+pub const ENUM_HAS_NO_TAG: u8 = 0b0010_0000;
 pub struct DeriveTargetInner<'a> {
     pub name: Ident,
     pub generics: Vec<Generic<'a>>,
@@ -107,7 +114,10 @@ pub struct DeriveTargetInner<'a> {
     pub from_json: bool,
     pub to_binary: bool,
     pub from_binary: bool,
+    pub to_str: bool,
+    pub from_str: bool,
     pub rename_all: RenameRule,
+    pub enum_flags: EnumFlag,
     pub flattenable: bool,
     pub ignore_tag_adjacent_fields: bool,
     pub content: Option<String>,
@@ -258,6 +268,16 @@ fn parse_container_attr(
         }
         "Flattenable" => {
             target.flattenable = true;
+        }
+        "Str" => {
+            target.from_str = true;
+            target.to_str = true;
+        }
+        "FromStr" => {
+            target.from_str = true;
+        }
+        "ToStr" => {
+            target.to_str = true;
         }
         "FromJson" => {
             target.from_json = true;
@@ -938,10 +958,16 @@ pub fn parse_enum<'a>(
     attr_buf: &mut Allocator<'a, FieldAttrs>,
 ) -> Result<Vec<EnumVariant<'a>>, Error> {
     let mut temp = parse_inner_enum_variants(fields, tt_buf, attr_buf)?;
+    match &target.tag {
+        Tag::Inline(_) => target.enum_flags |= ENUM_HAS_INLINE_TAG,
+        Tag::Untagged => target.enum_flags |= ENUM_HAS_NO_TAG,
+        Tag::Default => target.enum_flags |= ENUM_HAS_EXTERNAL_TAG,
+    }
     {
         for variant in &mut temp {
             match variant.kind {
                 EnumKind::Tuple => {
+                    target.enum_flags |= ENUM_CONTAINS_TUPLE_VARIANT;
                     let start = field_buf.len();
                     parse_tuple_fields(
                         variant.name,
@@ -953,12 +979,15 @@ pub fn parse_enum<'a>(
                     variant.end = field_buf.len();
                 }
                 EnumKind::Struct => {
+                    target.enum_flags |= ENUM_CONTAINS_STRUCT_VARIANT;
                     let start = field_buf.len();
                     parse_struct_fields(field_buf, &tt_buf[variant.start..variant.end], attr_buf)?;
                     variant.start = start;
                     variant.end = field_buf.len();
                 }
-                EnumKind::None => (),
+                EnumKind::None => {
+                    target.enum_flags |= ENUM_CONTAINS_UNIT_VARIANT;
+                }
             }
         }
     }
