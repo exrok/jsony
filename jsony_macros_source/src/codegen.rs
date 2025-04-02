@@ -1,7 +1,7 @@
 use crate::ast::{
     self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttrs, Generic,
-    GenericKind, Tag, TraitSet, Via, ENUM_CONTAINS_TUPLE_VARIANT, ENUM_CONTAINS_UNIT_VARIANT,
-    ENUM_HAS_EXTERNAL_TAG, FROM_BINARY, FROM_JSON, TO_BINARY, TO_JSON,
+    GenericKind, Tag, TraitSet, Via, ENUM_CONTAINS_STRUCT_VARIANT, ENUM_CONTAINS_TUPLE_VARIANT,
+    ENUM_CONTAINS_UNIT_VARIANT, ENUM_HAS_EXTERNAL_TAG, FROM_BINARY, FROM_JSON, TO_BINARY, TO_JSON,
 };
 use crate::case::RenameRule;
 use crate::util::MemoryPool;
@@ -1118,6 +1118,14 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
     //todo should sometimes be AlwaysString
     let kind = if all_objects {
         "AlwaysObject"
+    } else if ctx.target.enum_flags
+        & (ENUM_CONTAINS_TUPLE_VARIANT
+            | ENUM_CONTAINS_STRUCT_VARIANT
+            | ENUM_CONTAINS_UNIT_VARIANT
+            | ENUM_HAS_EXTERNAL_TAG)
+        == (ENUM_CONTAINS_UNIT_VARIANT | ENUM_HAS_EXTERNAL_TAG)
+    {
+        "AlwaysString"
     } else {
         "AnyValue"
     };
@@ -1602,14 +1610,11 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
             return Ok(());
         }
         Tag::Default => {
-            let mut kinds = [0usize, 0, 0];
-            for variant in variants {
-                kinds[variant.kind as usize] += 1;
-            }
-            let none_count = kinds[EnumKind::None as usize];
-            if none_count == variants.len() {
+            if ctx.target.enum_flags & (ENUM_CONTAINS_TUPLE_VARIANT | ENUM_CONTAINS_STRUCT_VARIANT)
+                == 0
+            {
                 return stringly_enum_from_json(out, ctx, variants);
-            } else if none_count != 0 {
+            } else if ctx.target.enum_flags & ENUM_CONTAINS_UNIT_VARIANT != 0 {
                 mixed_strings_and_objects = true;
             }
             None

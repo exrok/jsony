@@ -416,24 +416,10 @@ fn export_merged_blocks(files: &[&[u8]]) -> (Vec<u8>, Vec<Vec<u8>>) {
     println!("{}", [7, 8, 9, 10, 11, 12, 13].escape_ascii());
     let cache_template = stringify! {
         use proc_macro::{ Punct, Spacing };
-
-        use super::IdentCacheEntry;
-
         pub static BLIT_SRC: &[u8] = __PLACEHOLDER__;
 
         pub const IDENT_SIZE: usize = __PLACEHOLDER__;
-        static NAMES: &[&str] = &[__PLACEHOLDER__];
-        pub fn ident_cache_initial_state() -> Box<[IdentCacheEntry; IDENT_SIZE]> {
-            unsafe {
-                let cache =
-                    std::alloc::alloc(std::alloc::Layout::array::<IdentCacheEntry>(IDENT_SIZE).unwrap())
-                        as *mut IdentCacheEntry;
-                for (i, &name) in NAMES.iter().enumerate() {
-                    std::ptr::write(cache.add(i), IdentCacheEntry::Empty(name));
-                }
-                Box::from_raw(cache as *mut [IdentCacheEntry; IDENT_SIZE])
-            }
-        }
+        pub static NAMES: [&str; __PLACEHOLDER__] = [__PLACEHOLDER__];
 
         pub const PUNCT_SIZE: usize = __PLACEHOLDER__;
         pub fn punct_cache_initial_state() -> [Punct; PUNCT_SIZE] {
@@ -447,6 +433,8 @@ fn export_merged_blocks(files: &[&[u8]]) -> (Vec<u8>, Vec<Vec<u8>>) {
     cache_output.extend_from_slice(segments.next().unwrap().as_bytes());
 
     let _ = write!(cache_output, "b\"{}\"", stmt_slice_buffer.escape_ascii());
+    cache_output.extend_from_slice(segments.next().unwrap().as_bytes());
+    let _ = write!(cache_output, "{}", idents.len());
     cache_output.extend_from_slice(segments.next().unwrap().as_bytes());
     let _ = write!(cache_output, "{}", idents.len());
     cache_output.extend_from_slice(segments.next().unwrap().as_bytes());

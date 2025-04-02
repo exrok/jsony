@@ -1,59 +1,20 @@
-mod cache;
+pub mod cache;
 use proc_macro::{Delimiter, Group, Ident, Punct, Span, TokenStream, TokenTree};
-
-enum IdentCacheEntry {
-    Empty(&'static str),
-    Cached(Ident),
-}
 
 pub struct RustWriter {
     pub buf: Vec<TokenTree>,
-    cache: Cache,
-}
-
-/// Reduces macro evaluation time by 10% on rustc 1.82
-struct Cache {
-    default_span: Span,
-    ident: Box<[IdentCacheEntry; cache::IDENT_SIZE]>,
-    punct: [Punct; cache::PUNCT_SIZE],
-}
-
-impl Cache {
-    #[allow(dead_code)]
-    fn token_from_index(&mut self, index: usize) -> TokenTree {
-        if let Some(punct) = self.punct.get(index) {
-            return TokenTree::Punct(punct.clone());
-        }
-        if let Some(ident) = self.ident.get_mut(index - self.punct.len()) {
-            match ident {
-                IdentCacheEntry::Empty(value) => {
-                    let re = Ident::new(value, self.default_span);
-                    let ret = re.clone();
-                    *ident = IdentCacheEntry::Cached(re);
-                    return TokenTree::Ident(ret);
-                }
-                IdentCacheEntry::Cached(ident) => return TokenTree::Ident(ident.clone()),
-            }
-        }
-        let idx = index - self.punct.len() - self.ident.len();
-        let del = match idx {
-            0 => Delimiter::Parenthesis,
-            1 => Delimiter::Brace,
-            _ => Delimiter::Bracket,
-        };
-        TokenTree::Group(Group::new(del, TokenStream::new()))
-    }
+    pub default_span: Span,
+    pub ident: [Option<Ident>; cache::IDENT_SIZE],
+    pub punct: [Punct; cache::PUNCT_SIZE],
 }
 
 impl RustWriter {
     pub fn new() -> Self {
         RustWriter {
             buf: Vec::new(),
-            cache: Cache {
-                default_span: Span::mixed_site(),
-                ident: cache::ident_cache_initial_state(),
-                punct: cache::punct_cache_initial_state(),
-            },
+            default_span: Span::mixed_site(),
+            ident: [const { None }; cache::IDENT_SIZE],
+            punct: cache::punct_cache_initial_state(),
         }
     }
     #[inline(never)]
@@ -77,13 +38,35 @@ impl RustWriter {
         let start = start as usize;
         let len = len as usize;
         let src = &cache::BLIT_SRC[start..start + len];
-        self.buf
-            .extend(src.iter().map(|i| self.cache.token_from_index(*i as usize)));
+        self.buf.extend(src.iter().map(|i| {
+            let index = *i as usize;
+            if let Some(punct) = self.punct.get(index) {
+                return TokenTree::Punct(punct.clone());
+            }
+            let index_index = index - self.punct.len();
+            if let Some(ident) = self.ident.get_mut(index_index) {
+                match ident {
+                    None => {
+                        let re = Ident::new(cache::NAMES[index_index], self.default_span);
+                        let ret = re.clone();
+                        *ident = Some(re);
+                        return TokenTree::Ident(ret);
+                    }
+                    Some(ident) => return TokenTree::Ident(ident.clone()),
+                }
+            }
+            let idx = index - self.punct.len() - self.ident.len();
+            let del = match idx {
+                0 => Delimiter::Parenthesis,
+                1 => Delimiter::Brace,
+                _ => Delimiter::Bracket,
+            };
+            TokenTree::Group(Group::new(del, TokenStream::new()))
+        }));
     }
     #[allow(dead_code)]
     pub fn blit_punct(&mut self, index: usize) {
-        self.buf
-            .push(TokenTree::Punct(self.cache.punct[index].clone()));
+        self.buf.push(TokenTree::Punct(self.punct[index].clone()));
     }
 
     #[allow(dead_code)]
@@ -94,14 +77,14 @@ impl RustWriter {
     #[allow(dead_code)]
     #[inline(never)]
     pub fn blit_ident(&mut self, index: usize) {
-        let entry = &mut self.cache.ident[index];
+        let entry = &mut self.ident[index];
         match entry {
-            IdentCacheEntry::Empty(name) => {
-                let ident = Ident::new(name, self.cache.default_span);
+            None => {
+                let ident = Ident::new(cache::NAMES[index], self.default_span);
                 self.buf.push(TokenTree::Ident(ident.clone()));
-                *entry = IdentCacheEntry::Cached(ident);
+                *entry = Some(ident);
             }
-            IdentCacheEntry::Cached(ident) => self.buf.push(TokenTree::Ident(ident.clone())),
+            Some(ident) => self.buf.push(TokenTree::Ident(ident.clone())),
         }
     }
 }
