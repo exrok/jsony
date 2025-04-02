@@ -87,6 +87,11 @@ impl RustWriter {
     }
 
     #[allow(dead_code)]
+    pub fn push_ident(&mut self, ident: &Ident) {
+        self.buf.push(TokenTree::Ident(ident.clone()));
+    }
+
+    #[allow(dead_code)]
     #[inline(never)]
     pub fn blit_ident(&mut self, index: usize) {
         let entry = &mut self.cache.ident[index];

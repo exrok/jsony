@@ -95,6 +95,12 @@ impl RustWriter {
         self.buf
             .extend(src.iter().map(|i| self.cache.token_from_index(*i as usize)));
     }
+
+    #[allow(dead_code)]
+    pub fn push_ident(&mut self, ident: &Ident) {
+        self.buf.push(TokenTree::Ident(ident.clone()));
+    }
+
     #[allow(dead_code)]
     fn blit_punct(&mut self, index: usize) {
         self.buf

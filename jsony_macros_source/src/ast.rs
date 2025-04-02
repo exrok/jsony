@@ -508,7 +508,7 @@ pub fn extract_derive_target<'a>(
             TokenTree::Ident(ident) => match next!(toks) {
                 TokenTree::Group(_) => throw!("Unexpected group"),
                 TokenTree::Ident(next_ident) => {
-                    if ident_eq(&ident, "const") {
+                    if ident_eq(ident, "const") {
                         throw!("unexpected ident", &next_ident)
                     }
                     (GenericKind::Const, next_ident, false)
@@ -804,7 +804,7 @@ fn extract_jsony_attr(group: TokenStream) -> Option<TokenStream> {
         let Some(TokenTree::Ident(ident)) = toks.next() else {
             return None;
         };
-        if ident.to_string() != "jsony" {
+        if !ident_eq(&ident, "jsony") {
             return None;
         }
     }
@@ -1158,7 +1158,7 @@ pub fn parse_tuple_fields<'a>(
 
         // Remove visibility to store just the type
         if let TokenTree::Ident(ident) = &fields[i] {
-            if ident.to_string() == "pub" {
+            if ident_eq(ident, "pub") {
                 i += 1;
                 if i + 1 != end {
                     if let TokenTree::Group(group) = &fields[i] {
@@ -1236,7 +1236,7 @@ pub fn parse_struct_fields<'a>(
             }
         };
         if let [TokenTree::Ident(ident), TokenTree::Punct(punct), ..] = &fields[i + 1..end] {
-            if punct.as_char() == '<' && ident.to_string() == "Option" {
+            if punct.as_char() == '<' && ident_eq(ident, "Option") {
                 let attr = next_attr.get_or_insert_with(|| attr_buf.alloc_default());
                 let oo_mask = (FROM_JSON as u64) << (3u64 * TRAIT_COUNT);
                 if attr.flags & oo_mask == 0 {

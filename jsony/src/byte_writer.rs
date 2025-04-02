@@ -89,7 +89,7 @@ pub(crate) enum Backing<'a> {
     Vec {
         bytes: NonNull<Vec<u8>>,
         // Life time as Vec<u8>... we store it as pointer
-        // to avoid issues alaising issues. Although it should be fine.
+        // to avoid issues aliasing issues. Although it should be fine.
         marker: PhantomData<&'a ()>,
     },
     Borrowed {
