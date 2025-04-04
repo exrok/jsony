@@ -22,6 +22,7 @@ use crate::{
     parser::InnerParser, text::FromText, text_writer::TextWriter, FromJson, RawJson, ToJson,
 };
 use std::{
+    alloc::Layout,
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     hash::{BuildHasher, Hash},
@@ -345,30 +346,127 @@ impl<'a, T: ToJson + ToOwned + ?Sized> ToJson for Cow<'a, T> {
     }
 }
 
+#[cfg(target_pointer_width = "32")]
+const MAX_SIZE: usize = (isize::MAX / 2) as usize;
+#[cfg(target_pointer_width = "64")]
+const MAX_SIZE: usize = 1usize << 42;
+
+/// Decodes a size sized array returning the raw parts in (pointer, len, capacity).
+/// Safety `emplace_from_json` must be consume a pointer to ZST.
+#[cold]
+unsafe fn zero_sized_type_erased_decode_vec<'de>(
+    emplace_from_json: unsafe fn(NonNull<()>, &mut Parser<'de>) -> Result<(), &'static DecodeError>,
+    parser: &mut Parser<'de>,
+) -> ((*mut u8, usize, usize), Result<(), &'static DecodeError>) {
+    let mut len = 0;
+    let value = 'failure: {
+        let mut value = match parser.at.enter_array() {
+            Ok(it) => it,
+            Err(err) => break 'failure Err(err),
+        };
+        while value.is_some() {
+            unsafe {
+                if let Err(err) = emplace_from_json(NonNull::dangling(), parser) {
+                    break 'failure Err(err);
+                }
+                len += 1;
+            }
+            value = match parser.at.array_step() {
+                Ok(it) => it,
+                Err(err) => break 'failure Err(err),
+            };
+        }
+        Ok(())
+    };
+    ((std::ptr::dangling_mut::<u8>(), len, usize::MAX), value)
+}
+
+/// Decodes an array returning the raw parts in (pointer, len, capacity).
+/// The Layout must corrspond the type `emplace_from_json` is expected.
+unsafe fn type_erased_decode_vec<'de>(
+    layout: Layout,
+    emplace_from_json: unsafe fn(NonNull<()>, &mut Parser<'de>) -> Result<(), &'static DecodeError>,
+    parser: &mut Parser<'de>,
+) -> ((*mut u8, usize, usize), Result<(), &'static DecodeError>) {
+    if layout.size() == 0 {
+        return zero_sized_type_erased_decode_vec(emplace_from_json, parser);
+    }
+    let max_cap = MAX_SIZE / layout.size();
+    let mut ptr: *mut u8 = std::ptr::without_provenance_mut(layout.align());
+    let mut capacity = 0;
+    let mut len = 0;
+    let value = 'failure: {
+        let mut value = match parser.at.enter_array() {
+            Ok(it) => it,
+            Err(err) => break 'failure Err(err),
+        };
+        while value.is_some() {
+            unsafe {
+                if len == capacity {
+                    if capacity == 0 {
+                        capacity = if layout.size() > 4096 { 1 } else { 4 };
+                        ptr = std::alloc::alloc(Layout::from_size_align_unchecked(
+                            layout.size() * capacity,
+                            layout.align(),
+                        ));
+                    } else {
+                        if capacity >= max_cap {
+                            break 'failure Err(&DecodeError {
+                                message: "Array too large",
+                            });
+                        }
+                        let new_capacity = capacity * 2;
+
+                        ptr = std::alloc::realloc(
+                            ptr,
+                            Layout::from_size_align_unchecked(
+                                layout.size() * capacity,
+                                layout.align(),
+                            ),
+                            new_capacity * layout.size(),
+                        );
+                        capacity = new_capacity;
+                    }
+                    if ptr.is_null() {
+                        std::alloc::handle_alloc_error(layout);
+                    }
+                }
+                if let Err(err) = emplace_from_json(
+                    NonNull::new_unchecked(ptr).add(len * layout.size()).cast(),
+                    parser,
+                ) {
+                    break 'failure Err(err);
+                }
+                len += 1;
+            }
+            value = match parser.at.array_step() {
+                Ok(it) => it,
+                Err(err) => break 'failure Err(err),
+            };
+        }
+        Ok(())
+    };
+
+    ((ptr, len, capacity), value)
+}
+
 unsafe impl<'de, T: FromJson<'de>> FromJson<'de> for Vec<T> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        let mut array = Vec::<T>::new();
-        let mut value = parser.at.enter_array()?;
-        while value.is_some() {
-            unsafe {
-                array.reserve(1);
-                let len = array.len();
-                if let Err(err) = <T as FromJson<'de>>::emplace_from_json(
-                    NonNull::new_unchecked(array.as_mut_ptr()).add(len).cast(),
-                    parser,
-                ) {
-                    return Err(err);
-                } else {
-                    array.set_len(len + 1);
-                }
-            }
-            value = parser.at.array_step()?;
+        let ((ptr, len, cap), result) = type_erased_decode_vec(
+            Layout::new::<T>(),
+            <T as FromJson<'de>>::emplace_from_json,
+            parser,
+        );
+        let vec = Vec::from_raw_parts(ptr as *mut T, len, cap);
+        if result.is_ok() {
+            dest.cast::<Vec<T>>().write(vec);
+            Ok(())
+        } else {
+            result
         }
-        dest.cast::<Vec<T>>().write(array);
-        Ok(())
     }
 }
 
@@ -461,7 +559,9 @@ unsafe impl<'a, T: FromJson<'a>> FromJson<'a> for Option<T> {
     ) -> Result<(), &'static DecodeError> {
         match parser.at.peek() {
             Ok(Peek::Null) => {
-                parser.at.discard_seen_null()?;
+                if let Err(err) = parser.at.discard_seen_null() {
+                    return Err(err);
+                }
                 dest.cast::<Option<T>>().write(None);
                 Ok(())
             }
@@ -469,14 +569,16 @@ unsafe impl<'a, T: FromJson<'a>> FromJson<'a> for Option<T> {
                 // not sure if this is legal or not or not??
                 // Currently enums can't use padding to store discrements
                 // Thus, the discriminant must store in niche
-                if size_of::<Option<T>>() == size_of::<T>() {
+                if const { size_of::<Option<T>>() == size_of::<T>() } {
                     T::emplace_from_json(dest, parser)
                 } else {
                     let mut value = std::mem::MaybeUninit::<T>::uninit();
-                    T::emplace_from_json(
+                    if let Err(err) = T::emplace_from_json(
                         NonNull::new_unchecked(value.as_mut_ptr()).cast(),
                         parser,
-                    )?;
+                    ) {
+                        return Err(err);
+                    };
                     dest.cast::<Option<T>>().write(Some(value.assume_init()));
                     Ok(())
                 }
@@ -875,6 +977,8 @@ unsafe impl<'de, T: FromJson<'de>, const N: usize> FromJson<'de> for [T; N] {
     }
 }
 
+/// [ToJson::Kind] Marker type indicating an number is always generated
+pub struct AlwaysNumber;
 /// [ToJson::Kind] Marker type indicating an array is always generated
 pub struct AlwaysArray;
 /// [ToJson::Kind] Marker type indicating an object is always generated
@@ -884,7 +988,32 @@ pub struct AlwaysString;
 /// [ToJson::Kind] Marker type indicating any type may be generated
 pub struct AnyValue;
 
+pub trait JsonKeyKind: crate::__private::Sealed {
+    fn key_prefix(output: &mut TextWriter);
+    fn key_suffix(output: &mut TextWriter);
+}
+
+impl JsonKeyKind for AlwaysString {
+    fn key_prefix(_: &mut TextWriter) {}
+    fn key_suffix(output: &mut TextWriter) {
+        output.push_colon();
+    }
+}
+
+impl JsonKeyKind for AlwaysNumber {
+    fn key_prefix(output: &mut TextWriter) {
+        unsafe {
+            output.push_unchecked_ascii(b'"');
+        }
+    }
+    fn key_suffix(output: &mut TextWriter) {
+        output.push_str("\":");
+    }
+}
+
 pub trait JsonValueKind: crate::__private::Sealed {}
+impl crate::__private::Sealed for AlwaysNumber {}
+impl JsonValueKind for AlwaysNumber {}
 impl crate::__private::Sealed for AlwaysArray {}
 impl JsonValueKind for AlwaysArray {}
 impl crate::__private::Sealed for AnyValue {}
@@ -898,11 +1027,11 @@ macro_rules! into_json_itoa {
     ($($ty:ty)*) => {
         $(
             impl ToJson for $ty {
-                type Kind = AnyValue;
-                fn encode_json__jsony(&self, output: &mut TextWriter) -> AnyValue {
+                type Kind = AlwaysNumber;
+                fn encode_json__jsony(&self, output: &mut TextWriter) -> AlwaysNumber {
                     let mut buffer = itoa::Buffer::new();
                     output.push_str(buffer.format(*self));
-                    AnyValue
+                    AlwaysNumber
                 }
             }
         )*
@@ -912,25 +1041,25 @@ macro_rules! into_json_itoa {
 into_json_itoa![u8 i8 u16 i16 u32 i32 u64 i64 u128 i128 usize isize];
 
 impl ToJson for f32 {
-    type Kind = AnyValue;
-    fn encode_json__jsony(&self, x: &mut TextWriter) -> AnyValue {
+    type Kind = AlwaysNumber;
+    fn encode_json__jsony(&self, x: &mut TextWriter) -> AlwaysNumber {
         if !self.is_finite() {
             x.push_str("null");
-            return AnyValue;
+            return AlwaysNumber;
         }
         x.finite_f32(*self);
-        AnyValue
+        AlwaysNumber
     }
 }
 impl ToJson for f64 {
-    type Kind = AnyValue;
-    fn encode_json__jsony(&self, x: &mut TextWriter) -> AnyValue {
+    type Kind = AlwaysNumber;
+    fn encode_json__jsony(&self, x: &mut TextWriter) -> AlwaysNumber {
         if !self.is_finite() {
             x.push_str("null");
-            return AnyValue;
+            return AlwaysNumber;
         }
         x.finite_f64(*self);
-        AnyValue
+        AlwaysNumber
     }
 }
 
@@ -1157,14 +1286,15 @@ impl<V: ToJson, S> ToJson for HashSet<V, S> {
     }
 }
 
-impl<K: ToJson<Kind = AlwaysString>, V: ToJson> ToJson for BTreeMap<K, V> {
+impl<K: ToJson<Kind: JsonKeyKind>, V: ToJson> ToJson for BTreeMap<K, V> {
     type Kind = AlwaysObject;
 
     fn encode_json__jsony(&self, output: &mut TextWriter) -> AlwaysObject {
         output.start_json_object();
         for (key, value) in self {
+            <K::Kind as JsonKeyKind>::key_prefix(output);
             key.encode_json__jsony(output);
-            output.push_colon();
+            <K::Kind as JsonKeyKind>::key_suffix(output);
             value.encode_json__jsony(output);
             output.push_comma();
         }
@@ -1172,14 +1302,15 @@ impl<K: ToJson<Kind = AlwaysString>, V: ToJson> ToJson for BTreeMap<K, V> {
     }
 }
 
-impl<K: ToJson<Kind = AlwaysString>, V: ToJson, S> ToJson for HashMap<K, V, S> {
+impl<K: ToJson<Kind: JsonKeyKind>, V: ToJson, S> ToJson for HashMap<K, V, S> {
     type Kind = AlwaysObject;
 
     fn encode_json__jsony(&self, output: &mut TextWriter) -> AlwaysObject {
         output.start_json_object();
         for (key, value) in self {
+            <K::Kind as JsonKeyKind>::key_prefix(output);
             key.encode_json__jsony(output);
-            output.push_colon();
+            <K::Kind as JsonKeyKind>::key_suffix(output);
             value.encode_json__jsony(output);
             output.push_comma();
         }

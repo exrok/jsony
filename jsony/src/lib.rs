@@ -396,6 +396,7 @@ impl JsonError {
     pub fn decoding_error(&self) -> &'static DecodeError {
         self.inner.error
     }
+    #[cold]
     fn trailing() -> JsonError {
         JsonError {
             inner: Box::new(JsonErrorInner {
@@ -549,12 +550,14 @@ impl Default for JsonParserConfig {
 pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, JsonError> {
     from_json_with_config(
         json,
-        JsonParserConfig {
-            recursion_limit: 128,
-            allow_trailing_commas: false,
-            allow_comments: false,
-            allow_unquoted_field_keys: false,
-            allow_trailing_data: false,
+        const {
+            JsonParserConfig {
+                recursion_limit: 128,
+                allow_trailing_commas: false,
+                allow_comments: false,
+                allow_unquoted_field_keys: false,
+                allow_trailing_data: false,
+            }
         },
     )
 }
@@ -563,9 +566,10 @@ pub fn from_json<'a, T: FromJson<'a>>(json: &'a str) -> Result<T, JsonError> {
 ///
 /// See [from_json]
 pub fn from_json_bytes<'a, T: FromJson<'a>>(json: &'a [u8]) -> Result<T, JsonError> {
-    let json = std::str::from_utf8(json)
-        .map_err(|err| JsonError::new(&INVALID_UTF8, Some(err.to_string())))?;
-    from_json(json)
+    match std::str::from_utf8(json) {
+        Ok(value) => from_json(value),
+        Err(err) => Err(JsonError::new(&INVALID_UTF8, Some(err.to_string()))),
+    }
 }
 
 static INVALID_UTF8: DecodeError = DecodeError {

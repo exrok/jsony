@@ -344,3 +344,21 @@ fn unquoted_keys() {
         }
     );
 }
+
+#[test]
+fn from_vec() {
+    let input = jsony::array![
+        for value in 0..100;
+        format!("0x{:08x}", value)
+    ];
+    let vec = jsony::from_json::<Vec<String>>(&input).unwrap();
+    let _ = vec.clone();
+}
+
+#[test]
+fn from_vec_zst() {
+    let input = jsony::array![ for _ in 0..100; [] ];
+    let vec = jsony::from_json::<Vec<[u8; 0]>>(&input).unwrap();
+    assert_eq!(vec.len(), 100);
+    let _ = vec.clone();
+}

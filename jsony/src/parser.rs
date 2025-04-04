@@ -1,7 +1,9 @@
 use crate::error::*;
 use std::borrow::Cow;
 use std::fmt;
+use std::mem::MaybeUninit;
 use std::ops::Range;
+use std::ptr::NonNull;
 
 use crate::__internal::ObjectSchemaInner;
 use crate::json::DecodeError;
@@ -145,6 +147,17 @@ static EXPECTED_SOME_IDENT: DecodeError = DecodeError {
     message: "Expected some ident",
 };
 
+static EXPECTED_NUMERIC_KEY_TO_ONLY_CONTAIN_A_NUMBER: DecodeError = DecodeError {
+    message: "Expected number key to only contain a number",
+};
+static EXPECTED_NUMBER_BUT_FOUND_STRING: DecodeError = DecodeError {
+    message: "Expected a number but found a string",
+};
+
+static EXPECTED_OBJECT: DecodeError = DecodeError {
+    message: "Expected an object",
+};
+
 fn extract_numeric_literal(
     bytes: &[u8],
     mut index: usize,
@@ -152,7 +165,13 @@ fn extract_numeric_literal(
     while let Some(next) = bytes.get(index) {
         match next {
             b' ' | b'\r' | b'\t' | b'\n' => index += 1,
-            _ => break,
+            ch => {
+                if *ch == b'"' {
+                    return Err(&EXPECTED_NUMBER_BUT_FOUND_STRING);
+                } else {
+                    break;
+                }
+            }
         }
     }
 
@@ -1142,37 +1161,135 @@ impl<'j> Parser<'j> {
         &mut self,
         mut func: impl FnMut(K, V) -> Result<(), &'static DecodeError>,
     ) -> Result<(), &'static DecodeError> {
-        if self.at.peek()? != Peek::Object {
-            return Err(&DecodeError {
-                message: "Expected an Object",
-            });
+        unsafe {
+            let mut key_temp = MaybeUninit::<K>::uninit();
+            let mut value_temp = MaybeUninit::<V>::uninit();
+            let (drop_key, result) = self.type_erased_decode_object_sequence(
+                NonNull::new_unchecked(key_temp.as_mut_ptr()).cast(),
+                NonNull::new_unchecked(value_temp.as_mut_ptr()).cast(),
+                K::emplace_from_json,
+                V::emplace_from_json,
+                &mut |key, value| func(key.cast::<K>().read(), value.cast::<V>().read()),
+            );
+            if drop_key {
+                key_temp.assume_init_drop();
+            }
+            result
+        }
+    }
+
+    unsafe fn type_erased_decode_object_sequence(
+        &mut self,
+        key_ptr: NonNull<()>,
+        val_ptr: NonNull<()>,
+        key_from_json: unsafe fn(NonNull<()>, &mut Parser<'j>) -> Result<(), &'static DecodeError>,
+        val_from_json: unsafe fn(NonNull<()>, &mut Parser<'j>) -> Result<(), &'static DecodeError>,
+        func: &mut dyn FnMut(NonNull<()>, NonNull<()>) -> Result<(), &'static DecodeError>,
+    ) -> (bool, Result<(), &'static DecodeError>) {
+        match self.at.peek() {
+            Ok(Peek::Object) => (),
+            Ok(_) => return (false, Err(&EXPECTED_OBJECT)),
+            Err(err) => return (false, Err(err)),
         }
         match self.at.enter_seen_object_at_first_key() {
             Ok(Some(())) => (),
-            Ok(None) => return Ok(()),
-            Err(err) => return Err(err),
+            Ok(None) => return (false, Ok(())),
+            Err(err) => return (false, Err(err)),
         }
         loop {
-            let key = match K::decode_json(self) {
+            match key_from_json(key_ptr, self) {
                 Ok(value) => value,
-                Err(err) => return Err(err),
+                Err(err) => {
+                    if std::ptr::addr_eq(err, &EXPECTED_NUMBER_BUT_FOUND_STRING) {
+                        debug_assert_eq!(self.at.ctx.input[self.at.index], b'"');
+                        self.at.index += 1;
+                        match key_from_json(key_ptr, self) {
+                            Ok(value) => {
+                                if self.at.ctx.input.get(self.at.index) != Some(&b'"') {
+                                    return (
+                                        true,
+                                        Err(&EXPECTED_NUMERIC_KEY_TO_ONLY_CONTAIN_A_NUMBER),
+                                    );
+                                }
+                                self.at.index += 1;
+                                value
+                            }
+                            Err(err) => return (true, Err(err)),
+                        }
+                    } else {
+                        return (true, Err(err));
+                    }
+                }
             };
-            self.at.discard_colon()?;
-            let value = match V::decode_json(self) {
+            if let Err(err) = self.at.discard_colon() {
+                return (true, Err(err));
+            }
+            match val_from_json(val_ptr, self) {
                 Ok(value) => value,
-                Err(err) => return Err(err),
+                Err(err) => return (true, Err(err)),
             };
-            match func(key, value) {
+            match func(key_ptr, val_ptr) {
                 Ok(()) => (),
-                Err(err) => return Err(err),
+                Err(err) => return (true, Err(err)),
             }
             match self.at.object_step_at_key() {
                 Ok(Some(())) => (),
-                Ok(None) => return Ok(()),
-                Err(err) => return Err(err),
+                Ok(None) => return (false, Ok(())),
+                Err(err) => return (true, Err(err)),
             }
         }
     }
+    // Todo use following when doing speed optimized build.
+    // pub fn decode_object_sequence<K: FromJson<'j>, V: FromJson<'j>>(
+    //     &mut self,
+    //     mut func: impl FnMut(K, V) -> Result<(), &'static DecodeError>,
+    // ) -> Result<(), &'static DecodeError> {
+    //     if self.at.peek()? != Peek::Object {
+    //         return Err(&EXPECTED_OBJECT);
+    //     }
+    //     match self.at.enter_seen_object_at_first_key() {
+    //         Ok(Some(())) => (),
+    //         Ok(None) => return Ok(()),
+    //         Err(err) => return Err(err),
+    //     }
+    //     loop {
+    //         let key = match K::decode_json(self) {
+    //             Ok(value) => value,
+    //             Err(err) => {
+    //                 if std::ptr::addr_eq(err, &EXPECTED_NUMBER_BUT_FOUND_STRING) {
+    //                     debug_assert_eq!(self.at.ctx.input[self.at.index], b'"');
+    //                     self.at.index += 1;
+    //                     match K::decode_json(self) {
+    //                         Ok(value) => {
+    //                             if self.at.ctx.input.get(self.at.index) != Some(&b'"') {
+    //                                 return Err(&EXPECTED_NUMERIC_KEY_TO_ONLY_CONTAIN_A_NUMBER);
+    //                             }
+    //                             self.at.index += 1;
+    //                             value
+    //                         }
+    //                         Err(err) => return Err(err),
+    //                     }
+    //                 } else {
+    //                     return Err(err);
+    //                 }
+    //             }
+    //         };
+    //         self.at.discard_colon()?;
+    //         let value = match V::decode_json(self) {
+    //             Ok(value) => value,
+    //             Err(err) => return Err(err),
+    //         };
+    //         match func(key, value) {
+    //             Ok(()) => (),
+    //             Err(err) => return Err(err),
+    //         }
+    //         match self.at.object_step_at_key() {
+    //             Ok(Some(())) => (),
+    //             Ok(None) => return Ok(()),
+    //             Err(err) => return Err(err),
+    //         }
+    //     }
+    // }
     pub fn snapshot(&self) -> RetrySnapshot {
         RetrySnapshot {
             index: self.at.index,
