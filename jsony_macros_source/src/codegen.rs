@@ -75,7 +75,7 @@ macro_rules! append_tok {
     ([?($($cond:tt)*) $($body:tt)*] $d:tt) => {
         if $($cond)* { $(append_tok!($body $d);)* }
     };
-    ([##$($tt:tt)*] $d:tt) => {
+    ([#: $($tt:tt)*] $d:tt) => {
         $d.push_ident($($tt)*)
     };
     ([@$($tt:tt)*] $d:tt) => {
@@ -181,12 +181,12 @@ fn bodyless_impl_from(
     let any_generics = !target.generics.is_empty();
     splat! {
         output;
-        impl <#[##lifetime] [?(!generics.is_empty()), [fmt_generics(output, generics, DEF)]] >
-         [~&crate_path]::[?(let Some(sub) = sub) [##&sub]::][##&trait_name]<#[##lifetime]> for [##&target.name][?(any_generics) <
+        impl <#[#: lifetime] [?(!generics.is_empty()), [fmt_generics(output, generics, DEF)]] >
+         [~&crate_path]::[?(let Some(sub) = sub) [#: &sub]::][#: &trait_name]<#[#: lifetime]> for [#: &target.name][?(any_generics) <
             [fmt_generics(output, &target.generics, USE)]
         >]  [?(!target.where_clauses.is_empty() || !target.generic_field_types.is_empty())
              where [for (ty in &target.generic_field_types) {
-                [~ty]: [##&trait_name]<#[##lifetime]>,
+                [~ty]: [#: &trait_name]<#[#: lifetime]>,
             }] [~&target.where_clauses] ]
     };
     Ok(())
@@ -196,7 +196,7 @@ fn impl_from_binary(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> R
         output;
         ~[[automatically_derived]]
         unsafe [try bodyless_impl_from(output, None, Ident::new("FromBinary", Span::call_site()), ctx)] {
-            fn decode_binary(decoder: &mut [~&ctx.crate_path]::binary::Decoder<#[##&ctx.lifetime]>) -> Self [
+            fn decode_binary(decoder: &mut [~&ctx.crate_path]::binary::Decoder<#[#: &ctx.lifetime]>) -> Self [
                 output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
@@ -222,7 +222,7 @@ fn impl_from_json_field_visitor(
 
             unsafe fn new_field_visitor(
                 dst: ::std::ptr::NonNull<()>,
-                parser: & [~&ctx.crate_path]::parser::Parser<#[##&ctx.lifetime]>
+                parser: & [~&ctx.crate_path]::parser::Parser<#[#: &ctx.lifetime]>
             ) -> Self::Visitor [
                 output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
@@ -236,7 +236,7 @@ fn impl_from_json(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Res
         output;
         ~[[automatically_derived]]
         unsafe [try bodyless_impl_from(output, None, Ident::new("FromJson", Span::call_site()), ctx)] {
-            unsafe fn emplace_from_json(dst: ::std::ptr::NonNull<()>, parser: &mut [~&ctx.crate_path]::parser::Parser<#[##&ctx.lifetime]>)
+            unsafe fn emplace_from_json(dst: ::std::ptr::NonNull<()>, parser: &mut [~&ctx.crate_path]::parser::Parser<#[#: &ctx.lifetime]>)
             -> ::std::result::Result<(), &#static ::jsony::json::DecodeError> [
                 output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
@@ -257,7 +257,7 @@ fn impl_to_binary(
         output;
         ~[[automatically_derived]]
         unsafe impl [?(any_generics) < [fmt_generics(output, &target.generics, DEF)] >]
-         [~&crate_path]::ToBinary for [##&target.name][?(any_generics) <
+         [~&crate_path]::ToBinary for [#: &target.name][?(any_generics) <
             [fmt_generics( output, &target.generics, USE)]
         >]  [?(!target.where_clauses.is_empty() || !target.generic_field_types.is_empty())
              where [
@@ -291,7 +291,7 @@ fn impl_to_json(
         output;
         ~[[automatically_derived]]
         impl [?(any_generics) < [fmt_generics(output, &target.generics, DEF)] >]
-         [~&crate_path]::ToJson for [##&target.name][?(any_generics) <
+         [~&crate_path]::ToJson for [#: &target.name][?(any_generics) <
             [fmt_generics( output, &target.generics, USE)]
         >]  [?(!target.where_clauses.is_empty() || !target.generic_field_types.is_empty())
              where [
@@ -327,12 +327,12 @@ struct Ctx<'a> {
 
 impl<'a> Ctx<'a> {
     pub fn dead_target_type(&self, out: &mut RustWriter) {
-        splat!(out; [##&self.target.name] [?(!self.target.generics.is_empty()) < [fmt_generics(
+        splat!(out; [#: &self.target.name] [?(!self.target.generics.is_empty()) < [fmt_generics(
             out, &self.target.generics, DEAD_USE
         )]>])
     }
     pub fn target_type(&self, out: &mut RustWriter) {
-        splat!(out; [##&self.target.name] [?(!self.target.generics.is_empty()) < [fmt_generics(
+        splat!(out; [#: &self.target.name] [?(!self.target.generics.is_empty()) < [fmt_generics(
             out, &self.target.generics, USE
         )]>])
     }
@@ -440,19 +440,19 @@ impl Ctx<'_> {
 
     #[allow(non_snake_case)]
     fn FromBinary(&self, out: &mut RustWriter) {
-        splat!(out;  [~&self.crate_path]::FromBinary<#[##&self.lifetime]>)
+        splat!(out;  [~&self.crate_path]::FromBinary<#[#: &self.lifetime]>)
     }
 }
 
 fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) -> Result<(), Error> {
     if let Some(with) = field.with(FROM_JSON) {
         splat! { out;
-           [~&ctx.crate_path]::__internal::emplace_json_for_with_attribute::<&mut ::jsony::parser::Parser<#[##&ctx.lifetime]>, [~field.ty], _>(
+           [~&ctx.crate_path]::__internal::emplace_json_for_with_attribute::<&mut ::jsony::parser::Parser<#[#: &ctx.lifetime]>, [~field.ty], _>(
                &[~with]::decode_json
            )
         }
     } else {
-        splat! { out; [~&ctx.crate_path]::__internal::erased_emplace_from_json::<#[##&ctx.lifetime], [~field.ty]>() }
+        splat! { out; [~&ctx.crate_path]::__internal::erased_emplace_from_json::<#[#: &ctx.lifetime], [~field.ty]>() }
     }
     Ok(())
 }
@@ -555,9 +555,9 @@ fn struct_schema(
                 name: [@field_name_literal(ctx, field).into()],
                 offset: ::std::mem::offset_of!([
                     if let Some(ty) = temp_tuple {
-                        splat!(out; [##&ty], [@Literal::usize_unsuffixed(i).into()])
+                        splat!(out; [#: &ty], [@Literal::usize_unsuffixed(i).into()])
                     } else {
-                        splat!(out; [##&ctx.target.name][@ag_gen.clone()], [##field.name])
+                        splat!(out; [#: &ctx.target.name][@ag_gen.clone()], [#: field.name])
                     }
                 ]),
                 decode: [try schema_field_decode(out, ctx, field)]
@@ -660,7 +660,7 @@ fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> 
         [field] => {
             //tod immple with
             splat!(out;
-                < [~field.ty] as ::jsony::FromJson<#[##&ctx.lifetime]> >::emplace_from_json(
+                < [~field.ty] as ::jsony::FromJson<#[#: &ctx.lifetime]> >::emplace_from_json(
                     // to remove addition is repr(transparent) or repr(c)
                     dst[?(!matches!(ctx.target.repr, ast::Repr::Transparent | ast::Repr::C))
                         .byte_add(
@@ -740,7 +740,7 @@ use TokenTree as Tok;
 fn with_injected_closure_arg_type(out: &mut RustWriter, attr_value: &[Tok], ty: &[Tok]) {
     if let [Tok::Punct(bar1), Tok::Ident(binding), Tok::Punct(bar2), rest @ ..] = attr_value {
         if bar1.as_char() == '|' && bar2.as_char() == '|' {
-            splat!(out; | [##binding]: &[~ty] | [~rest]);
+            splat!(out; | [#: binding]: &[~ty] | [~rest]);
             return;
         }
     }
@@ -780,9 +780,9 @@ fn inner_struct_to_json(
                 }
                 splat!(out;
                     if !([with_injected_closure_arg_type(out, skip_fn, &field.ty)])([if on_self {
-                        splat!(out; &self.[##field.name])
+                        splat!(out; &self.[#: field.name])
                     } else {
-                        splat!(out; [##&ctx.temp[i]])
+                        splat!(out; [#: &ctx.temp[i]])
                     }])
                 );
                 Some(out.buf.len())
@@ -816,9 +816,9 @@ fn inner_struct_to_json(
                 if flattened {
                     splat!(out;
                         for (key, value) in ([if on_self {
-                            splat!(out; &self.[##field.name])
+                            splat!(out; &self.[#: field.name])
                         } else {
-                            splat!(out; [##&ctx.temp[i]])
+                            splat!(out; [#: &ctx.temp[i]])
                         }]).iter() {
                             let _: ::jsony::json::AlwaysString = key.encode_json__jsony(out);
                             out.push_colon();
@@ -841,9 +841,9 @@ fn inner_struct_to_json(
                                 splat!(out; <[~field.ty] as ::jsony::ToJson>::encode_json__jsony)
                             }
                         ]([if on_self {
-                    splat!(out; &self.[##field.name])
+                    splat!(out; &self.[#: field.name])
                 } else {
-                    splat!(out; [##&ctx.temp[i]])
+                    splat!(out; [#: &ctx.temp[i]])
                 }], out););
                 if flattened {
                     splat!(out; out.join_object_with_next_value(););
@@ -925,16 +925,16 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
 
     splat!(out;
         [?(ctx.target.flattenable)
-        const unsafe fn __schema_inner<#[##&ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, DEF)]] >()
-            ~> ::jsony::__internal::ObjectSchema<#[##&ctx.lifetime]>
+        const unsafe fn __schema_inner<#[#: &ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, DEF)]] >()
+            ~> ::jsony::__internal::ObjectSchema<#[#: &ctx.lifetime]>
             [?(!ctx.target.where_clauses.is_empty() || !ctx.target.generic_field_types.is_empty())
             where [
             for (ty in &ctx.target.generic_field_types) {
-                [~ty]: FromJson<#[##&ctx.lifetime]>
+                [~ty]: FromJson<#[#: &ctx.lifetime]>
             }
             ]]
             {
-                ::jsony::__internal::ObjectSchema::<#[##&ctx.lifetime]> {
+                ::jsony::__internal::ObjectSchema::<#[#: &ctx.lifetime]> {
                     inner: &const { [struct_schema(out, ctx, &ordered_fields, None)?] },
                     phantom: ::std::marker::PhantomData
                 }
@@ -946,7 +946,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                 splat!(out;
                     let mut __flatten_visitor_jsony =
                         <[~flatten_field.ty] as ::jsony::json::FromJsonFieldVisitor>::new_field_visitor(
-                            dst.byte_add(offset_of!([ctx.dead_target_type(out)], [##flatten_field.name])),
+                            dst.byte_add(offset_of!([ctx.dead_target_type(out)], [#: flatten_field.name])),
                             parser,
                         );
                 )
@@ -956,11 +956,11 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
             }
             if ctx.target.flattenable {
                 splat!(out; __schema_inner::<
-                    #[##&ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
+                    #[#: &ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
                 >())
             } else {
                 splat!(out;
-                ::jsony::__internal::ObjectSchema::<#[##&ctx.lifetime]> {
+                ::jsony::__internal::ObjectSchema::<#[#: &ctx.lifetime]> {
                     inner: &const { [struct_schema(out, ctx, &ordered_fields, None)?] },
                     phantom: ::std::marker::PhantomData
                 })
@@ -1006,7 +1006,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                         }
                         splat!(
                             out;
-                            dst.byte_add(::std::mem::offset_of!([ctx.dead_target_type(out)], [##field.name]))
+                            dst.byte_add(::std::mem::offset_of!([ctx.dead_target_type(out)], [#: field.name]))
                                 .cast::<[~field.ty]>()
                                 .write([field_from_default(out, field, FROM_JSON)]);
                         )
@@ -1026,7 +1026,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                     jsony::__internal::DynamicFieldDecoder {
                         destination: dst,
                         schema: __schema_inner::<
-                            #[##&ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
+                            #[#: &ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
                         >(),
                         bitset: [@TokenTree::Literal(Literal::u64_unsuffixed(0))],
                         required: [@TokenTree::Literal(Literal::u64_unsuffixed(required_bitset(&ordered_fields)))],
@@ -1035,7 +1035,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                 impl_from_json_field_visitor(
                     out,
                     ctx,
-                    &|out| splat!(out; jsony::__internal::DynamicFieldDecoder<#[##&ctx.lifetime]>),
+                    &|out| splat!(out; jsony::__internal::DynamicFieldDecoder<#[#: &ctx.lifetime]>),
                     body
                 )?;
 
@@ -1080,11 +1080,11 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
         out;
         match self {[
             for (_, variant) in variants.iter().enumerate() {
-                splat!{out; [##&ctx.target.name]::[##variant.name]}
+                splat!{out; [#: &ctx.target.name]::[#: variant.name]}
                 match variant.kind {
                     EnumKind::Tuple => {
                         splat!{out; (
-                            [for (i, _) in variant.fields.iter().enumerate() { splat!(out; [##&ctx.temp[i]],) }]
+                            [for (i, _) in variant.fields.iter().enumerate() { splat!(out; [#: &ctx.temp[i]],) }]
                         ) => [
                             text.clear();
                             enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
@@ -1092,7 +1092,7 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
                     },
                     EnumKind::Struct => {
                         splat!{out; {
-                            [for (i, field) in variant.fields.iter().enumerate() { splat!(out; [##field.name]: [##&ctx.temp[i]],) }]
+                            [for (i, field) in variant.fields.iter().enumerate() { splat!(out; [#: field.name]: [#: &ctx.temp[i]],) }]
                         } => [
                             text.clear();
                             enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
@@ -1229,7 +1229,7 @@ fn enum_variant_to_json(
                         splat!(out; <[~field.ty] as ::jsony::ToJson>::encode_json__jsony)
                     }
                 ]
-                ([##&ctx.temp[0]], out);
+                ([#: &ctx.temp[0]], out);
             }
         }
         EnumKind::Struct => {
@@ -1289,7 +1289,7 @@ fn enum_variant_from_json_struct(
         splat! {
             out;
             // Note a type alias with an un-used generic is not an error
-            type __TEMP[?(ctx.target.has_lifetime())<#[##&ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
+            type __TEMP[?(ctx.target.has_lifetime())<#[#: &ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
             let schema = ::jsony::__internal::ObjectSchema{
                 inner: const { &[try struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
                 phantom: ::std::marker::PhantomData,
@@ -1318,16 +1318,16 @@ fn enum_variant_from_json_struct(
                 [?(!untagged) return Err(_err);]
             } else {
                 let temp2 = temp.assume_init();
-                dst.cast::<[ctx.target_type(out)]>().write([##&ctx.target.name]::[##variant.name] {
+                dst.cast::<[ctx.target_type(out)]>().write([#: &ctx.target.name]::[#: variant.name] {
                     [for ((i, field) in ordered_fields.iter().enumerate()) {
-                        [##field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
+                        [#: field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
                     }]
-                    [##flatten_field.name]: temp_flatten.assume_init(),
+                    [#: flatten_field.name]: temp_flatten.assume_init(),
                     [for field in variant.fields {
                         if field.flags & Field::WITH_FROM_JSON_SKIP == 0 {
                             continue;
                         }
-                        splat!(out; [##field.name]: [field_from_default(out, field, FROM_JSON)],)
+                        splat!(out; [#: field.name]: [field_from_default(out, field, FROM_JSON)],)
                     }]
                 });
                 [?(untagged || ctx.target.ignore_tag_adjacent_fields) break #success]
@@ -1337,7 +1337,7 @@ fn enum_variant_from_json_struct(
         splat! {
             out;
             // Note a type alias with an un-used generic is not an error
-            type __TEMP[?(ctx.target.has_lifetime())<#[##&ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
+            type __TEMP[?(ctx.target.has_lifetime())<#[#: &ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
             let schema = ::jsony::__internal::ObjectSchema{
                 inner: const { &[try struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
                 phantom: ::std::marker::PhantomData,
@@ -1351,15 +1351,15 @@ fn enum_variant_from_json_struct(
                 [?(!untagged) return Err(_err);]
             } else {
                 let temp2 = temp.assume_init();
-                dst.cast::<[ctx.target_type(out)]>().write([##&ctx.target.name]::[##variant.name] {
+                dst.cast::<[ctx.target_type(out)]>().write([#: &ctx.target.name]::[#: variant.name] {
                     [for ((i, field) in ordered_fields.iter().enumerate()) {
-                        [##field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
+                        [#: field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
                     }]
                     [for field in variant.fields {
                         if field.flags & Field::WITH_FROM_JSON_SKIP == 0 {
                             continue;
                         }
-                        splat!(out; [##field.name]: [field_from_default(out, field, FROM_JSON)],)
+                        splat!(out; [#: field.name]: [field_from_default(out, field, FROM_JSON)],)
                     }]
                 });
                 [?(untagged || ctx.target.ignore_tag_adjacent_fields) break #success]
@@ -1412,11 +1412,11 @@ fn enum_variant_from_json(
                     if let Some(with) = field.with(FROM_JSON) {
                         splat!(out; [~with])
                     } else {
-                        splat!(out; < [~field.ty] as ::jsony::FromJson<#[##&ctx.lifetime]> >)
+                        splat!(out; < [~field.ty] as ::jsony::FromJson<#[#: &ctx.lifetime]> >)
                     }
                 ]::decode_json(parser) {
                     Ok(value) => {
-                        dst.cast::<[ctx.target_type(out)]>().write([##&ctx.target.name]::[##variant.name](value));
+                        dst.cast::<[ctx.target_type(out)]>().write([#: &ctx.target.name]::[#: variant.name](value));
                         [?(untagged || ctx.target.ignore_tag_adjacent_fields) break #success]
                     },
                     Err(_err) => {
@@ -1452,7 +1452,7 @@ fn enum_variant_from_json(
                     }
                 }
             ]
-            dst.cast::<[ctx.target_type(out)]>().write([##&ctx.target.name]::[##variant.name]);
+            dst.cast::<[ctx.target_type(out)]>().write([#: &ctx.target.name]::[#: variant.name]);
             [?(untagged || ctx.target.ignore_tag_adjacent_fields) break #success]
         },
     };
@@ -1481,7 +1481,7 @@ fn stringly_enum_from_json(
                 let value = match variant {
                     [for (variant in variants) {
                         [@variant_key_literal(ctx, variant).into()]
-                            => [##&ctx.target.name]::[##&variant.name],
+                            => [#: &ctx.target.name]::[#: &variant.name],
                     }]
                     [try enum_from_json_unknown_variant(out, ctx, other, true)]
                 };
@@ -1526,11 +1526,11 @@ fn enum_from_json_unknown_variant(
         let start = out.buf.len();
         splat!(
             out;
-            [##&ctx.target.name]::[##other.name]
+            [#: &ctx.target.name]::[#: other.name]
             [if let [field] = other.fields {
                 match other.kind {
                     EnumKind::Tuple => splat!(out; (other_tag)),
-                    EnumKind::Struct => splat!(out; {[##field.name]: other_tag}),
+                    EnumKind::Struct => splat!(out; {[#: field.name]: other_tag}),
                     EnumKind::None => (),
                 }
             }]
@@ -1586,7 +1586,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                     if let EnumKind::None = variant.kind {
                         splat!(
                             out;
-                            dst.cast::<[ctx.target_type(out)]>().write([##&ctx.target.name]::[##variant.name]);
+                            dst.cast::<[ctx.target_type(out)]>().write([#: &ctx.target.name]::[#: variant.name]);
                         );
                         break 'always_succeed;
                     }
@@ -1743,7 +1743,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                         let value = match variant {
                             [for variant in variants {
                                 if let EnumKind::None = variant.kind {
-                                    splat!(out; [@variant_key_literal(ctx, variant).into()] => [##&ctx.target.name]::[##variant.name],);
+                                    splat!(out; [@variant_key_literal(ctx, variant).into()] => [#: &ctx.target.name]::[#: variant.name],);
                                 }
                             }]
                             [try enum_from_json_unknown_variant(out, ctx, other, true)]
@@ -1800,7 +1800,7 @@ fn handle_struct(
                 throw!("Struct must contain a single field to use transparent")
             };
             let body = token_stream! {output;
-                self.[##single_field.name].encode_json__jsony(out)
+                self.[#: single_field.name].encode_json__jsony(out)
             };
             impl_to_json(output, ToJsonKind::Forward(&single_field), &ctx, body)?;
         } else {
@@ -1811,7 +1811,7 @@ fn handle_struct(
     if target.to_binary {
         let body = token_stream! { output; [
             for field in fields {
-                encode_binary_field(output, &ctx, field, &|out| splat!{out; &self.[##field.name]})
+                encode_binary_field(output, &ctx, field, &|out| splat!{out; &self.[#: field.name]})
             }
         ]};
         impl_to_binary(output, &ctx, body)?;
@@ -1819,10 +1819,10 @@ fn handle_struct(
 
     if target.from_binary {
         let body = token_stream! {output;
-            [##&target.name] {
+            [#: &target.name] {
                 [for field in fields {
                     splat!{(output);
-                        [##field.name]: [decode_binary_field(output, &ctx, field)],
+                        [#: field.name]: [decode_binary_field(output, &ctx, field)],
                     }
                 }]
             }
@@ -1859,7 +1859,7 @@ fn handle_tuple_struct(
 
     if target.from_binary {
         let body = token_stream! {output;
-            [##&target.name] (
+            [#: &target.name] (
                 [for field in fields {
                     splat!{(output); [decode_binary_field(output, &ctx, field)], }
                 }]
@@ -1881,14 +1881,14 @@ fn enum_to_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Res
         out;
         ~[[automatically_derived]]
         impl [?(any_generics) < [fmt_generics(out, &target.generics, DEF)] >]
-          [##&target.name][?(any_generics) <
+          [#: &target.name][?(any_generics) <
             [fmt_generics( out, &target.generics, USE)]
         >]  [?(!target.where_clauses.is_empty())
             where [] [~&target.where_clauses]] {
             pub fn to_str(&self) -> & # static str {
                 match self {
                     [for (variant in variants) {
-                        [##&target.name]::[##variant.name] => [@variant_key_literal(ctx, variant).into()],
+                        [#: &target.name]::[#: variant.name] => [@variant_key_literal(ctx, variant).into()],
                     }]
                 }
             }
@@ -1908,7 +1908,7 @@ fn enum_from_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> R
         ~[[automatically_derived]]
         impl [?(any_generics) < [fmt_generics(out, &target.generics, DEF)] >]
         ::std::str::FromStr for
-          [##&target.name][?(any_generics) <
+          [#: &target.name][?(any_generics) <
             [fmt_generics( out, &target.generics, USE)]
         >]  [?(!target.where_clauses.is_empty())
             where [] [~&target.where_clauses]] {
@@ -1916,7 +1916,7 @@ fn enum_from_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> R
             pub fn from_str(&self) -> Result<Self, ()> {
                 Ok(match self {
                     [for (variant in variants) {
-                        [@variant_key_literal(ctx, variant).into()] => [##&target.name]::[##variant.name],
+                        [@variant_key_literal(ctx, variant).into()] => [#: &target.name]::[#: variant.name],
                     }]
                     _ => return Err(())
                 })
@@ -1930,25 +1930,25 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
     let body = token_stream! { out;
         match self {[
             for (i, variant) in variants.iter().enumerate() {
-                splat!{out; [##&ctx.target.name]::[##variant.name]}
+                splat!{out; [#: &ctx.target.name]::[#: variant.name]}
                 match variant.kind {
                     EnumKind::Tuple => {
                         splat!{out; (
-                            [for (i, _) in variant.fields.iter().enumerate() { splat!(out; [##&ctx.temp[i]],) }]
+                            [for (i, _) in variant.fields.iter().enumerate() { splat!(out; [#: &ctx.temp[i]],) }]
                         ) => {
                             encoder.push([@TokenTree::Literal(Literal::u8_unsuffixed(i as u8))]);
                             [for (i, field) in variant.fields.iter().enumerate() {
-                                encode_binary_field(out, ctx, field, &|out| splat!{out; [##&ctx.temp[i]]})
+                                encode_binary_field(out, ctx, field, &|out| splat!{out; [#: &ctx.temp[i]]})
                             }]
                         }}
                     },
                     EnumKind::Struct => {
                         splat!{out; {
-                            [for (i, field) in variant.fields.iter().enumerate() { splat!(out; [##field.name]: [##&ctx.temp[i]],) }]
+                            [for (i, field) in variant.fields.iter().enumerate() { splat!(out; [#: field.name]: [#: &ctx.temp[i]],) }]
                         } => {
                             encoder.push([@TokenTree::Literal(Literal::u8_unsuffixed(i as u8))]);
                             [for (i, field) in variant.fields.iter().enumerate() {
-                                encode_binary_field(out, ctx, field, &|out| splat!{out; [##&ctx.temp[i]]})
+                                encode_binary_field(out, ctx, field, &|out| splat!{out; [#: &ctx.temp[i]]})
                             }]
                         }}
                     },
@@ -1980,7 +1980,7 @@ fn enum_from_binary(
                     [match variant.kind {
                         EnumKind::Tuple => {
                             splat!{out;
-                                [##&ctx.target.name]::[##variant.name](
+                                [#: &ctx.target.name]::[#: variant.name](
                                     [for field in variant.fields {
                                         splat!{out; [decode_binary_field(out, ctx, field)], }
                                     }]
@@ -1989,14 +1989,14 @@ fn enum_from_binary(
                         }
                         EnumKind::Struct => {
                             splat!{out;
-                                [##&ctx.target.name]::[##variant.name]{
+                                [#: &ctx.target.name]::[#: variant.name]{
                                     [for field in variant.fields {
-                                        splat!{out; [##field.name]: [decode_binary_field(out, ctx, field)], }
+                                        splat!{out; [#: field.name]: [decode_binary_field(out, ctx, field)], }
                                     }]
                                 }
                             }
                         }
-                        EnumKind::None => splat!{out; [##&ctx.target.name]::[##variant.name] }
+                        EnumKind::None => splat!{out; [#: &ctx.target.name]::[#: variant.name] }
                     }],
                 }
             }
@@ -2129,7 +2129,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
 }
 
 pub fn derive(stream: TokenStream) -> TokenStream {
-    match inner_derive(stream.clone()) {
+    match inner_derive(stream) {
         Ok(e) => e,
         Err(err) => err.to_compiler_error(),
     }

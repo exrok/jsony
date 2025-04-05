@@ -714,7 +714,7 @@ impl Codegen {
                                     let at = out.buf.len();
                                     out.blit(523, 2);
                                     out.buf.push(TokenTree::from(binding.clone()));
-                                    out.blit_punct(4);
+                                    out.blit_punct(5);
                                     {
                                         match self.flatten {
                                             Flatten::None => {

@@ -543,7 +543,7 @@ fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) -> Result
             out.blit(213, 3);
             {
                 let at = out.buf.len();
-                out.blit_punct(5);
+                out.blit_punct(4);
                 out.buf.extend_from_slice(with);
                 out.blit(216, 3);
                 out.tt_group(Delimiter::Parenthesis, at);
@@ -718,7 +718,7 @@ fn struct_schema(
                             let at = out.buf.len();
                             out.blit(295, 3);
                             out.buf.extend_from_slice(field.ty);
-                            out.blit_punct(4);
+                            out.blit_punct(5);
                             out.buf.extend_from_slice(expr);
                             out.blit(29, 2);
                             {
@@ -1562,8 +1562,11 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
     let kind = if all_objects {
         "AlwaysObject"
     } else if ctx.target.enum_flags
-        & (ENUM_CONTAINS_TUPLE_VARIANT | ENUM_CONTAINS_STRUCT_VARIANT | ENUM_CONTAINS_UNIT_VARIANT)
-        == ENUM_CONTAINS_UNIT_VARIANT
+        & (ENUM_CONTAINS_TUPLE_VARIANT
+            | ENUM_CONTAINS_STRUCT_VARIANT
+            | ENUM_CONTAINS_UNIT_VARIANT
+            | ENUM_HAS_EXTERNAL_TAG)
+        == (ENUM_CONTAINS_UNIT_VARIANT | ENUM_HAS_EXTERNAL_TAG)
     {
         "AlwaysString"
     } else {
@@ -1745,7 +1748,7 @@ fn enum_variant_from_json_struct(
                 out.push_ident(&ctx.lifetime);
                 out.blit_punct(1);
             };
-            out.blit_punct(4);
+            out.blit_punct(5);
             {
                 let at = out.buf.len();
                 for field in &ordered_fields {
@@ -1760,7 +1763,7 @@ fn enum_variant_from_json_struct(
                 out.blit(644, 3);
                 {
                     let at = out.buf.len();
-                    out.blit_punct(5);
+                    out.blit_punct(4);
                     if let Err(err) = struct_schema(
                         out,
                         ctx,
@@ -1894,7 +1897,7 @@ fn enum_variant_from_json_struct(
                 out.push_ident(&ctx.lifetime);
                 out.blit_punct(1);
             };
-            out.blit_punct(4);
+            out.blit_punct(5);
             {
                 let at = out.buf.len();
                 for field in &ordered_fields {
@@ -1909,7 +1912,7 @@ fn enum_variant_from_json_struct(
                 out.blit(644, 3);
                 {
                     let at = out.buf.len();
-                    out.blit_punct(5);
+                    out.blit_punct(4);
                     if let Err(err) = struct_schema(
                         out,
                         ctx,
@@ -3638,7 +3641,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     })
 }
 pub fn derive(stream: TokenStream) -> TokenStream {
-    match inner_derive(stream.clone()) {
+    match inner_derive(stream) {
         Ok(e) => e,
         Err(err) => err.to_compiler_error(),
     }
