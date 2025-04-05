@@ -1912,13 +1912,13 @@ fn enum_from_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> R
             [fmt_generics( out, &target.generics, USE)]
         >]  [?(!target.where_clauses.is_empty())
             where [] [~&target.where_clauses]] {
-                type Err = ();
-            pub fn from_str(&self) -> Result<Self, ()> {
-                Ok(match self {
+                type Err = ::jsony::error::UnknownVariant;
+            fn from_str(value: &str) -> Result<Self, ::jsony::error::UnknownVariant> {
+                Ok(match value {
                     [for (variant in variants) {
                         [@variant_key_literal(ctx, variant).into()] => [#: &target.name]::[#: variant.name],
                     }]
-                    _ => return Err(())
+                    _ => return Err(::jsony::error::UnknownVariant)
                 })
             }
         }

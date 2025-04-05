@@ -360,5 +360,75 @@ fn from_vec_zst() {
     let input = jsony::array![ for _ in 0..100; [] ];
     let vec = jsony::from_json::<Vec<[u8; 0]>>(&input).unwrap();
     assert_eq!(vec.len(), 100);
+    let mut count = 0;
+    for item in &vec {
+        count += item.len();
+    }
+    assert_eq!(count, 0);
     let _ = vec.clone();
+}
+
+#[test]
+fn to_from_str() {
+    #[derive(Jsony, PartialEq, Eq, Debug)]
+    #[jsony(ToStr, FromStr)]
+    enum SimpleEnum {
+        Alpha,
+        Beta,
+        #[jsony(rename = "Charlie")]
+        Canary,
+    }
+    assert_eq!(SimpleEnum::Alpha.to_str(), "Alpha");
+    let value = vec![SimpleEnum::Alpha];
+    let _test_is_static: &'static str = (&value[0]).to_str();
+
+    assert_eq!(SimpleEnum::Beta.to_str(), "Beta");
+    assert_eq!(SimpleEnum::Canary.to_str(), "Charlie");
+
+    assert_eq!(SimpleEnum::Alpha, "Alpha".parse().expect("Alpha"));
+    assert_eq!(SimpleEnum::Beta, "Beta".parse().expect("Beta"));
+    assert_eq!(SimpleEnum::Canary, "Charlie".parse().expect("Charlie"));
+    assert!(
+        "Canary".parse::<SimpleEnum>().is_err(),
+        "Canary was renamed to Charlie"
+    );
+}
+
+#[test]
+fn to_from_str_with_json() {
+    // Json may utilize the ToStr/FromStr impls we test here that also
+    // adding json doesn't break either
+    #[derive(Jsony, PartialEq, Eq, Debug)]
+    #[jsony(ToStr, FromStr, Json)]
+    enum SimpleEnum {
+        Alpha,
+        Beta,
+        #[jsony(rename = "Charlie")]
+        Canary,
+    }
+    assert_eq!(SimpleEnum::Alpha.to_str(), "Alpha");
+    let value = vec![SimpleEnum::Alpha];
+    let _test_is_static: &'static str = (&value[0]).to_str();
+
+    assert_eq!(SimpleEnum::Beta.to_str(), "Beta");
+    assert_eq!(SimpleEnum::Canary.to_str(), "Charlie");
+
+    assert_eq!(SimpleEnum::Alpha, "Alpha".parse().expect("Alpha"));
+    assert_eq!(SimpleEnum::Beta, "Beta".parse().expect("Beta"));
+    assert_eq!(SimpleEnum::Canary, "Charlie".parse().expect("Charlie"));
+    assert!(
+        "Canary".parse::<SimpleEnum>().is_err(),
+        "Canary was renamed to Charlie"
+    );
+    assert_eq!(jsony::to_json(&SimpleEnum::Alpha), "\"Alpha\"");
+    assert_eq!(jsony::to_json(&SimpleEnum::Canary), "\"Charlie\"");
+
+    assert_eq!(
+        jsony::from_json::<SimpleEnum>("\"Alpha\"").unwrap(),
+        SimpleEnum::Alpha
+    );
+    assert_eq!(
+        jsony::from_json::<SimpleEnum>("\"Charlie\"").unwrap(),
+        SimpleEnum::Canary
+    );
 }

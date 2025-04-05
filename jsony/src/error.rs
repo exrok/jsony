@@ -1,5 +1,17 @@
 use crate::json::DecodeError;
 
+/// Error used for FromStr enum implementation
+#[derive(Clone, Copy, Debug)]
+pub struct UnknownVariant;
+
+impl std::fmt::Display for UnknownVariant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Unknown Variant")
+    }
+}
+
+impl std::error::Error for UnknownVariant {}
+
 pub static EMPTY_OBJECT_FOR_EXTERNALLY_TAGGED_ENUM: DecodeError = DecodeError {
     message: "Expected an object containing a single field naming the enum variant but instead found an empty object",
 };

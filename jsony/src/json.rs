@@ -382,7 +382,7 @@ unsafe fn zero_sized_type_erased_decode_vec<'de>(
 }
 
 /// Decodes an array returning the raw parts in (pointer, len, capacity).
-/// The Layout must corrspond the type `emplace_from_json` is expected.
+/// The Layout must correspond the type `emplace_from_json` is expected.
 unsafe fn type_erased_decode_vec<'de>(
     layout: Layout,
     emplace_from_json: unsafe fn(NonNull<()>, &mut Parser<'de>) -> Result<(), &'static DecodeError>,
