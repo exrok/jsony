@@ -1,9 +1,10 @@
 # CHANGELOG
 
-# Unreleased
+# 0.1.2 (2025-04-05)
 
 Enhancements:
 
+- `ToStr/FromStr` enum derive support.
 - Added `owned_cow` and `json_string` for use in the `with` attribute.
 - Added blanket ToJson/ToBinary impls for `Cow<'_, T>`.
 - Introduced `to_binary_into` the binary version of `to_json_into`.
@@ -13,6 +14,12 @@ Enhancements:
 - More Compilation time reductions:
   - Removed ~200 functions calls in jsony_macros
   - Added specialization for Default::default() FromJson fields
+  - Type erased inner functions for `object_decode` and `impl<T> FromJson for Vec<T>`
+
+Changes:
+
+- `Hashmap::<Number, _>` now implements `ToJson` and `FromJson` via a new trait
+  `JsonKeyKind` which is implemented for both `AlwaysNumber` and `AlwaysString`.
 
 # 0.1.1 (2025-04-01)
 

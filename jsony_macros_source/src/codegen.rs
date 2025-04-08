@@ -826,6 +826,8 @@ fn inner_struct_to_json(
                             out.push_comma();
                         }
                     );
+                } else {
+                    throw!("ToJson Via = Iterator, only supported with flatten currrently." @ field.name.span());
                 }
             } else {
                 if flattened {

@@ -131,12 +131,14 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// Configured with attributes in the form `#[jsony(...)]` on containers,
 /// variants, and fields.
 ///
-/// The traits to derive are specified via container attributes. The currently
-/// supported traits are:
+/// The traits/methods to derive are specified via container attributes. The currently
+/// supported traits/methods are:
 /// - `ToJson`
 /// - `FromJson`
 /// - `ToBinary`
 /// - `FromBinary`
+/// - `FromStr`
+/// - `ToStr` (inherent method)
 ///
 /// The rest of the attributes are described in the following tables. Note that some
 /// attributes apply only to certain traits.
@@ -187,6 +189,7 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// | `From` | `FromJson`, `FromBinary` | All traits converting from a serialized format to a Rust type
 /// | `Binary` | `ToBinary`, `FromBinary` | All Binary encoding traits
 /// | `Json` | `ToJson`, `FromJson` | All JSON encoding traits
+/// | `Str` | `ToStr`, `FromStr` | Enum between string slice converting function
 ///
 /// As more formats are added, these aliases may expand. If an attribute only supports a subset
 /// of traits specified by the set, then the rest are ignored. If the set specified is disjoint, an error
@@ -412,6 +415,39 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// Not Supported
 ///
 /// </td></tr></table>
+///
+/// ## Enum Conversion Helpers
+///
+/// The Jsony derive can also automatically implement common conversions for
+/// enums. Not only is the same proc-macro expansion innovcation and parsing
+/// of the derive target shared, but the implementation can be as well. For
+/// instance an Enum with `#[jsony(FromJson, FromStr)]` may have the FromJson
+/// impl internally call FromStr.
+///
+/// Example:
+///
+/// ```
+/// #[derive(Jsony, PartialEq, Debug)]
+/// #[jsony(ToStr, FromStr, rename_all = "kebab-case")]
+/// enum Mode {
+///     Slow,
+///     Fast,
+///     TurboMax,
+/// }
+///
+/// assert_eq!(Mode::TurboMax.to_str(), "turbo-max");
+/// assert_eq!("slow".parse::<Mode>(), Ok(Mode::Slow));
+/// assert!("zzz".parse::<Mode>().is_err());
+/// ```
+///
+/// - `FromStr` will implement [std::str::FromStr] (often invoked via `str::parse` as seen in the example).
+/// - `ToStr` will implement a inherent method on the enum with the following
+/// signature:
+///
+/// ```
+/// pub fn to_str(&self) -> &'static str;
+/// ```
+/// Rename attributes on variants will be respected for these conversion.
 ///
 /// ## Why a single unified derive macro?
 ///

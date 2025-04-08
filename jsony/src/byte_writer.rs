@@ -573,7 +573,7 @@ pub trait IntoByteWriter<'a> {
     /// creation from `into_text_writer()`.
     ///
     /// If `finish_writing` is called on an instance of TextWriter
-    /// not create via [IntoTextWriter::into_text_writer] of the same type then this
+    /// not create via `IntoTextWriter::into_text_writer` of the same type then this
     /// method may panic.
     fn finish_writing(buffer: BytesWriter<'a>) -> Self::Output;
 }

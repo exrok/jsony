@@ -1,4 +1,7 @@
-use std::{borrow::Cow, collections::BTreeMap};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, HashMap},
+};
 
 use jsony::{FromBinary, Jsony, ToBinary};
 
@@ -813,6 +816,18 @@ fn with_owned_cow_helper() {
     assert_binary_round_trip!(Sys {
         shared: Cow::Borrowed(&["hello", "nice"])
     })
+}
+
+#[test]
+fn maps_with_numeric_keys() {
+    assert_json_eq!(
+        {"2": false},
+        HashMap::<u32, bool>::from_iter([(2, false)])
+    );
+    assert_json_eq!(
+        {"-1": true, "2": false, "3": true},
+        BTreeMap::<i8, bool>::from_iter([(-1, true), (2, false), (3, true)])
+    );
 }
 
 #[test]

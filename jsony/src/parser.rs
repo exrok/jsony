@@ -903,17 +903,26 @@ impl<'j> InnerParser<'j> {
         }
     }
     pub fn discard_seen_true(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.ctx.input[self.index], b't');
+        debug_assert_eq!(
+            self.ctx.input[self.index], b't',
+            "invalid FromJson impl: discard_seen_true() called when not seen Peek::True"
+        );
         self.consume_ident(TRUE_REST)
     }
 
     pub fn discard_seen_false(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.ctx.input[self.index], b'f');
+        debug_assert_eq!(
+            self.ctx.input[self.index], b'f',
+            "invalid FromJson impl: discard_seen_false() called when not seen Peek::False"
+        );
         self.consume_ident(FALSE_REST)
     }
 
     pub fn discard_seen_null(&mut self) -> JsonResult<()> {
-        debug_assert_eq!(self.ctx.input[self.index], b'n');
+        debug_assert_eq!(
+            self.ctx.input[self.index], b'n',
+            "invalid FromJson impl: discard_seen_null() called when not seen Peek::Null"
+        );
         self.consume_ident(NULL_REST)
     }
     fn consume_ident<const SIZE: usize>(&mut self, expected: [u8; SIZE]) -> JsonResult<()> {

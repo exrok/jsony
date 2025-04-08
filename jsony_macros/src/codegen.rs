@@ -1075,6 +1075,11 @@ fn inner_struct_to_json(
                                 out.tt_group(Delimiter::Brace, at);
                             };
                         };
+                    } else {
+                        return Err(Error::span_msg(
+                            "ToJson Via = Iterator, only supported with flatten currrently.",
+                            field.name.span(),
+                        ));
                     }
                 } else {
                     if flattened {

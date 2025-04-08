@@ -10,7 +10,7 @@ checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
 
 [[package]]
 name = "jsony"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "itoa",
  "jsony_macros",
@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "jsony_macros"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "ryu"
