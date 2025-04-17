@@ -948,7 +948,7 @@ impl Codegen {
     }
     fn flush_error(&mut self) {
         if let Some(err) = self.error.take() {
-            self.out.buf.extend(err.to_compiler_error());
+            self.out.buf.extend(err.to_compiler_error(true));
         }
     }
 }
@@ -969,7 +969,7 @@ pub fn object(input: TokenStream) -> TokenStream {
     }
 
     if let Some(error) = codegen.error {
-        return error.to_compiler_error();
+        return error.to_compiler_error(true);
     }
 
     codegen.finish_creating()

@@ -98,9 +98,11 @@ macro_rules! append_tok {
     }};
     (# $d:tt) => { $d.tt_punct_joint('\'') };
     (: $d:tt) => { $d.tt_punct_alone(':') };
+    (+ $d:tt) => { $d.tt_punct_alone('+') };
     (~ $d:tt) => { $d.tt_punct_joint('#') };
     (< $d:tt) => { $d.tt_punct_alone('<') };
     (% $d:tt) => { $d.tt_punct_joint(':') };
+    (== $d:tt) => {$d.tt_punct_joint('='); $d.tt_punct_alone('=') };
     (:: $d:tt) => {$d.tt_punct_joint(':'); $d.tt_punct_alone(':') };
     (-> $d:tt) => {$d.tt_punct_joint('-'); $d.tt_punct_alone('>') };
     (=> $d:tt) => {$d.tt_punct_joint('='); $d.tt_punct_alone('>') };
@@ -191,13 +193,24 @@ fn bodyless_impl_from(
     };
     Ok(())
 }
-fn impl_from_binary(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
+
+fn impl_from_binary(
+    out: &mut RustWriter,
+    ctx: &Ctx,
+    inner: TokenStream,
+    pod_forward: Option<&Field>,
+) -> Result<(), Error> {
     splat! {
-        output;
+        out;
         ~[[automatically_derived]]
-        unsafe [try bodyless_impl_from(output, None, Ident::new("FromBinary", Span::call_site()), ctx)] {
+        unsafe [try bodyless_impl_from(out, None, Ident::new("FromBinary", Span::call_site()), ctx)] {
+            [if ctx.target.pod {
+                splat!(out; const POD: bool = true;)
+            } else if let Some(pod_field) = pod_forward {
+                splat!(out; const POD: bool = <[~pod_field.ty] as ::jsony::FromBinary>::POD;)
+            }]
             fn decode_binary(decoder: &mut [~&ctx.crate_path]::binary::Decoder<#[#: &ctx.lifetime]>) -> Self [
-                output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+                out.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
     };
@@ -246,27 +259,33 @@ fn impl_from_json(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Res
 }
 
 fn impl_to_binary(
-    output: &mut RustWriter,
+    out: &mut RustWriter,
     Ctx {
         target, crate_path, ..
     }: &Ctx,
     inner: TokenStream,
+    pod_forward: Option<&Field>,
 ) -> Result<(), Error> {
     let any_generics = !target.generics.is_empty();
     splat! {
-        output;
+        out;
         ~[[automatically_derived]]
-        unsafe impl [?(any_generics) < [fmt_generics(output, &target.generics, DEF)] >]
+        unsafe impl [?(any_generics) < [fmt_generics(out, &target.generics, DEF)] >]
          [~&crate_path]::ToBinary for [#: &target.name][?(any_generics) <
-            [fmt_generics( output, &target.generics, USE)]
+            [fmt_generics( out, &target.generics, USE)]
         >]  [?(!target.where_clauses.is_empty() || !target.generic_field_types.is_empty())
              where [
                 for ty in &target.generic_field_types {
-                    splat!(output; [~ty]: ToBinary,)
+                    splat!(out; [~ty]: ToBinary,)
                 }
              ]] {
+            [if target.pod {
+                splat!(out; const POD: bool = true;)
+            } else if let Some(pod_field) = pod_forward {
+                splat!(out; const POD: bool = <[~pod_field.ty] as ::jsony::FromBinary>::POD;)
+            }]
             fn encode_binary(&self, encoder: &mut ::jsony::BytesWriter) [
-                output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
+                out.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
     };
@@ -827,7 +846,7 @@ fn inner_struct_to_json(
                         }
                     );
                 } else {
-                    throw!("ToJson Via = Iterator, only supported with flatten currrently." @ field.name.span());
+                    throw!("ToJson Via = Iterator, only supported with flatten currently." @ field.name.span());
                 }
             } else {
                 if flattened {
@@ -1770,6 +1789,92 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
     Ok(())
 }
 
+fn handle_pod_binary_any_struct(
+    out: &mut RustWriter,
+    ctx: &Ctx<'_>,
+    fields: &[Field],
+) -> Result<bool, Error> {
+    if !ctx.target.generics.is_empty() {
+        throw!("Pod derive doesn't support generics or lifetimes yet.");
+    }
+    if !matches!(ctx.target.repr, ast::Repr::Transparent | ast::Repr::C) {
+        throw!("Pod type must be either repr(transparent) or repr(C)");
+    }
+    splat!(out;
+        use ::std::mem::{size_of, offset_of};
+        // Don't need to do this because of the repr requirement in theory we could support
+        // pod types using the follow asserts without requiring Repr(C) but then the it would
+        // depend on the compiler version. In such a case it we would have a to TryPod or some
+        // such where the POD is merely optimization.
+        // [?(!matches!(ctx.target.repr, ast::Repr::Transparent | ast::Repr::C))
+        //     assert!(
+        //         {
+        //             [for (field in fields) {
+        //                 let [#: field.name] = offset_of!([
+        //                     splat!(out; [ctx.dead_target_type(out)], [#: field.name])
+        //                 ]);
+        //             }]
+        //             [for ((i, field) in fields.windows(2).enumerate()) {
+        //                 [?(i != 0) &]
+        //                 // todo should be less or equal
+        //                 ( [#: field[0].name] < [#: field[1].name])
+        //             }]
+
+        //         },
+        //         [out.buf.push(TokenTree::Literal(Literal::string("Not all fields are ordered")))]
+        //     );
+        // ]
+        assert!(
+            [for ((i, field) in fields.iter().enumerate()) {
+                [?(i != 0) &]
+                <[~field.ty] as jsony::[
+                    if ctx.target.from_binary {
+                        splat!(out; FromBinary);
+                    } else {
+                        splat!(out; ToBinary);
+                    }
+                ]>::POD
+            }],
+            [out.buf.push(TokenTree::Literal(Literal::string("Not all fields implement POD")))]
+        );
+
+        assert!(
+            size_of::<[#ctx.target.name]>() ==
+            [for ((i, field) in fields.iter().enumerate()) {
+                [?(i != 0) +]
+                size_of::<[~field.ty]>()
+            }],
+            [out.buf.push(TokenTree::Literal(Literal::string("struct has gaps between fields")))]
+        );
+    );
+
+    if fields.len() < 2 {
+        return Ok(false);
+    }
+
+    // Note we currently omit the endian transform for now, as I doubt anyone
+    // will make use of it before jsony 0.2 which significantly restructure how
+    // the system works.
+    if ctx.target.to_binary {
+        let start = out.buf.len();
+        splat! { out; unsafe {
+            encoder.push_as_bytes(self);
+        }};
+        let body = out.split_off_stream(start);
+        impl_to_binary(out, &ctx, body, None)?;
+    }
+
+    if ctx.target.from_binary {
+        let start = out.buf.len();
+        splat! {out;
+            unsafe { decoder.pod_type() }
+        };
+        let body = out.split_off_stream(start);
+        impl_from_binary(out, &ctx, body, None)?;
+    }
+    Ok(true)
+}
+
 // bincode test
 fn handle_struct(
     output: &mut RustWriter,
@@ -1810,17 +1915,33 @@ fn handle_struct(
         }
     }
 
+    if target.pod {
+        if handle_pod_binary_any_struct(output, &ctx, fields)? {
+            return Ok(());
+        }
+    }
+
+    let mut auto_pod = None;
+    if target.transparent_impl && matches!(target.repr, ast::Repr::Transparent | ast::Repr::C) {
+        if let [field] = &fields {
+            auto_pod = Some(field);
+        }
+    }
+
     if target.to_binary {
-        let body = token_stream! { output; [
+        let start = output.buf.len();
+        splat! { output; [
             for field in fields {
                 encode_binary_field(output, &ctx, field, &|out| splat!{out; &self.[#: field.name]})
             }
         ]};
-        impl_to_binary(output, &ctx, body)?;
+        let body = output.split_off_stream(start);
+        impl_to_binary(output, &ctx, body, auto_pod)?;
     }
 
     if target.from_binary {
-        let body = token_stream! {output;
+        let start = output.buf.len();
+        splat! {output;
             [#: &target.name] {
                 [for field in fields {
                     splat!{(output);
@@ -1829,7 +1950,8 @@ fn handle_struct(
                 }]
             }
         };
-        impl_from_binary(output, &ctx, body)?;
+        let body = output.split_off_stream(start);
+        impl_from_binary(output, &ctx, body, auto_pod)?;
     }
 
     Ok(())
@@ -1850,13 +1972,26 @@ fn handle_tuple_struct(
         tuple_struct_to_json(output, &ctx, fields)?;
     }
 
+    if target.pod {
+        if handle_pod_binary_any_struct(output, &ctx, fields)? {
+            return Ok(());
+        }
+    }
+
+    let mut auto_pod = None;
+    if target.transparent_impl && matches!(target.repr, ast::Repr::Transparent | ast::Repr::C) {
+        if let [field] = &fields {
+            auto_pod = Some(field);
+        }
+    }
+
     if target.to_binary {
         let body = token_stream! {output; [
             for (i, field) in fields.iter().enumerate() {
                 encode_binary_field(output, &ctx, field, &|out| splat!{out; &self.[@TokenTree::Literal(Literal::usize_unsuffixed(i))]})
             }
         ]};
-        impl_to_binary(output, &ctx, body)?;
+        impl_to_binary(output, &ctx, body, auto_pod)?;
     }
 
     if target.from_binary {
@@ -1867,7 +2002,7 @@ fn handle_tuple_struct(
                 }]
             )
         };
-        impl_from_binary(output, &ctx, body)?;
+        impl_from_binary(output, &ctx, body, auto_pod)?;
     }
 
     Ok(())
@@ -1946,11 +2081,11 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                     },
                     EnumKind::Struct => {
                         splat!{out; {
-                            [for (i, field) in variant.fields.iter().enumerate() { splat!(out; [#: field.name]: [#: &ctx.temp[i]],) }]
+                            [for field in variant.fields { splat!(out; [#: field.name],) }]
                         } => {
                             encoder.push([@TokenTree::Literal(Literal::u8_unsuffixed(i as u8))]);
-                            [for (i, field) in variant.fields.iter().enumerate() {
-                                encode_binary_field(out, ctx, field, &|out| splat!{out; [#: &ctx.temp[i]]})
+                            [for field in variant.fields {
+                                encode_binary_field(out, ctx, field, &|out| splat!{out; [#: field.name]})
                             }]
                         }}
                     },
@@ -1963,7 +2098,7 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
             }
         ]}
     };
-    impl_to_binary(out, ctx, body)
+    impl_to_binary(out, ctx, body, None)
 }
 
 fn enum_from_binary(
@@ -2004,7 +2139,7 @@ fn enum_from_binary(
             }
         ]}
     };
-    impl_from_binary(out, ctx, body)
+    impl_from_binary(out, ctx, body, None)
 }
 
 fn handle_enum(
@@ -2057,6 +2192,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
         to_binary: false,
         to_json: false,
         to_str: false,
+        pod: false,
         from_str: false,
         enum_flags: 0,
         content: None,
@@ -2133,6 +2269,6 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
 pub fn derive(stream: TokenStream) -> TokenStream {
     match inner_derive(stream) {
         Ok(e) => e,
-        Err(err) => err.to_compiler_error(),
+        Err(err) => err.to_compiler_error(false),
     }
 }

@@ -30,7 +30,7 @@ struct InnerError {
 pub(crate) struct Error(Box<InnerError>);
 
 impl Error {
-    pub(crate) fn to_compiler_error(&self) -> TokenStream {
+    pub(crate) fn to_compiler_error(&self, wrap: bool) -> TokenStream {
         let mut group = TokenTree::Group(Group::new(
             Delimiter::Parenthesis,
             TokenStream::from_iter([TokenTree::Literal(Literal::string(&self.0.message))]),
@@ -45,10 +45,14 @@ impl Error {
             group,
             TokenTree::Punct(Punct::new(';', Spacing::Alone)),
         ]);
-        TokenStream::from_iter([TokenTree::Group(Group::new(
-            Delimiter::Brace,
-            TokenStream::from_iter([stmt]),
-        ))])
+        if wrap {
+            TokenStream::from_iter([TokenTree::Group(Group::new(
+                Delimiter::Brace,
+                TokenStream::from_iter([stmt]),
+            ))])
+        } else {
+            stmt
+        }
     }
     #[cold]
     #[inline(never)]
@@ -107,13 +111,15 @@ fn main() {
         codegen::derive(tokens!());
     }
     util::print_pretty(codegen::derive(tokens! {
-
-    #[derive(Debug, Jsony, PartialEq, Eq)]
-    #[jsony(FromStr)]
-    enum Sys {
-        Foo,
-        Doggy
+    #[derive(Debug, Clone, Copy, Jsony, PartialEq)]
+    #[jsony(Json, Binary, Pod)]
+    #[repr(C)]
+    /// An axis-aligned rectangular region of a video frame defined with proportional units.
+    pub struct BoundingBox {
+        pub w: f32,
+        pub h: f32,
+        pub x: f32,
+        pub y: f32,
     }
-
-        }));
+            }));
 }

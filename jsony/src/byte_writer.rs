@@ -381,6 +381,16 @@ impl<'a> BytesWriter<'a> {
         self.reserve_internal(size, true);
     }
 
+    /// Appends the raw byte view of T.
+    ///
+    /// Safety: The caller must ensure that the data is POD (Plain Old Data).
+    /// That the data type contains no gaps between the initialized fields.
+    pub unsafe fn push_as_bytes<T>(&mut self, data: &T) {
+        self.push_bytes(unsafe {
+            ::std::slice::from_raw_parts(data as *const T as *const u8, ::std::mem::size_of::<T>())
+        });
+    }
+
     /// Appends the given bytes to the end of this buffer.
     ///
     /// Note: may flush the buffer to the underlying IO. If flushing results in

@@ -140,6 +140,7 @@ pub struct DeriveTargetInner<'a> {
     pub from_binary: bool,
     pub to_str: bool,
     pub from_str: bool,
+    pub pod: bool,
     pub rename_all: RenameRule,
     pub enum_flags: EnumFlag,
     pub flattenable: bool,
@@ -349,6 +350,9 @@ fn parse_container_attr(
         }
         "ToJson" => {
             target.to_json = true;
+        }
+        "zerocopy" => {
+            target.pod = true;
         }
         "ignore_tag_adjacent_fields" => {
             target.ignore_tag_adjacent_fields = true;

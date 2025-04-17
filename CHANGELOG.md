@@ -1,5 +1,12 @@
 # CHANGELOG
 
+# Unreleased
+
+Enhancements:
+
+- Add `#[jsony(zerocopy)]` for deriving zerocopy support in FromBinary and ToBinary
+- Add FromBinary/ToBinary impls for `Cow<'_, [T]>` and `[T]` for zerocopy types.
+
 # 0.1.2 (2025-04-05)
 
 Enhancements:

@@ -26,7 +26,7 @@ struct InnerError {
 pub(crate) struct Error(InnerError);
 
 impl Error {
-    pub(crate) fn to_compiler_error(&self) -> TokenStream {
+    pub(crate) fn to_compiler_error(&self, wrap: bool) -> TokenStream {
         let mut group = TokenTree::Group(Group::new(
             Delimiter::Parenthesis,
             TokenStream::from_iter([TokenTree::Literal(Literal::string(&self.0.message))]),
@@ -41,10 +41,14 @@ impl Error {
             group,
             TokenTree::Punct(Punct::new(';', Spacing::Alone)),
         ]);
-        TokenStream::from_iter([TokenTree::Group(Group::new(
-            Delimiter::Brace,
-            TokenStream::from_iter([stmt]),
-        ))])
+        if wrap {
+            TokenStream::from_iter([TokenTree::Group(Group::new(
+                Delimiter::Brace,
+                TokenStream::from_iter([stmt]),
+            ))])
+        } else {
+            stmt
+        }
     }
     pub(crate) fn msg(message: &str) -> Error {
         Error(InnerError {
@@ -155,6 +159,7 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// | `tag = "..."` | `Json` | Field containing the enum variant.
 /// | `transparent` | All | Traits delegate to the single inner type.
 /// | `untagged` | `Json` | Only data content of an enum is stored.
+/// | `zerocopy` | `Binary` | Enables zerocopy support and asserts requirements are met.
 ///
 /// ## Enum Variant Attributes
 /// These are `jsony` attributes that appear above a variant in an enum.
@@ -169,13 +174,13 @@ pub fn object(input: TokenStream) -> TokenStream {
 ///
 /// | Format | Supported Traits    | Description |
 /// |-------------------|----------|---------------------------------------------------------------------------------|
-/// | `alias = "..."`   | FromJson | Use provided string as a alternative field name when decoding.
+/// | `alias = "..."`   |`FromJson`| Use provided string as a alternative field name when decoding.
 /// | `default [= ...]` | `From`   | Use `Default::default()` or provided expression if field is missing.
 /// | `flatten`         | `Json`   | Flatten the contents of the field into the container it is defined in.
 /// | `rename = "..."`  | `Json`   | Use provided string as field name.
 /// | `via = ...`       | All      | Implement conversion through provided trait.
 /// | `skip`            | All      | Omit field while serializing, use default value when deserializing.
-/// | `skip_if = ...`   | ToJson   | Omit field while serializing if provided function returns true.
+/// | `skip_if = ...`   | `ToJson`  | Omit field while serializing if provided function returns true.
 /// | `with = ...`      | All      | Use methods from specified module instead of trait. [read more](#jsonywith---on-fields)
 ///
 /// ## Format Aliases
@@ -258,6 +263,36 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// `Default::default()` is used.
 ///
 /// `skip` is useful when you need a field on the rust side that isn't present in the serialized data format.
+///
+/// #### `#[jsony(zerocopy)]`
+///
+/// Enables zero-copy optimizations for `FromBinary` and `ToBinary` implementations.
+/// This allows borrowing the data directly from the input byte slice, improving performance.
+///
+/// **Requirements:**
+///
+/// * The struct must be `#[repr(C)]` or `#[repr(transparent)]`.
+/// * The struct must be Plain Old Data (POD) – having a defined layout with no
+///     padding, suitable for direct memory interpretation.
+///
+/// **Safety:**
+///
+/// Using this attribute is safe. The necessary POD constraints are checked at compile time
+/// via `const` assertions. If the requirements are not met, a compile-time error
+/// occurs. This avoids the need for `unsafe` code often associated with manual
+/// `FromBinary::POD = true` implementations.
+///
+/// **Alignment and Slices:**
+///
+/// Deserializing slices like `&[Self]` requires the input data to have the correct
+/// alignment for `Self`. If alignment cannot be guaranteed, using `Cow<'_, [Self]>`
+/// is recommended. `Cow` will borrow if possible, or create an owned copy if the
+/// input alignment is insufficient.
+///
+/// **Limitations:**
+///
+/// * **Big Endian:** As of jsony v0.1, zero-copy support on Big Endian systems
+///     is limited to types of `size_of::<T>() == 1`. Future versions may expand this.
 ///
 /// #### `#[jsony(skip_if = ...)]`
 ///

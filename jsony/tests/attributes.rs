@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
+    mem::MaybeUninit,
 };
 
 use jsony::{FromBinary, Jsony, ToBinary};
@@ -857,4 +858,106 @@ fn with_json_string_helper() {
     assert_binary_round_trip!(Sys {
         double_json: Inner { a: 10, b: 5 }
     })
+}
+
+#[test]
+fn binary_pod() {
+    #[derive(Debug, Jsony, PartialEq, Clone)]
+    #[jsony(Binary, zerocopy)]
+    #[repr(C)]
+    struct Pod {
+        alpha: u8,
+        beta: u8,
+        canary: u16,
+        delta: f32,
+        echo: [u8; 4],
+    }
+
+    #[derive(Debug, Jsony, PartialEq)]
+    #[jsony(Binary, transparent)]
+    #[repr(transparent)]
+    struct TransparentPod(Pod);
+
+    assert!(<TransparentPod as jsony::FromBinary>::POD);
+    assert!(<TransparentPod as jsony::ToBinary>::POD);
+
+    #[derive(Jsony)]
+    #[jsony(Binary, transparent)]
+    #[repr(transparent)]
+    struct TransparentNotPod(String);
+    assert!(!<TransparentNotPod as jsony::FromBinary>::POD);
+    assert!(!<TransparentNotPod as jsony::ToBinary>::POD);
+
+    let inputs: &[Pod] = &[
+        Pod {
+            alpha: 32,
+            beta: 243,
+            canary: 32,
+            delta: 24.23,
+            echo: [1, 2, 3, 4],
+        },
+        Pod {
+            alpha: 12,
+            beta: 58,
+            canary: 12,
+            delta: 989.23,
+            echo: [255, 0, 1, 3],
+        },
+    ];
+    assert_binary_round_trip!(inputs[0].clone());
+    assert_binary_round_trip!(TransparentPod(inputs[0].clone()));
+    let mut buffer = MaybeUninit::<[u32; 32]>::uninit();
+    {
+        // make suer the slice will be aligned.
+        let aligned_buffer = unsafe {
+            std::slice::from_raw_parts_mut(
+                (buffer.as_mut_ptr() as *mut MaybeUninit<u8>).add(3),
+                32 * size_of::<u32>() - 3,
+            )
+        };
+        let aligned_encoded = jsony::to_binary_into(&inputs, aligned_buffer);
+        assert_eq!(
+            inputs,
+            jsony::from_binary::<&[Pod]>(&aligned_encoded).expect("to decode since aligned")
+        );
+        let cowify = jsony::from_binary::<Cow<'_, [Pod]>>(&aligned_encoded)
+            .expect("to decode since aligned");
+        if let Cow::Owned(_) = cowify {
+            panic!("Expected to borrow since aligned");
+        }
+        assert_eq!(inputs, &*cowify);
+        assert_eq!(
+            inputs,
+            jsony::from_binary::<Vec<Pod>>(&aligned_encoded).expect("to decode since aligned")
+        );
+        assert_eq!(
+            inputs,
+            jsony::from_binary::<Vec<TransparentPod>>(&aligned_encoded)
+                .expect("to decode since aligned")
+                .into_iter()
+                .map(|pod| { pod.0 })
+                .collect::<Vec<_>>()
+        );
+    }
+
+    {
+        let unaligned_buffer = unsafe {
+            std::slice::from_raw_parts_mut(
+                buffer.as_mut_ptr() as *mut MaybeUninit<u8>,
+                32 * size_of::<u32>(),
+            )
+        };
+        let unaligned_encoded = jsony::to_binary_into(&inputs, unaligned_buffer);
+        assert!(jsony::from_binary::<&[Pod]>(&unaligned_encoded).is_err());
+        let cowify = jsony::from_binary::<Cow<'_, [Pod]>>(&unaligned_encoded)
+            .expect("to decode since aligned");
+        if let Cow::Borrowed(_) = cowify {
+            panic!("Expected to owned since unaligned");
+        }
+        assert_eq!(inputs, &*cowify);
+        assert_eq!(
+            inputs,
+            jsony::from_binary::<Vec<Pod>>(&unaligned_encoded).unwrap()
+        );
+    }
 }

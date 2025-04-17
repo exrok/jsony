@@ -31,6 +31,7 @@
 use super::{FromBinary, ToBinary};
 use crate::BytesWriter;
 use std::{
+    alloc::Layout,
     borrow::Cow,
     collections::{HashMap, HashSet},
     hash::{BuildHasher, Hash},
@@ -103,6 +104,77 @@ pub struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
+    fn try_borrow_or_copy_untyped_slice(&mut self, layout: Layout) -> (bool, *const u8, usize) {
+        'return_empty: {
+            let len = self.read_length();
+            if len == 0 {
+                break 'return_empty;
+            }
+            let Some(byte_len) = len.checked_mul(layout.size()) else {
+                self.report_static_error("Invalid length, overflowed");
+                break 'return_empty;
+            };
+            if byte_len > self.remaining_size() {
+                self.eof = true;
+                break 'return_empty;
+            }
+            let ptr = self.start.as_ptr();
+            self.start = unsafe { NonNull::new_unchecked(ptr.add(byte_len)) };
+            if ptr.addr() & (layout.align() - 1) != 0 {
+                let alloc = unsafe {
+                    std::alloc::alloc(Layout::from_size_align_unchecked(byte_len, layout.align()))
+                };
+                if alloc.is_null() {
+                    self.report_static_error("Allocation failed");
+                    break 'return_empty;
+                }
+                unsafe {
+                    std::ptr::copy_nonoverlapping(ptr, alloc, byte_len);
+                }
+                return (true, alloc, len);
+            } else {
+                return (false, ptr, len);
+            }
+        }
+        return (false, std::ptr::without_provenance_mut(layout.align()), 0);
+    }
+
+    pub unsafe fn pod_type<T>(&mut self) -> T {
+        let size = size_of::<T>();
+        if size > self.remaining_size() {
+            self.eof = true;
+            unsafe { std::mem::zeroed() }
+        } else {
+            let addr = self.start;
+            self.start = addr.add(size);
+            addr.cast::<T>().read_unaligned()
+        }
+    }
+    fn try_borrow_untyped_slice(&mut self, layout: Layout) -> (*const u8, usize) {
+        'error: {
+            let len = self.read_length();
+            let Some(byte_len) = len.checked_mul(layout.size()) else {
+                self.report_static_error("Invalid length, overflowed");
+                break 'error;
+            };
+            if byte_len > self.remaining_size() {
+                self.eof = true;
+                break 'error;
+            }
+            let ptr = self.start.as_ptr();
+            self.start = unsafe { NonNull::new_unchecked(ptr.add(byte_len)) };
+            if ptr.addr() & (layout.align() - 1) != 0 {
+                self.report_static_error("Attempted to borrowed slice of unaligned data");
+                break 'error;
+            }
+            return (ptr, len);
+        }
+        return (std::ptr::without_provenance_mut(layout.align()), 0);
+    }
+
+    fn remaining_size(&self) -> usize {
+        unsafe { self.end.as_ptr().offset_from(self.start.as_ptr()) as usize }
+    }
     /// Reports a static error message.
     ///
     /// If no error has been set yet, this method stores the provided error message
@@ -178,11 +250,11 @@ impl<'a> Decoder<'a> {
     /// Returns a reference to the read slice, or an empty slice if EOF is reached.
     fn byte_slice(&mut self, n: usize) -> &'a [u8] {
         unsafe {
-            let nstart = self.start.add(n);
-            if nstart.as_ptr() > self.end.as_ptr() {
+            if n > self.remaining_size() {
                 self.eof = true;
                 return &[];
             }
+            let nstart = self.start.add(n);
             let ptr = std::slice::from_raw_parts(self.start.as_ptr(), n);
             self.start = nstart;
             ptr
@@ -356,12 +428,50 @@ unsafe impl<T: ToBinary> ToBinary for [T] {
     }
 }
 
-unsafe impl<'a> FromBinary<'a> for &'a [u8] {
+unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Cow<'a, [T]>
+where
+    T: ToOwned + Clone,
+{
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
-        let len = decoder.read_length();
-        decoder.byte_slice(len)
+        // ideally we would like avoid this post mono assertion
+        // but until https://github.com/rust-lang/rust/issues/92827 is stabilized
+        // this the best we can do.
+        if const { T::POD && (cfg!(target_endian = "little") || size_of::<T>() == 1) } {
+            // todo: could get perf improvement through a bit specializing but opt builds probably fine
+            // already.
+            let (alloc, ptr, length) = decoder.try_borrow_or_copy_untyped_slice(Layout::new::<T>());
+            if alloc {
+                Cow::Owned(unsafe {
+                    Vec::from_raw_parts(ptr as *const T as *mut T, length, length)
+                })
+            } else {
+                Cow::Borrowed(unsafe { std::slice::from_raw_parts(ptr as *const T, length) })
+            }
+        } else {
+            Cow::Owned(Vec::<T>::decode_binary(decoder))
+        }
     }
 }
+
+unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for &'a [T] {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        // ideally we would like avoid this post mono assertion
+        // but until https://github.com/rust-lang/rust/issues/92827 is stabilized
+        // this the best we can do.
+        const { assert!(T::POD && (cfg!(target_endian = "little") || size_of::<T>() == 1)) }
+        // todo: could get perf improvement through a bit specializing but opt builds probably fine
+        // already.
+        let (ptr, length) = decoder.try_borrow_untyped_slice(Layout::new::<T>());
+        unsafe { std::slice::from_raw_parts(ptr as *const T, length) }
+    }
+}
+
+// unsafe impl<'a> FromBinary<'a> for &'a [u8] {
+//     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+//         let len = decoder.read_length();
+//         decoder.byte_slice(len)
+//     }
+// }
 unsafe impl ToBinary for String {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         self.as_bytes().encode_binary(encoder);
@@ -373,6 +483,7 @@ unsafe impl ToBinary for str {
         self.as_bytes().encode_binary(encoder);
     }
 }
+
 unsafe impl<'a> FromBinary<'a> for &'a str {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         match std::str::from_utf8(<&[u8]>::decode_binary(decoder)) {
@@ -459,6 +570,9 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Vec<T> {
             let mut vec = Vec::with_capacity(len.min(4096));
             for _ in 0..len {
                 vec.push(T::decode_binary(decoder));
+                if decoder.eof {
+                    break;
+                }
             }
             vec
         }
@@ -618,13 +732,13 @@ unsafe impl<'a, T: ToBinary + ToOwned + ?Sized> ToBinary for Cow<'a, T> {
     }
 }
 
-// Note we don't implement the blank impl for Cow so that we do the optimized thing
-// for the following. However, we provide a helper todo the owned version
-unsafe impl<'a> FromBinary<'a> for Cow<'a, [u8]> {
-    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
-        Cow::Borrowed(<&'a [u8]>::decode_binary(decoder))
-    }
-}
+// // Note we don't implement the blank impl for Cow so that we do the optimized thing
+// // for the following. However, we provide a helper todo the owned version
+// unsafe impl<'a> FromBinary<'a> for Cow<'a, [u8]> {
+//     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+//         Cow::Borrowed(<&'a [u8]>::decode_binary(decoder))
+//     }
+// }
 
 unsafe impl<'a> FromBinary<'a> for Cow<'a, str> {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
