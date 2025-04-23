@@ -51,6 +51,7 @@ enum FieldAttrInner {
     Default(DefaultKind),
     With(Vec<TokenTree>),
     Alias(Literal),
+    Version(Literal),
 }
 
 #[cfg_attr(feature = "debug", derive(Debug))]
@@ -60,6 +61,18 @@ pub struct FieldAttrs {
 }
 
 impl FieldAttrs {
+    pub fn version(&self) -> Option<&Literal> {
+        let mask = const { 0b1111u64 << (9 * TRAIT_COUNT) };
+        if mask & self.flags == 0 {
+            return None;
+        }
+        for attr in &self.attrs {
+            if let FieldAttrInner::Version(lit) = &attr.inner {
+                return Some(lit);
+            }
+        }
+        None
+    }
     pub fn alias(&self, for_trait: TraitSet) -> Option<&Literal> {
         let mask = const { 0b1111u64 << (8 * TRAIT_COUNT) };
         if mask & self.flags == 0 {
@@ -148,6 +161,8 @@ pub struct DeriveTargetInner<'a> {
     pub content: Option<String>,
     pub tag: Tag,
     pub repr: Repr,
+    pub version: Option<u16>,
+    pub min_version: u16,
 }
 
 impl<'a> DeriveTargetInner<'a> {
@@ -410,6 +425,59 @@ fn parse_container_attr(
                 }
             }
         }
+        "version" => {
+            if target.version.is_some() {
+                return Err(Error::span_msg("Duplicate version attribute", attr.span()));
+            }
+            use TokenTree::{Literal as L, Punct as P};
+            let (min, current) = 'ok: {
+                match value {
+                    [L(version_number)] => break 'ok (None, Some(version_number)),
+                    [L(min_version), P(d1), P(d2)] => {
+                        if d1.as_char() == '.' && d2.as_char() == '.' {
+                            break 'ok (Some(min_version), None);
+                        }
+                    }
+                    [L(min_version), P(d1), P(d2), P(eq), L(version_number)] => {
+                        if d1.as_char() == '.' && d2.as_char() == '.' && eq.as_char() == '=' {
+                            break 'ok (Some(min_version), Some(version_number));
+                        }
+                    }
+                    [] => break 'ok (None, None),
+                    _ => (),
+                }
+                return Err(Error::span_msg(
+                    "Expected one of `V, MIN.., MIN..=V` or no version",
+                    attr.span(),
+                ));
+            };
+            if let Some(min) = min {
+                match min.to_string().parse::<u16>() {
+                    Ok(value) => target.min_version = value,
+                    Err(_err) => {
+                        return Err(Error::span_msg(
+                            "Expected a version number between 0-65534",
+                            min.span(),
+                        ))
+                    }
+                }
+            }
+            if let Some(current) = current {
+                match current.to_string().parse::<u16>() {
+                    Ok(value) => target.version = Some(value),
+                    Err(_err) => {
+                        return Err(Error::span_msg(
+                            "Expected a version number between 0-65534",
+                            current.span(),
+                        ))
+                    }
+                }
+            } else {
+                // Automatic version
+                target.version = Some(u16::MAX);
+            }
+            value = &mut [];
+        }
         "content" => {
             if target.content.is_some() {
                 throw!("Duplicate content attribute" @ attr.span())
@@ -477,7 +545,7 @@ fn extract_container_attr(
                 "C" => {
                     target.repr = Repr::C;
                 }
-                "packet" => {
+                "packed" => {
                     throw!("repr(packed) not supported")
                 }
                 _ => {
@@ -819,6 +887,21 @@ fn parse_single_field_attr(
             });
             8u64 * TRAIT_COUNT
         }
+        "version" => {
+            let Some(TokenTree::Literal(version)) = value.pop() else {
+                throw!("Expected a version number" @ ident.span())
+            };
+            if !value.is_empty() {
+                throw!("Unexpected a single number" @ ident.span())
+            }
+
+            attrs.attrs.push(FieldAttr {
+                enabled: trait_set,
+                span: ident.span(),
+                inner: FieldAttrInner::Version(version),
+            });
+            9u64 * TRAIT_COUNT
+        }
         _ => throw!("Unknown attr field" @ ident.span()),
     };
     let mask = (trait_set as u64) << offset;
@@ -935,7 +1018,10 @@ struct VariantTemp<'a> {
     kind: EnumKind,
 }
 
-pub fn scan_fields<'a>(target: &mut DeriveTargetInner<'a>, fields: &mut Vec<Field<'a>>) {
+pub fn scan_fields<'a>(
+    target: &mut DeriveTargetInner<'a>,
+    fields: &mut Vec<Field<'a>>,
+) -> Result<(), Error> {
     let type_generic_names: Vec<_> = target
         .generics
         .iter()
@@ -946,26 +1032,49 @@ pub fn scan_fields<'a>(target: &mut DeriveTargetInner<'a>, fields: &mut Vec<Fiel
             Some(a.ident.to_string())
         })
         .collect();
-    let Some(min_length) = type_generic_names.iter().map(|x| x.len()).max() else {
-        return;
-    };
+    let min_len = type_generic_names.iter().map(|x| x.len()).max();
 
+    let mut max_version = target.min_version;
     for field in fields {
-        for tt in field.ty {
-            let TokenTree::Ident(ident) = tt else {
-                continue;
-            };
-            let ident = ident.to_string();
-            if ident.len() < min_length {
-                continue;
+        if let Some(version) = field.attr.version() {
+            if let Ok(num) = version.to_string().parse::<u16>() {
+                if target.version.is_none() {
+                    throw!("field versions require a version attribute on the container" @ version.span())
+                }
+                if max_version < num {
+                    max_version = num;
+                }
+            } else {
+                throw!("Expected a version number between 0-65534" @ version.span())
             }
-            if type_generic_names.iter().any(|x| ident == *x) {
-                field.flags |= Field::GENERIC;
-                target.generic_field_types.push(field.ty);
-                break;
+        }
+        if let Some(min_length) = min_len {
+            for tt in field.ty {
+                let TokenTree::Ident(ident) = tt else {
+                    continue;
+                };
+                let ident = ident.to_string();
+                if ident.len() < min_length {
+                    continue;
+                }
+                if type_generic_names.iter().any(|x| ident == *x) {
+                    field.flags |= Field::GENERIC;
+                    target.generic_field_types.push(field.ty);
+                    break;
+                }
             }
         }
     }
+
+    if let Some(version) = target.version {
+        if version == u16::MAX {
+            target.version = Some(max_version);
+        } else if max_version > version {
+            throw!("Field version is greater than container version")
+        }
+    }
+
+    Ok(())
 }
 
 pub fn parse_enum<'a>(
@@ -1009,7 +1118,7 @@ pub fn parse_enum<'a>(
             }
         }
     }
-    scan_fields(target, field_buf);
+    scan_fields(target, field_buf)?;
     Ok(temp
         .into_iter()
         .map(|var| EnumVariant {

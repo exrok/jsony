@@ -159,6 +159,9 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// | `tag = "..."` | `Json` | Field containing the enum variant.
 /// | `transparent` | All | Traits delegate to the single inner type.
 /// | `untagged` | `Json` | Only data content of an enum is stored.
+/// | `version [= N]`   | `Binary` | Enable binary versioning. Sets current version (default 0 or largest field version). |
+/// | `version = M..`   | `Binary` | Current version is `M` or largest field version,  error on attempt to decode versions less then M |
+/// | `version = M..=N` | `Binary` | Current version is `N`, error on attempt to decode versions less then M|
 /// | `zerocopy` | `Binary` | Enables zerocopy support and asserts requirements are met.
 ///
 /// ## Enum Variant Attributes
@@ -178,6 +181,7 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// | `default [= ...]` | `From`   | Use `Default::default()` or provided expression if field is missing.
 /// | `flatten`         | `Json`   | Flatten the contents of the field into the container it is defined in.
 /// | `rename = "..."`  | `Json`   | Use provided string as field name.
+/// | `version = N`     | `Binary` | Field added in version `N`. Needs `default` when reading older versions.        |
 /// | `via = ...`       | All      | Implement conversion through provided trait.
 /// | `skip`            | All      | Omit field while serializing, use default value when deserializing.
 /// | `skip_if = ...`   | `ToJson`  | Omit field while serializing if provided function returns true.
@@ -247,6 +251,13 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// ```
 /// Note: The functions in the with module can be generic.
 ///
+/// #### `#[jsony(skip)]`
+///
+/// Omit the field while serializing and use the default value when deserializing. If no default value is specified with `default` then
+/// `Default::default()` is used.
+///
+/// `skip` is useful when you need a field on the rust side that isn't present in the serialized data format.
+///
 /// ### Detailed Container Attributes Descriptions
 /// #### `#[jsony(transparent)]`
 ///
@@ -257,12 +268,45 @@ pub fn object(input: TokenStream) -> TokenStream {
 ///
 /// The possible values are "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE", "kebab-case", "SCREAMING-KEBAB-CASE".
 ///
-/// #### `#[jsony(skip)]`
+/// #### Binary Versioning (`#[jsony(version = ...)]`)
 ///
-/// Omit the field while serializing and use the default value when deserializing. If no default value is specified with `default` then
-/// `Default::default()` is used.
+/// The `version` attribute on containers (`struct`/`enum`) enables versioning for
+/// `ToBinary` and `FromBinary`.
 ///
-/// `skip` is useful when you need a field on the rust side that isn't present in the serialized data format.
+/// - **ToBinary:** The *current version* is written as a prefix and is either specified
+///    explicitly via the container attribute or inferred via the largest field version.
+/// - **FromBinary:**
+///   - By default (`version = N`), all versions below the current version will attempted
+///     to be decoded, using the attribute default or `Default::default()` for absent
+///     fields of older versions.
+///   - When using a range a minimum version that will reject small versions.
+/// - **Field:** Use `#[jsony(version = N)]` on fields added in a specific
+///
+/// This system allows newer code to read older data by providing defaults for new fields,
+/// and helps older code detect and reject data from newer, unknown versions. Breaking
+/// changes can be managed by incrementing the minimum required version (e.g., changing
+/// `version = 1..` to `version = 2..`).
+///
+/// ```ignore
+/// # use jsony::{Jsony, FromBinary, ToBinary, from_binary, to_binary};
+/// #[derive(Jsony, PartialEq, Debug)]
+/// #[jsony(Binary, version)] // Current version 0
+/// struct RecordV0 { value: u32 }
+///
+/// #[derive(Jsony, PartialEq, Debug)]
+/// #[jsony(Binary, version)] // Current version 1
+/// struct RecordV1<'a> {
+///     value: u32,
+///     #[jsony(version = 1, default = "N/A")] // Added in V1
+///     name: &'a str,
+/// }
+///
+/// let bin_v0 = to_binary(&RecordV0 { value: 10 });
+/// assert_eq!(
+///     from_binary::<RecordV1>(&bin_v0).unwrap(),
+///     RecordV1 { value: 10, name: "N/A"}
+/// );
+/// ```
 ///
 /// #### `#[jsony(zerocopy)]`
 ///
@@ -352,7 +396,7 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// <table width="100%">
 /// <tr><td width="47%">Enum</td><td>JSON for Example::Alpha</td><td>JSON for Example::Beta</td></tr><tr><td>
 ///
-/// ```rust
+/// ```ignore
 /// #[derive(Jsony)]
 /// #[jsony(tag = "kind")]
 /// enum Example {
@@ -390,7 +434,7 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// <table width="100%">
 /// <tr><td width="47%">Enum</td><td>JSON for Example::Alpha</td><td>JSON for Example::Beta</td></tr><tr><td>
 ///
-/// ```rust
+/// ```ignore
 /// #[derive(Jsony)]
 /// #[jsony(tag = "kind", content = "data")]
 /// enum Example {
@@ -427,7 +471,7 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// <table width="100%">
 /// <tr><td width="47%">Enum</td><td>JSON for Example::Alpha</td><td>JSON for Example::Beta</td></tr><tr><td>
 ///
-/// ```rust
+/// ```ignore
 /// #[derive(Jsony)]
 /// #[jsony(untagged)]
 /// enum Example {
@@ -461,7 +505,7 @@ pub fn object(input: TokenStream) -> TokenStream {
 ///
 /// Example:
 ///
-/// ```
+/// ```ignore
 /// #[derive(Jsony, PartialEq, Debug)]
 /// #[jsony(ToStr, FromStr, rename_all = "kebab-case")]
 /// enum Mode {
@@ -479,7 +523,7 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// - `ToStr` will implement a inherent method on the enum with the following
 /// signature:
 ///
-/// ```
+/// ```ignore
 /// pub fn to_str(&self) -> &'static str;
 /// ```
 /// Rename attributes on variants will be respected for these conversion.

@@ -190,7 +190,7 @@ impl Formatter {
     fn space(&mut self) {
         if let Some(ch) = self.output.last() {
             match ch {
-                b' ' | b':' | b'(' | b'<' | b'.' | b'&' => {}
+                b' ' | b':' | b'(' | b'<' | b'>' | b'.' | b'&' => {}
                 _ => {
                     self.output.push(b' ');
                 }

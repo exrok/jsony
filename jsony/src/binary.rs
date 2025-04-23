@@ -61,14 +61,14 @@ impl std::error::Error for FromBinaryError {}
 
 impl<'a> Decoder<'a> {
     pub fn consume_error(&mut self) -> Option<FromBinaryError> {
-        if self.eof {
+        if let Some(message) = self.error.take() {
+            Some(FromBinaryError { message })
+        } else if self.eof {
             Some(FromBinaryError {
                 message: Cow::Borrowed("Unexpected EOF"),
             })
         } else {
-            self.error
-                .take()
-                .map(|error| FromBinaryError { message: error })
+            None
         }
     }
     pub fn new(slice: &'a [u8]) -> Self {
@@ -180,7 +180,7 @@ impl<'a> Decoder<'a> {
     /// If no error has been set yet, this method stores the provided error message
     /// and resets the internal pointer to the start of the input.
     pub fn report_static_error(&mut self, error: &'static str) {
-        if self.error.is_none() {
+        if self.error.is_none() && !self.eof {
             self.error = Some(Cow::Borrowed(error));
             self.end = self.start;
         }
@@ -190,7 +190,7 @@ impl<'a> Decoder<'a> {
     /// If no error has been set yet, this method stores the provided formatted error message
     /// and resets the internal pointer to the start of the input.
     pub fn report_error(&mut self, error: std::fmt::Arguments) {
-        if self.error.is_none() {
+        if self.error.is_none() && !self.eof {
             self.error = Some(Cow::Owned(error.to_string()));
             self.end = self.start;
         }

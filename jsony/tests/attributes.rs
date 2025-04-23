@@ -961,3 +961,163 @@ fn binary_pod() {
         );
     }
 }
+
+#[test]
+fn binary_version_range() {
+    use jsony::{from_binary, to_binary};
+    #[derive(Jsony)]
+    #[jsony(Binary, version)]
+    struct V0(u32);
+
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Binary, version = 1..)]
+    struct V1(i32); // breaking version change. release
+
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Binary, version = 1..)]
+    struct V2(i32, #[jsony(version = 2, default = true)] bool);
+
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Binary, version = 2..=3)]
+    struct V3(i32, #[jsony(version = 2)] bool);
+
+    let error_message = from_binary::<V1>(&to_binary(&V0(342)))
+        .err()
+        .expect("Expect decoding unknown version should fail")
+        .to_string();
+    assert!(
+        error_message.contains("version"),
+        "Expected error to be about version instead it was: {}",
+        error_message
+    );
+
+    assert_eq!(
+        from_binary::<V2>(&to_binary(&V1(123))).unwrap(),
+        V2(123, true)
+    );
+
+    assert_eq!(
+        from_binary::<V3>(&to_binary(&V2(123, true))).unwrap(),
+        V3(123, true)
+    );
+
+    let error_message = from_binary::<V2>(&to_binary(&V3(123, true)))
+        .err()
+        .expect("Expect decoding unknown version should fail")
+        .to_string();
+    assert!(
+        error_message.contains("version"),
+        "Expected error to be about version instead it was: {}",
+        error_message
+    );
+}
+#[test]
+fn binary_version() {
+    use jsony::{from_binary, to_binary};
+    #[derive(Jsony)]
+    #[jsony(Binary, version)]
+    struct V0 {
+        alpha: u32,
+    }
+
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Binary, version = 1)]
+    struct V1 {
+        alpha: u32,
+        #[jsony(version = 1)]
+        beta: u32,
+    }
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Binary, version)]
+    struct V2<'a> {
+        alpha: u32,
+        #[jsony(version = 1)]
+        beta: u32,
+        #[jsony(version = 2, default = "DEFAULT")]
+        canary: &'a str,
+        #[jsony(version = 2, default = 33)]
+        delta: u32,
+    }
+
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Binary, version)]
+    struct V3<'a>(
+        u32,
+        #[jsony(version = 1)] u32,
+        #[jsony(version = 2, default = "DEFAULT")] &'a str,
+        #[jsony(version = 2, default = 33)] u32,
+        #[jsony(version = 3, default = true)] bool,
+    );
+
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Binary, version = 4..)]
+    struct V4(i32); // breaking version change. release
+
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Binary, version = 4..)]
+    struct V5(i32, #[jsony(version = 5)] bool);
+
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Binary, version = 4..=6)]
+    struct V6(i32, #[jsony(version = 5)] bool);
+
+    assert_eq!(
+        from_binary::<V1>(&to_binary(&V0 { alpha: 32 })).unwrap(),
+        V1 { alpha: 32, beta: 0 }
+    );
+
+    let error_message = from_binary::<V0>(&to_binary(&V1 { alpha: 32, beta: 0 }))
+        .err()
+        .expect("Expect decoding unknown version should fail")
+        .to_string();
+    assert!(
+        error_message.contains("version"),
+        "Expected error to be about version instead it was: {}",
+        error_message
+    );
+
+    assert_eq!(
+        from_binary::<V2>(&to_binary(&V0 { alpha: 32 })).unwrap(),
+        V2 {
+            alpha: 32,
+            beta: 0,
+            canary: "DEFAULT",
+            delta: 33
+        }
+    );
+    assert_eq!(
+        from_binary::<V2>(&to_binary(&V1 {
+            alpha: 32,
+            beta: 342
+        }))
+        .unwrap(),
+        V2 {
+            alpha: 32,
+            beta: 342,
+            canary: "DEFAULT",
+            delta: 33
+        }
+    );
+
+    assert_eq!(
+        from_binary::<Vec<V1>>(&to_binary(&[V0 { alpha: 250 }, V0 { alpha: 22 }][..])).unwrap(),
+        vec![
+            V1 {
+                alpha: 250,
+                beta: 0
+            },
+            V1 { alpha: 22, beta: 0 }
+        ]
+    );
+
+    assert_eq!(
+        from_binary::<V3>(&to_binary(&V2 {
+            alpha: 32,
+            beta: 342,
+            canary: "Value",
+            delta: 89383,
+        }))
+        .unwrap(),
+        V3(32, 342, "Value", 89383, true)
+    );
+}

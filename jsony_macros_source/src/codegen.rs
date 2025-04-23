@@ -1,7 +1,8 @@
 use crate::ast::{
-    self, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field, FieldAttrs, Generic,
-    GenericKind, Tag, TraitSet, Via, ENUM_CONTAINS_STRUCT_VARIANT, ENUM_CONTAINS_TUPLE_VARIANT,
-    ENUM_CONTAINS_UNIT_VARIANT, ENUM_HAS_EXTERNAL_TAG, FROM_BINARY, FROM_JSON, TO_BINARY, TO_JSON,
+    self, DefaultKind, DeriveTargetInner, DeriveTargetKind, EnumKind, EnumVariant, Field,
+    FieldAttrs, Generic, GenericKind, Tag, TraitSet, Via, ENUM_CONTAINS_STRUCT_VARIANT,
+    ENUM_CONTAINS_TUPLE_VARIANT, ENUM_CONTAINS_UNIT_VARIANT, ENUM_HAS_EXTERNAL_TAG, FROM_BINARY,
+    FROM_JSON, TO_BINARY, TO_JSON,
 };
 use crate::case::RenameRule;
 use crate::util::MemoryPool;
@@ -101,11 +102,13 @@ macro_rules! append_tok {
     (+ $d:tt) => { $d.tt_punct_alone('+') };
     (~ $d:tt) => { $d.tt_punct_joint('#') };
     (< $d:tt) => { $d.tt_punct_alone('<') };
+    (|| $d:tt) => { $d.tt_punct_joint('|');$d.tt_punct_alone('|') };
     (% $d:tt) => { $d.tt_punct_joint(':') };
     (== $d:tt) => {$d.tt_punct_joint('='); $d.tt_punct_alone('=') };
     (:: $d:tt) => {$d.tt_punct_joint(':'); $d.tt_punct_alone(':') };
     (-> $d:tt) => {$d.tt_punct_joint('-'); $d.tt_punct_alone('>') };
     (=> $d:tt) => {$d.tt_punct_joint('='); $d.tt_punct_alone('>') };
+    (>= $d:tt) => {$d.tt_punct_joint('>'); $d.tt_punct_alone('=') };
     (> $d:tt) => { $d.tt_punct_alone('>') };
     (! $d:tt) => { $d.tt_punct_alone('!') };
     (| $d:tt) => { $d.tt_punct_alone('|') };
@@ -437,6 +440,7 @@ fn decode_binary_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
         field_from_default(out, field, FROM_BINARY);
         return;
     }
+    let start = out.buf.len();
     splat! {
         out;
         [
@@ -450,6 +454,21 @@ fn decode_binary_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
             decoder
         )
     };
+    if let Some(version) = field.attr.version() {
+        let group = out.split_off_stream(start);
+        splat! {
+            out;
+            if version >= [out.buf.push(TokenTree::Literal(version.clone()))]
+            [out.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, group)))]
+            else {
+                [if let Some(DefaultKind::Custom(field)) = field.default(FROM_BINARY) {
+                    out.buf.extend_from_slice(&field);
+                } else {
+                    splat!(out; Default::default())
+                }]
+            }
+        };
+    }
 }
 impl Ctx<'_> {
     // #[allow(non_snake_case)]
@@ -1930,11 +1949,20 @@ fn handle_struct(
 
     if target.to_binary {
         let start = output.buf.len();
-        splat! { output; [
-            for field in fields {
-                encode_binary_field(output, &ctx, field, &|out| splat!{out; &self.[#: field.name]})
+        if let Some(version) = target.version {
+            splat! {output;
+                encoder.push([output.buf.push(TokenTree::Literal(Literal::u16_unsuffixed(version)))]);
             }
-        ]};
+        }
+
+        for field in fields {
+            encode_binary_field(
+                output,
+                &ctx,
+                field,
+                &|out| splat! {out; &self.[#: field.name]},
+            )
+        }
         let body = output.split_off_stream(start);
         impl_to_binary(output, &ctx, body, auto_pod)?;
     }
@@ -1942,6 +1970,7 @@ fn handle_struct(
     if target.from_binary {
         let start = output.buf.len();
         splat! {output;
+            [decode_binary_version(output, &ctx)]
             [#: &target.name] {
                 [for field in fields {
                     splat!{(output);
@@ -1955,6 +1984,31 @@ fn handle_struct(
     }
 
     Ok(())
+}
+
+fn decode_binary_version(out: &mut RustWriter, ctx: &Ctx) {
+    let Some(version) = ctx.target.version else {
+        return;
+    };
+    splat!(
+        out;
+        let version = decoder.byte();
+        // todo what if we support all the version
+        if version > [@TokenTree::Literal(Literal::u16_unsuffixed(version))]
+            [?(ctx.target.min_version > 0) || version <  [@TokenTree::Literal(Literal::u16_unsuffixed(ctx.target.min_version))]]
+         {
+            decoder.report_error(
+                format_args!(
+                    [@TokenTree::Literal(Literal::string("{} unknown version = {} found. (versions {}..={} supported)"))],
+                    [@TokenTree::Literal(Literal::string(&ctx.target.name.to_string()))],
+                    version,
+                    [@TokenTree::Literal(Literal::u16_unsuffixed(ctx.target.min_version))],
+                    [@TokenTree::Literal(Literal::u16_unsuffixed(version))],
+                )
+
+            );
+        }
+    );
 }
 
 fn handle_tuple_struct(
@@ -1986,7 +2040,9 @@ fn handle_tuple_struct(
     }
 
     if target.to_binary {
-        let body = token_stream! {output; [
+        let body = token_stream! {output;
+            [?(let Some(version) = target.version) encoder.push([output.buf.push(TokenTree::Literal(Literal::u16_unsuffixed(version)))]);]
+            [
             for (i, field) in fields.iter().enumerate() {
                 encode_binary_field(output, &ctx, field, &|out| splat!{out; &self.[@TokenTree::Literal(Literal::usize_unsuffixed(i))]})
             }
@@ -1996,6 +2052,7 @@ fn handle_tuple_struct(
 
     if target.from_binary {
         let body = token_stream! {output;
+            [decode_binary_version(output, &ctx)]
             [#: &target.name] (
                 [for field in fields {
                     splat!{(output); [decode_binary_field(output, &ctx, field)], }
@@ -2065,6 +2122,7 @@ fn enum_from_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> R
 
 fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
     let body = token_stream! { out;
+        [?(let Some(version) = ctx.target.version) encoder.push([out.buf.push(TokenTree::Literal(Literal::u16_unsuffixed(version)))]);]
         match self {[
             for (i, variant) in variants.iter().enumerate() {
                 splat!{out; [#: &ctx.target.name]::[#: variant.name]}
@@ -2107,6 +2165,8 @@ fn enum_from_binary(
     variants: &[EnumVariant],
 ) -> Result<(), Error> {
     let body = token_stream! { out;
+        // TODO ENUM SHOUlD support per variant versions.
+        [decode_binary_version(out, ctx)]
         match decoder.byte() {[
             for (i, variant) in variants.iter().enumerate() {
                 splat!{out; [if i + 1 == variants.len() {
@@ -2200,6 +2260,8 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
         tag: Tag::Default,
         rename_all: crate::case::RenameRule::None,
         repr: ast::Repr::Default,
+        version: None,
+        min_version: 0,
     };
     let (kind, body) = ast::extract_derive_target(&mut target, &outer_tokens)?;
 
@@ -2223,7 +2285,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
         DeriveTargetKind::Struct => {
             match ast::parse_struct_fields(&mut field_buf, &field_toks, &mut attr_buf) {
                 Ok(_) => {
-                    ast::scan_fields(&mut target, &mut field_buf);
+                    ast::scan_fields(&mut target, &mut field_buf)?;
                     handle_struct(&mut rust_writer, &target, &field_buf)?;
                 }
                 Err(err) => return Err(err),
@@ -2237,7 +2299,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
                 &mut attr_buf,
             ) {
                 Ok(_) => {
-                    ast::scan_fields(&mut target, &mut field_buf);
+                    ast::scan_fields(&mut target, &mut field_buf)?;
                     handle_tuple_struct(&mut rust_writer, &target, &field_buf)?;
                 }
                 Err(err) => return Err(err),
