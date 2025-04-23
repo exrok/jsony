@@ -39,19 +39,28 @@ impl Error {
         punc.set_span(self.0.span);
         group.set_span(self.0.span);
 
-        let stmt = TokenStream::from_iter([
-            TokenTree::Ident(Ident::new("compile_error", self.0.span)),
-            punc,
-            group,
-            TokenTree::Punct(Punct::new(';', Spacing::Alone)),
-        ]);
         if wrap {
             TokenStream::from_iter([TokenTree::Group(Group::new(
                 Delimiter::Brace,
-                TokenStream::from_iter([stmt]),
+                TokenStream::from_iter([
+                    TokenTree::Ident(Ident::new("compile_error", self.0.span)),
+                    punc,
+                    group,
+                    TokenTree::Punct(Punct::new(';', Spacing::Alone)),
+                    TokenTree::Ident(Ident::new("String", self.0.span)),
+                    TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                    TokenTree::Punct(Punct::new(':', Spacing::Alone)),
+                    TokenTree::Ident(Ident::new("new", self.0.span)),
+                    TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::new())),
+                ]),
             ))])
         } else {
-            stmt
+            TokenStream::from_iter([
+                TokenTree::Ident(Ident::new("compile_error", self.0.span)),
+                punc,
+                group,
+                TokenTree::Punct(Punct::new(';', Spacing::Alone)),
+            ])
         }
     }
     #[cold]
@@ -64,6 +73,7 @@ impl Error {
             message: message.to_string(),
         }))
     }
+
     #[cold]
     #[inline(never)]
     #[track_caller]
@@ -110,18 +120,21 @@ fn main() {
         template::object(tokens!());
         codegen::derive(tokens!());
     }
-    util::print_pretty(codegen::derive(tokens! {
-        #[derive(Debug, Clone, Copy, Jsony, PartialEq)]
-        #[jsony(Binary, version = 5)]
-        #[repr(C)]
-        /// An axis-aligned rectangular region of a video frame defined with proportional units.
-        pub struct BoundingBox {
-            pub w: f32,
-            pub h: f32,
-            pub x: f32,
-            pub y: f32,
-            #[jsony(version = 2)]
-            pub n: f32,
-        }
+    util::print_pretty(template::object(tokens! {
+       @ asdf
     }));
+    // util::print_pretty(codegen::derive(tokens! {
+    //     #[derive(Debug, Clone, Copy, Jsony, PartialEq)]
+    //     #[jsony(Binary, version = 5)]
+    //     #[repr(C)]
+    //     /// An axis-aligned rectangular region of a video frame defined with proportional units.
+    //     pub struct BoundingBox {
+    //         pub w: f32,
+    //         pub h: f32,
+    //         pub x: f32,
+    //         pub y: f32,
+    //         #[jsony(version = 2)]
+    //         pub n: f32,
+    //     }
+    // }));
 }

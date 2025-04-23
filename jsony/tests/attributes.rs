@@ -1011,6 +1011,7 @@ fn binary_version_range() {
         error_message
     );
 }
+
 #[test]
 fn binary_version() {
     use jsony::{from_binary, to_binary};

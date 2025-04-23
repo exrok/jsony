@@ -35,19 +35,28 @@ impl Error {
         punc.set_span(self.0.span);
         group.set_span(self.0.span);
 
-        let stmt = TokenStream::from_iter([
-            TokenTree::Ident(Ident::new("compile_error", self.0.span)),
-            punc,
-            group,
-            TokenTree::Punct(Punct::new(';', Spacing::Alone)),
-        ]);
         if wrap {
             TokenStream::from_iter([TokenTree::Group(Group::new(
                 Delimiter::Brace,
-                TokenStream::from_iter([stmt]),
+                TokenStream::from_iter([
+                    TokenTree::Ident(Ident::new("compile_error", self.0.span)),
+                    punc,
+                    group,
+                    TokenTree::Punct(Punct::new(';', Spacing::Alone)),
+                    TokenTree::Ident(Ident::new("String", self.0.span)),
+                    TokenTree::Punct(Punct::new(':', Spacing::Joint)),
+                    TokenTree::Punct(Punct::new(':', Spacing::Alone)),
+                    TokenTree::Ident(Ident::new("new", self.0.span)),
+                    TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::new())),
+                ]),
             ))])
         } else {
-            stmt
+            TokenStream::from_iter([
+                TokenTree::Ident(Ident::new("compile_error", self.0.span)),
+                punc,
+                group,
+                TokenTree::Punct(Punct::new(';', Spacing::Alone)),
+            ])
         }
     }
     pub(crate) fn msg(message: &str) -> Error {
