@@ -25,6 +25,7 @@ struct InnerError {
 #[derive(Debug)]
 pub(crate) struct Error(InnerError);
 
+unsafe impl Send for Error {}
 impl Error {
     pub(crate) fn to_compiler_error(&self, wrap: bool) -> TokenStream {
         let mut group = TokenTree::Group(Group::new(
@@ -59,29 +60,59 @@ impl Error {
             ])
         }
     }
-    pub(crate) fn msg(message: &str) -> Error {
+
+    pub(crate) fn try_catch_handle(
+        ts: TokenStream,
+        func: fn(TokenStream) -> TokenStream,
+    ) -> TokenStream {
+        match std::panic::catch_unwind(move || func(ts)) {
+            Ok(e) => e,
+            Err(err) => {
+                if let Some(value) = err.downcast_ref::<Error>() {
+                    value.to_compiler_error(false)
+                } else {
+                    Error::from_ctx().to_compiler_error(false)
+                }
+            }
+        }
+    }
+    pub(crate) fn from_ctx() -> Error {
+        Error(InnerError {
+            span: Span::call_site(),
+            message: "Error in context".to_string(),
+        })
+    }
+    pub fn throw(self) -> ! {
+        std::panic::panic_any(self);
+    }
+    pub(crate) fn msg(message: &str) -> ! {
         Error(InnerError {
             span: Span::call_site(),
             message: message.to_string(),
         })
+        .throw();
     }
-    pub(crate) fn msg_ctx(message: &str, fmt: &dyn std::fmt::Display) -> Error {
+
+    pub(crate) fn msg_ctx(message: &str, fmt: &dyn std::fmt::Display) -> ! {
         Error(InnerError {
             span: Span::call_site(),
-            message: format!("{message}: {fmt}"),
+            message: format!("{}: {}", message, fmt),
         })
+        .throw();
     }
-    pub(crate) fn span_msg(message: &str, span: Span) -> Error {
+    pub(crate) fn span_msg(message: &str, span: Span) -> ! {
         Error(InnerError {
             span,
             message: message.to_string(),
         })
+        .throw();
     }
-    pub(crate) fn span_msg_ctx(message: &str, fmt: &dyn std::fmt::Display, span: Span) -> Error {
+    pub(crate) fn span_msg_ctx(message: &str, fmt: &dyn std::fmt::Display, span: Span) -> ! {
         Error(InnerError {
             span,
             message: format!("{}: {}", fmt, message),
         })
+        .throw()
     }
 }
 

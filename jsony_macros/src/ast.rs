@@ -1,5 +1,19 @@
 // mod template2;
 
+// util::print_pretty(codegen::derive(tokens! {
+//     #[derive(Debug, Clone, Copy, Jsony, PartialEq)]
+//     #[jsony(Binary, version = 5)]
+//     #[repr(C)]
+//     /// An axis-aligned rectangular region of a video frame defined with proportional units.
+//     pub struct BoundingBox {
+//         pub w: f32,
+//         pub h: f32,
+//         pub x: f32,
+//         pub y: f32,
+//         #[jsony(version = 2)]
+//         pub n: f32,
+//     }
+// }));
 use crate::{case::RenameRule, util::Allocator, Error};
 use proc_macro::{Delimiter, Ident, Literal, Span, TokenStream, TokenTree};
 pub enum GenericKind {
@@ -270,7 +284,7 @@ fn parse_container_attr(
     target: &mut DeriveTargetInner<'_>,
     attr: Ident,
     mut value: &mut [TokenTree],
-) -> Result<(), Error> {
+) {
     let key = attr.to_string();
     match key.as_str() {
         "transparent" => {
@@ -317,23 +331,16 @@ fn parse_container_attr(
         }
         "untagged" => match &target.tag {
             Tag::Default => target.tag = Tag::Untagged,
-            _ => return Err(Error::span_msg("Duplicate tag attribute", attr.span())),
+            _ => Error::span_msg("Duplicate tag attribute", attr.span()),
         },
         "tag" => {
             match target.tag {
-                Tag::Inline(_) => {
-                    return Err(Error::span_msg("Duplicate tag attribute", attr.span()))
-                }
-                Tag::Untagged => {
-                    return Err(Error::span_msg(
-                        "Cannot have a tag & be untagged",
-                        attr.span(),
-                    ))
-                }
+                Tag::Inline(_) => Error::span_msg("Duplicate tag attribute", attr.span()),
+                Tag::Untagged => Error::span_msg("Cannot have a tag & be untagged", attr.span()),
                 Tag::Default => (),
             }
             let [TokenTree::Literal(tag_name), rest @ ..] = value else {
-                return Err(Error::span_msg("Expected a tag", attr.span()));
+                Error::span_msg("Expected a tag", attr.span())
             };
             value = rest;
             match crate::lit::literal_inline(tag_name.to_string()) {
@@ -341,16 +348,13 @@ fn parse_container_attr(
                     target.tag = Tag::Inline(s)
                 }
                 crate::lit::InlineKind::None => {
-                    return Err(Error::span_msg(
-                        "Expected a string literal",
-                        tag_name.span(),
-                    ))
+                    Error::span_msg("Expected a string literal", tag_name.span())
                 }
             }
         }
         "version" => {
             if target.version.is_some() {
-                return Err(Error::span_msg("Duplicate version attribute", attr.span()));
+                Error::span_msg("Duplicate version attribute", attr.span())
             }
             use TokenTree::{Literal as L, Punct as P};
             let (min, current) = 'ok: {
@@ -369,19 +373,16 @@ fn parse_container_attr(
                     [] => break 'ok (None, None),
                     _ => (),
                 }
-                return Err(Error::span_msg(
+                Error::span_msg(
                     "Expected one of `V, MIN.., MIN..=V` or no version",
                     attr.span(),
-                ));
+                );
             };
             if let Some(min) = min {
                 match min.to_string().parse::<u16>() {
                     Ok(value) => target.min_version = value,
                     Err(_err) => {
-                        return Err(Error::span_msg(
-                            "Expected a version number between 0-65534",
-                            min.span(),
-                        ))
+                        Error::span_msg("Expected a version number between 0-65534", min.span())
                     }
                 }
             }
@@ -389,10 +390,7 @@ fn parse_container_attr(
                 match current.to_string().parse::<u16>() {
                     Ok(value) => target.version = Some(value),
                     Err(_err) => {
-                        return Err(Error::span_msg(
-                            "Expected a version number between 0-65534",
-                            current.span(),
-                        ))
+                        Error::span_msg("Expected a version number between 0-65534", current.span())
                     }
                 }
             } else {
@@ -402,13 +400,10 @@ fn parse_container_attr(
         }
         "content" => {
             if target.content.is_some() {
-                return Err(Error::span_msg("Duplicate content attribute", attr.span()));
+                Error::span_msg("Duplicate content attribute", attr.span())
             }
             let [TokenTree::Literal(content_name), rest @ ..] = value else {
-                return Err(Error::span_msg(
-                    "Expected the field of content",
-                    attr.span(),
-                ));
+                Error::span_msg("Expected the field of content", attr.span())
             };
             value = rest;
             match crate::lit::literal_inline(content_name.to_string()) {
@@ -416,57 +411,42 @@ fn parse_container_attr(
                     target.content = Some(s)
                 }
                 crate::lit::InlineKind::None => {
-                    return Err(Error::span_msg(
-                        "Expected a string literal",
-                        content_name.span(),
-                    ))
+                    Error::span_msg("Expected a string literal", content_name.span())
                 }
             }
         }
         "rename_all" => {
             if target.rename_all != RenameRule::None {
-                return Err(Error::span_msg(
-                    "Duplicate rename_all attribute",
-                    attr.span(),
-                ));
+                Error::span_msg("Duplicate rename_all attribute", attr.span())
             }
             let [TokenTree::Literal(rename), rest @ ..] = value else {
-                return Err(Error::span_msg("Expected a literal", attr.span()));
+                Error::span_msg("Expected a literal", attr.span())
             };
             value = rest;
-            target.rename_all = match RenameRule::from_literal(&rename) {
-                Ok(value) => value,
-                Err(err) => return Err(err),
-            }
+            target.rename_all = RenameRule::from_literal(&rename);
         }
-        _ => return Err(Error::span_msg("Unknown attribute", attr.span())),
+        _ => Error::span_msg("Unknown attribute", attr.span()),
     }
     if !value.is_empty() {
-        return Err(Error::span_msg_ctx(
-            "Extra value tokens for",
-            &(attr),
-            attr.span(),
-        ));
+        Error::span_msg_ctx("Extra value tokens for", &(attr), attr.span())
     }
-    Ok(())
 }
-fn extract_container_attr(
-    target: &mut DeriveTargetInner,
-    stream: TokenStream,
-) -> Result<(), Error> {
+fn extract_container_attr(target: &mut DeriveTargetInner, stream: TokenStream) {
     let mut toks = stream.into_iter();
     let Some(TokenTree::Ident(ident)) = toks.next() else {
-        return Ok(());
+        return;
     };
     let Some(TokenTree::Group(group)) = toks.next() else {
-        return Ok(());
+        return;
     };
     let name = ident.to_string();
     if name == "jsony" {
         parse_attrs(
             group.stream(),
-            &mut (|_, attr, value| parse_container_attr(target, attr, value)),
-        )
+            &mut (|_, attr, value| {
+                parse_container_attr(target, attr, value);
+            }),
+        );
     } else if name == "repr" {
         for toks in group.stream() {
             let TokenTree::Ident(ident) = toks else {
@@ -480,26 +460,23 @@ fn extract_container_attr(
                 "C" => {
                     target.repr = Repr::C;
                 }
-                "packed" => return Err(Error::msg("repr(packed) not supported")),
+                "packed" => Error::msg("repr(packed) not supported"),
                 _ => {
                     target.repr = Repr::Unknown;
                 }
             }
         }
-        Ok(())
-    } else {
-        Ok(())
     }
 }
 pub fn extract_derive_target<'a>(
     target: &mut DeriveTargetInner<'a>,
     toks: &'a [TokenTree],
-) -> Result<(DeriveTargetKind, TokenStream), Error> {
+) -> (DeriveTargetKind, TokenStream) {
     let mut toks = toks.iter();
     let kind = loop {
         let ident = match match (toks).next() {
             Some(t) => t,
-            None => return Err(Error::msg("Unexpected EOF")),
+            None => Error::msg("Unexpected EOF"),
         } {
             TokenTree::Ident(ident) => ident,
             TokenTree::Punct(ch) if ch.as_char() == '#' => {
@@ -507,17 +484,15 @@ pub fn extract_derive_target<'a>(
                     target,
                     match (toks).next() {
                         Some(TokenTree::Group(t)) => t,
-                        Some(tt) => {
-                            return Err(Error::span_msg_ctx(
-                                "Expected a Groupbut found a ",
-                                &kind_of_token(&tt),
-                                tt.span(),
-                            ))
-                        }
-                        None => return Err(Error::msg("Unexpected EOF")),
+                        Some(tt) => Error::span_msg_ctx(
+                            "Expected a Groupbut found a ",
+                            &kind_of_token(&tt),
+                            tt.span(),
+                        ),
+                        None => Error::msg("Unexpected EOF"),
                     }
                     .stream(),
-                )?;
+                );
                 continue;
             }
             _ => continue,
@@ -531,45 +506,43 @@ pub fn extract_derive_target<'a>(
     };
     target.name = match (toks).next() {
         Some(TokenTree::Ident(t)) => t,
-        Some(tt) => {
-            return Err(Error::span_msg_ctx(
-                "Expected a Identbut found a ",
-                &kind_of_token(&tt),
-                tt.span(),
-            ))
-        }
-        None => return Err(Error::msg("Unexpected EOF")),
+        Some(tt) => Error::span_msg_ctx(
+            "Expected a Identbut found a ",
+            &kind_of_token(&tt),
+            tt.span(),
+        ),
+        None => Error::msg("Unexpected EOF"),
     }
     .clone();
     match toks.next() {
         Some(TokenTree::Group(group)) => {
-            return Ok((
+            return (
                 if group.delimiter() == Delimiter::Parenthesis {
                     DeriveTargetKind::TupleStruct
                 } else {
                     kind
                 },
                 group.stream(),
-            ));
+            );
         }
         Some(TokenTree::Punct(ch)) if ch.as_char() == '<' => (),
         Some(TokenTree::Punct(ch)) if ch.as_char() == ';' => {
-            return Ok((kind, TokenStream::new()));
+            return (kind, TokenStream::new());
         }
-        None => return Err(Error::msg("Empty body")),
-        f => return Err(Error::msg_ctx("Unhandled feature", &(f.unwrap()))),
+        None => Error::msg("Empty body"),
+        f => Error::msg_ctx("Unhandled feature", &(f.unwrap())),
     }
     'parsing_generics: while let Some(tt) = toks.next() {
         let mut keep = true;
         let (kind, ident, at_colon) = match tt {
             TokenTree::Ident(ident) => match match (toks).next() {
                 Some(t) => t,
-                None => return Err(Error::msg("Unexpected EOF")),
+                None => Error::msg("Unexpected EOF"),
             } {
-                TokenTree::Group(_) => return Err(Error::msg("Unexpected group")),
+                TokenTree::Group(_) => Error::msg("Unexpected group"),
                 TokenTree::Ident(next_ident) => {
                     if ident_eq(ident, "const") {
-                        return Err(Error::msg_ctx("unexpected ident", &(&next_ident)));
+                        Error::msg_ctx("unexpected ident", &(&next_ident))
                     }
                     (GenericKind::Const, next_ident, false)
                 }
@@ -595,29 +568,19 @@ pub fn extract_derive_target<'a>(
                         });
                         break 'parsing_generics;
                     }
-                    chr => {
-                        return Err(Error::msg_ctx(
-                            "Unexpected token after first ident in generic",
-                            &(chr),
-                        ))
-                    }
+                    chr => Error::msg_ctx("Unexpected token after first ident in generic", &(chr)),
                 },
-                tok => {
-                    return Err(Error::msg_ctx(
-                        "Unexpected token after first ident in generic",
-                        &(tok),
-                    ))
-                }
+                tok => Error::msg_ctx("Unexpected token after first ident in generic", &(tok)),
             },
             TokenTree::Punct(p) => {
                 let ch = p.as_char();
                 if ch == '\'' {
                     match match (toks).next() {
                         Some(t) => t,
-                        None => return Err(Error::msg("Unexpected EOF")),
+                        None => Error::msg("Unexpected EOF"),
                     } {
                         TokenTree::Ident(ident) => (GenericKind::Lifetime, ident, false),
-                        _ => return Err(Error::msg("expected ident")),
+                        _ => Error::msg("expected ident"),
                     }
                 } else {
                     if ch == ',' {
@@ -626,13 +589,13 @@ pub fn extract_derive_target<'a>(
                     if ch == '>' {
                         break 'parsing_generics;
                     }
-                    return Err(Error::msg("Unexpected Punct"));
+                    Error::msg("Unexpected Punct")
                 }
             }
             TokenTree::Group(_) => {
-                return Err(Error::msg("Unhanlded"));
+                Error::msg("Unhanlded");
             }
-            _ => return Err(Error::msg("Unhanlded")),
+            _ => Error::msg("Unhanlded"),
         };
         target.generics.push(Generic {
             kind,
@@ -645,7 +608,7 @@ pub fn extract_derive_target<'a>(
         if !at_colon {
             match match (toks).next() {
                 Some(t) => t,
-                None => return Err(Error::msg("Unexpected EOF")),
+                None => Error::msg("Unexpected EOF"),
             } {
                 TokenTree::Punct(ch) => match ch.as_char() {
                     ',' => {
@@ -655,9 +618,9 @@ pub fn extract_derive_target<'a>(
                         break 'parsing_generics;
                     }
                     ':' => (),
-                    _ => return Err(Error::msg("unexpected char")),
+                    _ => Error::msg("unexpected char"),
                 },
-                _ => return Err(Error::msg("Unexpected tok")),
+                _ => Error::msg("Unexpected tok"),
             }
         }
         let from = toks.as_slice();
@@ -665,7 +628,7 @@ pub fn extract_derive_target<'a>(
         loop {
             let tok = match (toks).next() {
                 Some(t) => t,
-                None => return Err(Error::msg("Unexpected EOF")),
+                None => Error::msg("Unexpected EOF"),
             };
             if let TokenTree::Punct(p) = &tok {
                 match p.as_char() as u8 {
@@ -704,39 +667,34 @@ pub fn extract_derive_target<'a>(
     }
     match match (toks).next() {
         Some(t) => t,
-        None => return Err(Error::msg("Unexpected EOF")),
+        None => Error::msg("Unexpected EOF"),
     } {
-        TokenTree::Group(group) => Ok((
+        TokenTree::Group(group) => (
             if group.delimiter() == Delimiter::Parenthesis {
                 DeriveTargetKind::TupleStruct
             } else {
                 kind
             },
             group.stream(),
-        )),
+        ),
         TokenTree::Ident(tok) => {
             if ident_eq(tok, "where") {
-                return Err(Error::span_msg("Expected where clause", tok.span()));
+                Error::span_msg("Expected where clause", tok.span());
             }
             let [where_clauses @ .., TokenTree::Group(group)] = toks.as_slice() else {
-                return Err(Error::msg("Expected body after where clauses"));
+                Error::msg("Expected body after where clauses")
             };
             target.where_clauses = where_clauses;
-            Ok((
+            (
                 if group.delimiter() == Delimiter::Parenthesis {
                     DeriveTargetKind::TupleStruct
                 } else {
                     kind
                 },
                 group.stream(),
-            ))
+            )
         }
-        tok => {
-            return Err(Error::msg_ctx(
-                "Expected either body or where clause",
-                &(tok),
-            ))
-        }
+        tok => Error::msg_ctx("Expected either body or where clause", &(tok)),
     }
 }
 const TRAIT_COUNT: u64 = 4;
@@ -745,7 +703,7 @@ fn parse_single_field_attr(
     mut trait_set: TraitSet,
     ident: Ident,
     value: &mut Vec<TokenTree>,
-) -> Result<(), Error> {
+) {
     let name = ident.to_string();
     if trait_set == 0 {
         trait_set = TO_JSON | FROM_JSON | TO_BINARY | FROM_BINARY;
@@ -753,10 +711,10 @@ fn parse_single_field_attr(
     let offset = match name.as_str() {
         "rename" => {
             let Some(TokenTree::Literal(rename)) = value.pop() else {
-                return Err(Error::span_msg("Expected a literal", ident.span()));
+                Error::span_msg("Expected a literal", ident.span())
             };
             if !value.is_empty() {
-                return Err(Error::span_msg("Unexpected a single literal", ident.span()));
+                Error::span_msg("Unexpected a single literal", ident.span())
             }
             attrs.attrs.push(FieldAttr {
                 enabled: trait_set,
@@ -767,10 +725,10 @@ fn parse_single_field_attr(
         }
         "via" => {
             let Some(TokenTree::Ident(via_ident)) = value.pop() else {
-                return Err(Error::span_msg("Expected a value", ident.span()));
+                Error::span_msg("Expected a value", ident.span())
             };
             if !value.is_empty() {
-                return Err(Error::span_msg("Unexpected a single literal", ident.span()));
+                Error::span_msg("Unexpected a single literal", ident.span())
             }
             let via = via_ident.to_string();
             match via.as_str() {
@@ -781,7 +739,7 @@ fn parse_single_field_attr(
                         inner: FieldAttrInner::Via(Via::Iterator),
                     });
                 }
-                _ => return Err(Error::span_msg("Unknown via value", via_ident.span())),
+                _ => Error::span_msg("Unknown via value", via_ident.span()),
             }
             1u64 * TRAIT_COUNT
         }
@@ -799,10 +757,7 @@ fn parse_single_field_attr(
         }
         "flatten" => {
             if !value.is_empty() {
-                return Err(Error::span_msg(
-                    "flatten doesn't take any arguments",
-                    ident.span(),
-                ));
+                Error::span_msg("flatten doesn't take any arguments", ident.span())
             }
             attrs.attrs.push(FieldAttr {
                 enabled: trait_set,
@@ -821,10 +776,7 @@ fn parse_single_field_attr(
         }
         "skip" => {
             if !value.is_empty() {
-                return Err(Error::span_msg(
-                    "flatten doesn't take any arguments",
-                    ident.span(),
-                ));
+                Error::span_msg("flatten doesn't take any arguments", ident.span())
             }
             attrs.attrs.push(FieldAttr {
                 enabled: trait_set,
@@ -835,10 +787,10 @@ fn parse_single_field_attr(
         }
         "skip_if" => {
             if value.is_empty() {
-                return Err(Error::span_msg(
+                Error::span_msg(
                     "Unexpected a function specifying skip criteria",
                     ident.span(),
-                ));
+                )
             }
             trait_set &= TO_JSON;
             attrs.attrs.push(FieldAttr {
@@ -850,19 +802,16 @@ fn parse_single_field_attr(
         }
         "other" => {
             if !value.is_empty() {
-                return Err(Error::span_msg(
-                    "other doesn't take any arguments",
-                    ident.span(),
-                ));
+                Error::span_msg("other doesn't take any arguments", ident.span())
             }
             7u64 * TRAIT_COUNT
         }
         "alias" => {
             let Some(TokenTree::Literal(alias)) = value.pop() else {
-                return Err(Error::span_msg("Expected a literal", ident.span()));
+                Error::span_msg("Expected a literal", ident.span())
             };
             if !value.is_empty() {
-                return Err(Error::span_msg("Unexpected a single literal", ident.span()));
+                Error::span_msg("Unexpected a single literal", ident.span())
             }
             attrs.attrs.push(FieldAttr {
                 enabled: trait_set,
@@ -873,10 +822,10 @@ fn parse_single_field_attr(
         }
         "version" => {
             let Some(TokenTree::Literal(version)) = value.pop() else {
-                return Err(Error::span_msg("Expected a version number", ident.span()));
+                Error::span_msg("Expected a version number", ident.span())
             };
             if !value.is_empty() {
-                return Err(Error::span_msg("Unexpected a single number", ident.span()));
+                Error::span_msg("Unexpected a single number", ident.span())
             }
             attrs.attrs.push(FieldAttr {
                 enabled: trait_set,
@@ -885,14 +834,13 @@ fn parse_single_field_attr(
             });
             9u64 * TRAIT_COUNT
         }
-        _ => return Err(Error::span_msg("Unknown attr field", ident.span())),
+        _ => Error::span_msg("Unknown attr field", ident.span()),
     };
     let mask = (trait_set as u64) << offset;
     if attrs.flags & mask != 0 {
-        return Err(Error::span_msg("Duplicate attribute", ident.span()));
+        Error::span_msg("Duplicate attribute", ident.span())
     }
     attrs.flags |= mask;
-    Ok(())
 }
 fn extract_jsony_attr(group: TokenStream) -> Option<TokenStream> {
     let mut toks = group.into_iter();
@@ -914,15 +862,12 @@ pub const TO_JSON: TraitSet = 1 << 0;
 pub const FROM_JSON: TraitSet = 1 << 1;
 pub const TO_BINARY: TraitSet = 1 << 2;
 pub const FROM_BINARY: TraitSet = 1 << 3;
-fn parse_attrs(
-    toks: TokenStream,
-    func: &mut dyn FnMut(TraitSet, Ident, &mut Vec<TokenTree>) -> Result<(), Error>,
-) -> Result<(), Error> {
+fn parse_attrs(toks: TokenStream, func: &mut dyn FnMut(TraitSet, Ident, &mut Vec<TokenTree>)) {
     let mut toks = toks.into_iter();
     let mut buf: Vec<TokenTree> = Vec::new();
     'outer: while let Some(tok) = toks.next() {
         let TokenTree::Ident(mut ident) = tok else {
-            return Err(Error::span_msg("Expected ident", tok.span()));
+            Error::span_msg("Expected ident", tok.span())
         };
         let mut trait_set = 0;
         'processing: loop {
@@ -938,29 +883,22 @@ fn parse_attrs(
                             "FromBinary" => trait_set |= FROM_BINARY,
                             "To" => trait_set |= TO_JSON | TO_BINARY,
                             "From" => trait_set |= FROM_JSON | FROM_BINARY,
-                            _ => {
-                                return Err(Error::span_msg(
-                                    "Expected trait or alias",
-                                    ident.span(),
-                                ))
-                            }
+                            _ => Error::span_msg("Expected trait or alias", ident.span()),
                         }
                         ident = true_ident;
                         continue 'processing;
                     }
                     _ => {
-                        return Err(Error::span_msg("Expected either `=` or `,`", sep.span()));
+                        Error::span_msg("Expected either `=` or `,`", sep.span());
                     }
                 };
                 match sep.as_char() {
                     '=' => (),
                     ',' => {
-                        if let Err(err) = func(trait_set, ident, &mut buf) {
-                            return Err(err);
-                        }
+                        func(trait_set, ident, &mut buf);
                         continue 'outer;
                     }
-                    _ => return Err(Error::span_msg("Expected either `=` or `,`", sep.span())),
+                    _ => Error::span_msg("Expected either `=` or `,`", sep.span()),
                 }
                 for tok in toks.by_ref() {
                     if let TokenTree::Punct(punct) = &tok {
@@ -973,20 +911,17 @@ fn parse_attrs(
             }
             break;
         }
-        if let Err(err) = func(trait_set, ident, &mut buf) {
-            return Err(err);
-        }
+        func(trait_set, ident, &mut buf);
         buf.clear();
     }
-    Ok(())
 }
 fn parse_field_attr<'a>(
     current: &mut Option<&'a mut FieldAttrs>,
     attr_buf: &mut Allocator<'a, FieldAttrs>,
     toks: TokenStream,
-) -> Result<(), Error> {
+) {
     let Some(attrs) = extract_jsony_attr(toks) else {
-        return Ok(());
+        return;
     };
     let attr = current.get_or_insert_with(|| attr_buf.alloc_default());
     parse_attrs(
@@ -1001,10 +936,7 @@ struct VariantTemp<'a> {
     attr: &'a FieldAttrs,
     kind: EnumKind,
 }
-pub fn scan_fields<'a>(
-    target: &mut DeriveTargetInner<'a>,
-    fields: &mut Vec<Field<'a>>,
-) -> Result<(), Error> {
+pub fn scan_fields<'a>(target: &mut DeriveTargetInner<'a>, fields: &mut Vec<Field<'a>>) {
     let type_generic_names: Vec<_> = target
         .generics
         .iter()
@@ -1024,19 +956,16 @@ pub fn scan_fields<'a>(
         if let Some(version) = field.attr.version() {
             if let Ok(num) = version.to_string().parse::<u16>() {
                 if target.version.is_none() {
-                    return Err(Error::span_msg(
+                    Error::span_msg(
                         "field versions require a version attribute on the container",
                         version.span(),
-                    ));
+                    )
                 }
                 if max_version < num {
                     max_version = num;
                 }
             } else {
-                return Err(Error::span_msg(
-                    "Expected a version number between 0-65534",
-                    version.span(),
-                ));
+                Error::span_msg("Expected a version number between 0-65534", version.span())
             }
         }
         if let Some(min_length) = min_len {
@@ -1060,12 +989,9 @@ pub fn scan_fields<'a>(
         if version == u16::MAX {
             target.version = Some(max_version);
         } else if max_version > version {
-            return Err(Error::msg(
-                "Field version is greater than container version",
-            ));
+            Error::msg("Field version is greater than container version")
         }
     }
-    Ok(())
 }
 pub fn parse_enum<'a>(
     target: &mut DeriveTargetInner<'a>,
@@ -1073,8 +999,8 @@ pub fn parse_enum<'a>(
     tt_buf: &'a mut Vec<TokenTree>,
     field_buf: &'a mut Vec<Field<'a>>,
     attr_buf: &mut Allocator<'a, FieldAttrs>,
-) -> Result<Vec<EnumVariant<'a>>, Error> {
-    let mut temp = parse_inner_enum_variants(fields, tt_buf, attr_buf)?;
+) -> Vec<EnumVariant<'a>> {
+    let mut temp = parse_inner_enum_variants(fields, tt_buf, attr_buf);
     match &target.tag {
         Tag::Inline(_) => target.enum_flags |= ENUM_HAS_INLINE_TAG,
         Tag::Untagged => target.enum_flags |= ENUM_HAS_NO_TAG,
@@ -1091,14 +1017,14 @@ pub fn parse_enum<'a>(
                         field_buf,
                         &tt_buf[variant.start..variant.end],
                         attr_buf,
-                    )?;
+                    );
                     variant.start = start;
                     variant.end = field_buf.len();
                 }
                 EnumKind::Struct => {
                     target.enum_flags |= ENUM_CONTAINS_STRUCT_VARIANT;
                     let start = field_buf.len();
-                    parse_struct_fields(field_buf, &tt_buf[variant.start..variant.end], attr_buf)?;
+                    parse_struct_fields(field_buf, &tt_buf[variant.start..variant.end], attr_buf);
                     variant.start = start;
                     variant.end = field_buf.len();
                 }
@@ -1108,9 +1034,8 @@ pub fn parse_enum<'a>(
             }
         }
     }
-    scan_fields(target, field_buf)?;
-    Ok(temp
-        .into_iter()
+    scan_fields(target, field_buf);
+    temp.into_iter()
         .map(|var| EnumVariant {
             name: var.name,
             fields: if match var.kind {
@@ -1124,13 +1049,13 @@ pub fn parse_enum<'a>(
             kind: var.kind,
             attr: var.attr,
         })
-        .collect())
+        .collect()
 }
 fn parse_inner_enum_variants<'a>(
     fields: &'a [TokenTree],
     tt_buffer: &mut Vec<TokenTree>,
     attr_buffer: &mut Allocator<'a, FieldAttrs>,
-) -> Result<Vec<VariantTemp<'a>>, Error> {
+) -> Vec<VariantTemp<'a>> {
     let mut f = fields.iter().enumerate();
     let mut enums: Vec<VariantTemp<'a>> = Vec::new();
     let mut next_attr: Option<&'a mut FieldAttrs> = None;
@@ -1142,11 +1067,9 @@ fn parse_inner_enum_variants<'a>(
             let ch = punct.as_char() as u8;
             if ch == b'#' {
                 let Some((_, TokenTree::Group(group))) = f.next() else {
-                    return Err(Error::span_msg("Expected attr after", punct.span()));
+                    Error::span_msg("Expected attr after", punct.span())
                 };
-                if let Err(err) = parse_field_attr(&mut next_attr, attr_buffer, group.stream()) {
-                    return Err(err);
-                }
+                parse_field_attr(&mut next_attr, attr_buffer, group.stream());
                 continue;
             }
             if ch == b',' {
@@ -1166,9 +1089,9 @@ fn parse_inner_enum_variants<'a>(
                                 let mut depth = 1i32;
                                 loop {
                                     let Some((_e, tok)) = f.next() else {
-                                        return Err(Error::msg(
+                                        Error::msg(
                                             "Unexpected EOF while parsing type in enum expression",
-                                        ));
+                                        );
                                     };
                                     let TokenTree::Punct(punct) = tok else {
                                         continue;
@@ -1199,14 +1122,14 @@ fn parse_inner_enum_variants<'a>(
             fields.len()
         };
         let Some(tok) = fields.get(i.saturating_sub(1)) else {
-            return Err(Error::msg("Baddness"));
+            Error::msg("Baddness")
         };
         let start = tt_buffer.len();
         let (name, kind) = match tok {
             TokenTree::Group(group) => {
                 tt_buffer.extend(group.stream());
                 let Some(TokenTree::Ident(ident)) = fields.get(i.saturating_sub(2)) else {
-                    return Err(Error::span_msg("Expected ident", group.span()));
+                    Error::span_msg("Expected ident", group.span())
                 };
                 (
                     ident,
@@ -1218,12 +1141,7 @@ fn parse_inner_enum_variants<'a>(
                 )
             }
             TokenTree::Ident(ident) => (ident, EnumKind::None),
-            tok => {
-                return Err(Error::span_msg(
-                    "Expected either an ident or group",
-                    tok.span(),
-                ))
-            }
+            tok => Error::span_msg("Expected either an ident or group", tok.span()),
         };
         enums.push(VariantTemp {
             name,
@@ -1240,7 +1158,7 @@ fn parse_inner_enum_variants<'a>(
             break;
         }
     }
-    Ok(enums)
+    enums
 }
 fn flags_from_attr(attr: &Option<&mut FieldAttrs>) -> u32 {
     let mut f = 0;
@@ -1267,18 +1185,16 @@ pub fn parse_tuple_fields<'a>(
     output: &mut Vec<Field<'a>>,
     fields: &'a [TokenTree],
     attr_buf: &mut Allocator<'a, FieldAttrs>,
-) -> Result<(), Error> {
+) {
     let mut f = fields.iter().enumerate();
     let mut next_attr: Option<&mut FieldAttrs> = None;
     while let Some((mut i, tok)) = f.next() {
         if let TokenTree::Punct(punct) = tok {
             if punct.as_char() == '#' {
                 let Some((_, TokenTree::Group(group))) = f.next() else {
-                    return Err(Error::span_msg("Expected attr after", punct.span()));
+                    Error::span_msg("Expected attr after", punct.span())
                 };
-                if let Err(err) = parse_field_attr(&mut next_attr, attr_buf, group.stream()) {
-                    return Err(err);
-                }
+                parse_field_attr(&mut next_attr, attr_buf, group.stream());
                 continue;
             }
         };
@@ -1320,7 +1236,6 @@ pub fn parse_tuple_fields<'a>(
             },
         })
     }
-    Ok(())
 }
 struct DefaultFieldAttr(FieldAttrs);
 unsafe impl Sync for DefaultFieldAttr {}
@@ -1334,7 +1249,7 @@ pub fn parse_struct_fields<'a>(
     output: &mut Vec<Field<'a>>,
     fields: &'a [TokenTree],
     attr_buf: &mut Allocator<'a, FieldAttrs>,
-) -> Result<(), Error> {
+) {
     let mut f = fields.iter().enumerate();
     let mut next_attr: Option<&'a mut FieldAttrs> = None;
     while let Some((i, tok)) = f.next() {
@@ -1344,21 +1259,16 @@ pub fn parse_struct_fields<'a>(
         let ch = punct.as_char() as u8;
         if ch == b'#' {
             let Some((_, TokenTree::Group(group))) = f.next() else {
-                return Err(Error::span_msg("Expected attr after", punct.span()));
+                Error::span_msg("Expected attr after", punct.span())
             };
-            if let Err(err) = parse_field_attr(&mut next_attr, attr_buf, group.stream()) {
-                return Err(err);
-            }
+            parse_field_attr(&mut next_attr, attr_buf, group.stream());
             continue;
         }
         if ch != b':' {
             continue;
         }
         let Some(TokenTree::Ident(name)) = fields.get(i.wrapping_sub(1)) else {
-            return Err(Error::span_msg(
-                "Expected field name before :",
-                punct.span(),
-            ));
+            Error::span_msg("Expected field name before :", punct.span())
         };
         let mut depth = 0i32;
         let end = loop {
@@ -1399,5 +1309,4 @@ pub fn parse_struct_fields<'a>(
             },
         })
     }
-    Ok(())
 }

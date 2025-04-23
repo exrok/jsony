@@ -29,6 +29,11 @@ struct InnerError {
 #[derive(Debug)]
 pub(crate) struct Error(Box<InnerError>);
 
+/// Error is technically not Send but only due to Span, which is `Copy`.
+/// We need it to be Send to send over panics. We guarantee we will catch
+/// the panic, and even if we didn't, since Span `Copy` it being dropped
+/// on another thread isn't going to cause an issue.
+unsafe impl Send for Error {}
 impl Error {
     pub(crate) fn to_compiler_error(&self, wrap: bool) -> TokenStream {
         let mut group = TokenTree::Group(Group::new(
@@ -63,47 +68,56 @@ impl Error {
             ])
         }
     }
-    #[cold]
-    #[inline(never)]
+    pub(crate) fn try_catch_handle(
+        ts: TokenStream,
+        func: fn(TokenStream) -> TokenStream,
+    ) -> TokenStream {
+        match std::panic::catch_unwind(move || func(ts)) {
+            Ok(e) => e,
+            Err(err) => {
+                if let Some(value) = err.downcast_ref::<Error>() {
+                    value.to_compiler_error(false)
+                } else {
+                    Error::from_ctx().to_compiler_error(false)
+                }
+            }
+        }
+    }
     #[track_caller]
-    pub(crate) fn msg(message: &str) -> Error {
-        println!("{}> {}", std::panic::Location::caller(), message);
+    pub(crate) fn from_ctx() -> Error {
         Error(Box::new(InnerError {
             span: Span::call_site(),
-            message: message.to_string(),
+            message: "Error in context".to_string(),
         }))
+    }
+    #[track_caller]
+    pub(crate) fn msg(message: &str) -> ! {
+        std::panic::panic_any(Error(Box::new(InnerError {
+            span: Span::call_site(),
+            message: message.to_string(),
+        })));
     }
 
-    #[cold]
-    #[inline(never)]
     #[track_caller]
-    #[rustfmt::skip]
-    pub(crate) fn msg_ctx(message: &str, fmt: &dyn std::fmt::Display) -> Error {
-        println!( "{}> {}: {}", std::panic::Location::caller(), message, fmt);
-        Error(Box::new(InnerError {
+    pub(crate) fn msg_ctx(message: &str, fmt: &dyn std::fmt::Display) -> ! {
+        std::panic::panic_any(Error(Box::new(InnerError {
             span: Span::call_site(),
             message: format!("{}: {}", message, fmt),
-        }))
+        })));
     }
-    #[cold]
-    #[inline(never)]
     #[track_caller]
-    pub(crate) fn span_msg(message: &str, span: Span) -> Error {
-        println!("{}> {}", std::panic::Location::caller(), message);
-        Error(Box::new(InnerError {
+    pub(crate) fn span_msg(message: &str, span: Span) -> ! {
+        std::panic::panic_any(Error(Box::new(InnerError {
             span,
             message: message.to_string(),
-        }))
+        })));
     }
-    #[cold]
-    #[inline(never)]
     #[track_caller]
-    pub(crate) fn span_msg_ctx(message: &str, fmt: &dyn std::fmt::Display, span: Span) -> Error {
-        println!("{}> {}", std::panic::Location::caller(), message);
-        Error(Box::new(InnerError {
+    pub(crate) fn span_msg_ctx(message: &str, fmt: &dyn std::fmt::Display, span: Span) -> ! {
+        std::panic::panic_any(Error(Box::new(InnerError {
             span,
             message: format!("{}: {}", fmt, message),
-        }))
+        })))
     }
 }
 

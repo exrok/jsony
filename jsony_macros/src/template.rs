@@ -13,6 +13,7 @@ fn parend(ts: TokenStream) -> TokenTree {
 fn braced(ts: TokenStream) -> TokenTree {
     TokenTree::Group(Group::new(Delimiter::Brace, ts))
 }
+
 const BB: u8 = b'b';
 const TT: u8 = b't';
 const NN: u8 = b'n';
@@ -65,7 +66,6 @@ struct Codegen {
     builder: Ident,
     text: String,
     initial_capacity: usize,
-    error: Option<crate::Error>,
     flatten: Flatten,
     writer: Option<Vec<TokenTree>>,
 }
@@ -155,10 +155,8 @@ impl Codegen {
                             got
                         } else {
                             self.eof(Span::call_site());
-                            return;
                         }) else {
-                            self.set_err(ch.span(), "Expected [] attr");
-                            return;
+                            Error::span_msg("Expected [] attr", ch.span())
                         };
                         let contents: Vec<TokenTree> = group.stream().into_iter().collect();
                         if let Some(TokenTree::Ident(ident)) = contents.first() {
@@ -176,11 +174,10 @@ impl Codegen {
                         let contents = &value.to_string();
                         if contents == "in" {
                             if !first_token || !top_most {
-                                self.set_err(
-                                    value.span(),
+                                Error::span_msg(
                                     "in keyword only allowed at beginning of template macro",
-                                );
-                                return;
+                                    value.span(),
+                                )
                             }
                             let mut toks: Vec<TokenTree> = Vec::new();
                             loop {
@@ -188,7 +185,6 @@ impl Codegen {
                                     got
                                 } else {
                                     self.eof(Span::call_site());
-                                    return;
                                 };
                                 if is_char(&tok, ';') {
                                     break;
@@ -218,10 +214,7 @@ impl Codegen {
                             continue 'outer;
                         }
                         _ => {
-                            if self.error.is_none() {
-                                self.set_err(t.span(), "Expected colon");
-                            }
-                            return;
+                            Error::span_msg("Expected colon", t.span());
                         }
                     }
                 };
@@ -244,20 +237,17 @@ impl Codegen {
                     if let TokenTree::Ident(ident) = &t {
                         #[allow(clippy::cmp_owned)]
                         if ident.to_string() != "for" {
-                            self.set_err(col.span(), "Unexpected 1");
-                            return;
+                            Error::span_msg("Expected a colon, following the key.", col.span())
                         } else {
                             if !first_token {
-                                self.set_err(
-                                    col.span(),
+                                Error::span_msg(
                                     "For comprehensions must be in there own object",
-                                );
-                                return;
+                                    col.span(),
+                                )
                             }
                         }
                     } else {
-                        self.set_err(col.span(), "Unexpected 2");
-                        return;
+                        Error::span_msg("Unknown symbol, did you mean to use @[if ...]", t.span())
                     }
                     value_tokens.clear();
                     value_tokens.push(t);
@@ -267,7 +257,6 @@ impl Codegen {
                             got
                         } else {
                             self.eof(Span::call_site());
-                            return;
                         };
                         if is_char(&tok, ';') {
                             break;
@@ -298,32 +287,22 @@ impl Codegen {
                 match &t {
                     TokenTree::Group(g) => {
                         if g.delimiter() != Delimiter::Bracket {
-                            self.set_err(g.span(), "Expected [key], key or \"key\".");
-                            return;
+                            Error::span_msg("Expected [key], key or \"key\".", g.span())
                         }
                         self.dyn_key(g.span(), g.stream());
                     }
                     TokenTree::Ident(ident) => {
                         self.pre_escaped_key(&ident.to_string());
                     }
-                    TokenTree::Punct(x) => {
-                        self.set_err(x.span(), "Unexpected Punc");
-                        return;
-                    }
+                    TokenTree::Punct(x) => Error::span_msg("Unexpected Punc", x.span()),
                     TokenTree::Literal(x) => match literal_inline(x.to_string()) {
                         lit::InlineKind::String(content) => {
                             self.text.push('"');
                             self.raw_escape_inline_value(&content);
                             self.text.push_str("\":");
                         }
-                        lit::InlineKind::Raw(_) => {
-                            self.set_err(x.span(), "Unexpected key");
-                            return;
-                        }
-                        lit::InlineKind::None => {
-                            self.set_err(x.span(), "Unexpected key");
-                            return;
-                        }
+                        lit::InlineKind::Raw(_) => Error::span_msg("Unexpected key", x.span()),
+                        lit::InlineKind::None => Error::span_msg("Unexpected key", x.span()),
                     },
                 };
                 self.insert_value(col.span(), &mut value_tokens);
@@ -337,15 +316,8 @@ impl Codegen {
             }
         }
     }
-    fn eof(&mut self, span: Span) {
-        if let None = self.error {
-            self.error = Some(Error::span_msg("Unexpected EOF", span));
-        }
-    }
-    fn set_err(&mut self, span: Span, msg: &str) {
-        if let None = self.error {
-            self.error = Some(Error::span_msg(msg, span));
-        }
+    fn eof(&mut self, span: Span) -> ! {
+        Error::span_msg("Unexpected Eof", span);
     }
     fn entry_completed(&mut self, attr: &mut Attr) {
         if match attr {
@@ -382,7 +354,6 @@ impl Codegen {
             builder,
             initial_capacity: 0,
             text: String::with_capacity(64),
-            error: None,
             writer: None,
             flatten: Flatten::None,
         }
@@ -443,12 +414,10 @@ impl Codegen {
         self.flush_text();
         let token = values.pop().unwrap();
         let TokenTree::Group(group) = token else {
-            self.set_err(token.span(), "Expected Blocked for Match Patterns");
-            return;
+            Error::span_msg("Expected Blocked for Match Patterns", token.span());
         };
         if group.delimiter() != Delimiter::Brace {
-            self.set_err(group.span(), "Expected Blocked for Match Patterns");
-            return;
+            Error::span_msg("Expected Blocked for Match Patterns", group.span());
         };
         let start = self.out.buf.len();
         let mut input = group.stream().into_iter();
@@ -565,19 +534,16 @@ impl Codegen {
         match self.flatten {
             Flatten::None => false,
             Flatten::Object => {
-                self.set_err(span, "Expected object to flatten");
-                true
+                Error::span_msg("Expected object to flatten", span);
             }
             Flatten::Array => {
-                self.set_err(span, "Expected array to flatten");
-                true
+                Error::span_msg("Expected array to flatten", span);
             }
         }
     }
     fn insert_value(&mut self, span: Span, values: &mut Vec<TokenTree>) {
         let [first, rest @ ..] = &**values else {
-            self.set_err(span, "Expected value after colon");
-            return;
+            Error::span_msg("Expected value after colon", span);
         };
         match first {
             TokenTree::Group(group) => match group.delimiter() {
@@ -596,17 +562,16 @@ impl Codegen {
                             self.flatten = prev;
                         }
                         Flatten::Array => {
-                            self.set_err(
-                                group.span(),
+                            Error::span_msg(
                                 "Expected array to flatten but found object",
+                                group.span(),
                             );
-                            return;
                         }
                     }
                     if let [first_after_brace, ..] = rest {
-                        self.set_err(
-                            first_after_brace.span(),
+                        Error::span_msg(
                             "Trailing tokens found after object value, expected a comma",
+                            first_after_brace.span(),
                         );
                     }
                     return;
@@ -619,11 +584,10 @@ impl Codegen {
                     } else {
                         if let [TokenTree::Ident(key), TokenTree::Punct(punct), ..] = rest {
                             if punct.as_char() == ':' {
-                                self.set_err(
-                                    key.span(),
+                                Error::span_msg(
                                     "Ident token found after array value, expected a comma",
+                                    key.span(),
                                 );
-                                return;
                             }
                         }
                     }
@@ -899,7 +863,6 @@ impl Codegen {
         }
     }
     fn finish_creating(mut self) -> TokenStream {
-        self.flush_error();
         if let Some(writer) = self.writer.take() {
             self.flush_text();
             let braced = braced(self.out.buf.drain(..).collect());
@@ -968,26 +931,24 @@ impl Codegen {
             out.split_off_stream(len)
         }
     }
-    fn flush_error(&mut self) {
-        if let Some(err) = self.error.take() {
-            self.out.buf.extend(err.to_compiler_error(true));
-        }
-    }
 }
-pub fn array(input: TokenStream) -> TokenStream {
+pub fn inner_array(input: TokenStream) -> TokenStream {
     let mut codegen = Codegen::new(Ident::new("builder", Span::call_site()));
     codegen.parse_inline_array(Span::call_site(), input);
     codegen.finish_creating()
 }
-pub fn object(input: TokenStream) -> TokenStream {
+pub fn inner_object(input: TokenStream) -> TokenStream {
     let mut codegen = Codegen::new(Ident::new("builder", Span::call_site()));
     codegen.begin_inline_object();
     codegen.parse_object(input.into_iter(), true);
     if codegen.writer.is_none() {
         codegen.end_inline_object();
     }
-    if let Some(error) = codegen.error {
-        return error.to_compiler_error(true);
-    }
     codegen.finish_creating()
+}
+pub fn array(input: TokenStream) -> TokenStream {
+    Error::try_catch_handle(input, inner_array)
+}
+pub fn object(input: TokenStream) -> TokenStream {
+    Error::try_catch_handle(input, inner_object)
 }

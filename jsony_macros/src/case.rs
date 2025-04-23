@@ -46,18 +46,14 @@ static RENAME_RULES: &[(&str, RenameRule)] = &[
 ];
 
 impl RenameRule {
-    pub fn from_literal(ident: &Literal) -> Result<Self, crate::Error> {
+    pub fn from_literal(ident: &Literal) -> Self {
         let lit = ident.to_string();
         for (name, rule) in RENAME_RULES {
             if lit == *name {
-                return Ok(*rule);
+                return *rule;
             }
         }
-        Err(Error::span_msg_ctx(
-            "",
-            &ParseError { unknown: &lit },
-            ident.span(),
-        ))
+        Error::span_msg_ctx("", &ParseError { unknown: &lit }, ident.span())
     }
 
     /// Apply a renaming rule to an enum variant, returning the version expected in the source.

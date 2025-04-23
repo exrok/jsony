@@ -301,16 +301,16 @@ impl Clone for EnumKind {
 //@DELETE_START
 macro_rules! throw {
     ($literal: literal @ $span: expr, $($tt:tt)*) => {
-        return Err(Error::span_msg_ctx($literal, &($($tt)*), $span))
+        Error::span_msg_ctx($literal, &($($tt)*), $span)
     };
     ($literal: literal, $($tt:tt)*) => {
-        return Err(Error::msg_ctx($literal, &($($tt)*)))
+        Error::msg_ctx($literal, &($($tt)*))
     };
     ($literal: literal @ $span: expr) => {
-        return Err(Error::span_msg($literal, $span))
+        Error::span_msg($literal, $span)
     };
     ($literal: literal) => {
-        return Err(Error::msg($literal))
+        Error::msg($literal)
     };
 }
 
@@ -318,14 +318,12 @@ macro_rules! expect_next {
     ($ident:ident, $expr:expr) => {
         match ($expr).next() {
             Some(TokenTree::$ident(t)) => t,
-            Some(tt) => {
-                return Err(Error::span_msg_ctx(
-                    concat!("Expected a ", stringify!($ident), "but found a "),
-                    &kind_of_token(&tt),
-                    tt.span(),
-                ))
-            }
-            None => return Err(Error::msg("Unexpected EOF")),
+            Some(tt) => Error::span_msg_ctx(
+                concat!("Expected a ", stringify!($ident), "but found a "),
+                &kind_of_token(&tt),
+                tt.span(),
+            ),
+            None => Error::msg("Unexpected EOF"),
         }
     };
 }
@@ -334,7 +332,7 @@ macro_rules! next {
     ($expr:expr) => {
         match ($expr).next() {
             Some(t) => t,
-            None => return Err(Error::msg("Unexpected EOF")),
+            None => Error::msg("Unexpected EOF"),
         }
     };
 }
@@ -357,7 +355,7 @@ fn parse_container_attr(
     target: &mut DeriveTargetInner<'_>,
     attr: Ident,
     mut value: &mut [TokenTree],
-) -> Result<(), Error> {
+) {
     let key = attr.to_string();
     match key.as_str() {
         "transparent" => {
@@ -427,7 +425,7 @@ fn parse_container_attr(
         }
         "version" => {
             if target.version.is_some() {
-                return Err(Error::span_msg("Duplicate version attribute", attr.span()));
+                Error::span_msg("Duplicate version attribute", attr.span())
             }
             use TokenTree::{Literal as L, Punct as P};
             let (min, current) = 'ok: {
@@ -446,19 +444,16 @@ fn parse_container_attr(
                     [] => break 'ok (None, None),
                     _ => (),
                 }
-                return Err(Error::span_msg(
+                Error::span_msg(
                     "Expected one of `V, MIN.., MIN..=V` or no version",
                     attr.span(),
-                ));
+                );
             };
             if let Some(min) = min {
                 match min.to_string().parse::<u16>() {
                     Ok(value) => target.min_version = value,
                     Err(_err) => {
-                        return Err(Error::span_msg(
-                            "Expected a version number between 0-65534",
-                            min.span(),
-                        ))
+                        Error::span_msg("Expected a version number between 0-65534", min.span())
                     }
                 }
             }
@@ -466,10 +461,7 @@ fn parse_container_attr(
                 match current.to_string().parse::<u16>() {
                     Ok(value) => target.version = Some(value),
                     Err(_err) => {
-                        return Err(Error::span_msg(
-                            "Expected a version number between 0-65534",
-                            current.span(),
-                        ))
+                        Error::span_msg("Expected a version number between 0-65534", current.span())
                     }
                 }
             } else {
@@ -503,35 +495,28 @@ fn parse_container_attr(
                 throw!("Expected a literal" @ attr.span())
             };
             value = rest;
-            target.rename_all = match RenameRule::from_literal(&rename) {
-                Ok(value) => value,
-                Err(err) => return Err(err),
-            }
+            target.rename_all = RenameRule::from_literal(&rename);
         }
         _ => throw!("Unknown attribute" @ attr.span()),
     }
     if !value.is_empty() {
         throw!("Extra value tokens for" @ attr.span(), attr)
     }
-    Ok(())
 }
 
-fn extract_container_attr(
-    target: &mut DeriveTargetInner,
-    stream: TokenStream,
-) -> Result<(), Error> {
+fn extract_container_attr(target: &mut DeriveTargetInner, stream: TokenStream) {
     let mut toks = stream.into_iter();
     let Some(TokenTree::Ident(ident)) = toks.next() else {
-        return Ok(());
+        return;
     };
     let Some(TokenTree::Group(group)) = toks.next() else {
-        return Ok(());
+        return;
     };
     let name = ident.to_string();
     if name == "jsony" {
         parse_attrs(group.stream(), &mut |_, attr, value| {
-            parse_container_attr(target, attr, value)
-        })
+            parse_container_attr(target, attr, value);
+        });
     } else if name == "repr" {
         for toks in group.stream() {
             let TokenTree::Ident(ident) = toks else {
@@ -553,22 +538,19 @@ fn extract_container_attr(
                 }
             }
         }
-        Ok(())
-    } else {
-        Ok(())
     }
 }
 
 pub fn extract_derive_target<'a>(
     target: &mut DeriveTargetInner<'a>,
     toks: &'a [TokenTree],
-) -> Result<(DeriveTargetKind, TokenStream), Error> {
+) -> (DeriveTargetKind, TokenStream) {
     let mut toks = toks.iter();
     let kind = loop {
         let ident = match next!(toks) {
             TokenTree::Ident(ident) => ident,
             TokenTree::Punct(ch) if ch.as_char() == '#' => {
-                extract_container_attr(target, expect_next!(Group, toks).stream())?;
+                extract_container_attr(target, expect_next!(Group, toks).stream());
                 continue;
             }
             _ => continue,
@@ -585,18 +567,18 @@ pub fn extract_derive_target<'a>(
 
     match toks.next() {
         Some(TokenTree::Group(group)) => {
-            return Ok((
+            return (
                 if group.delimiter() == Delimiter::Parenthesis {
                     DeriveTargetKind::TupleStruct
                 } else {
                     kind
                 },
                 group.stream(),
-            ));
+            );
         }
         Some(TokenTree::Punct(ch)) if ch.as_char() == '<' => (),
         Some(TokenTree::Punct(ch)) if ch.as_char() == ';' => {
-            return Ok((kind, TokenStream::new()));
+            return (kind, TokenStream::new());
         }
         None => throw!("Empty body"),
         f => throw!("Unhandled feature", f.unwrap()),
@@ -732,14 +714,14 @@ pub fn extract_derive_target<'a>(
         };
     }
     match next!(toks) {
-        TokenTree::Group(group) => Ok((
+        TokenTree::Group(group) => (
             if group.delimiter() == Delimiter::Parenthesis {
                 DeriveTargetKind::TupleStruct
             } else {
                 kind
             },
             group.stream(),
-        )),
+        ),
         TokenTree::Ident(tok) => {
             if ident_eq(tok, "where") {
                 throw!("Expected where clause" @ tok.span());
@@ -748,14 +730,14 @@ pub fn extract_derive_target<'a>(
                 throw!("Expected body after where clauses")
             };
             target.where_clauses = where_clauses;
-            Ok((
+            (
                 if group.delimiter() == Delimiter::Parenthesis {
                     DeriveTargetKind::TupleStruct
                 } else {
                     kind
                 },
                 group.stream(),
-            ))
+            )
         }
         tok => throw!("Expected either body or where clause", tok),
     }
@@ -767,7 +749,7 @@ fn parse_single_field_attr(
     mut trait_set: TraitSet,
     ident: Ident,
     value: &mut Vec<TokenTree>,
-) -> Result<(), Error> {
+) {
     let name = ident.to_string();
     if trait_set == 0 {
         trait_set = TO_JSON | FROM_JSON | TO_BINARY | FROM_BINARY;
@@ -909,7 +891,6 @@ fn parse_single_field_attr(
         throw!("Duplicate attribute" @ ident.span())
     }
     attrs.flags |= mask;
-    Ok(())
 }
 
 fn extract_jsony_attr(group: TokenStream) -> Option<TokenStream> {
@@ -933,10 +914,7 @@ pub const TO_JSON: TraitSet = 1 << 0;
 pub const FROM_JSON: TraitSet = 1 << 1;
 pub const TO_BINARY: TraitSet = 1 << 2;
 pub const FROM_BINARY: TraitSet = 1 << 3;
-fn parse_attrs(
-    toks: TokenStream,
-    func: &mut dyn FnMut(TraitSet, Ident, &mut Vec<TokenTree>) -> Result<(), Error>,
-) -> Result<(), Error> {
+fn parse_attrs(toks: TokenStream, func: &mut dyn FnMut(TraitSet, Ident, &mut Vec<TokenTree>)) {
     let mut toks = toks.into_iter();
     let mut buf: Vec<TokenTree> = Vec::new();
     'outer: while let Some(tok) = toks.next() {
@@ -969,9 +947,7 @@ fn parse_attrs(
                 match sep.as_char() {
                     '=' => (),
                     ',' => {
-                        if let Err(err) = func(trait_set, ident, &mut buf) {
-                            return Err(err);
-                        }
+                        func(trait_set, ident, &mut buf);
                         continue 'outer;
                     }
                     _ => throw!("Expected either `=` or `,`" @ sep.span()),
@@ -987,22 +963,18 @@ fn parse_attrs(
             }
             break;
         }
-        if let Err(err) = func(trait_set, ident, &mut buf) {
-            return Err(err);
-        }
+        func(trait_set, ident, &mut buf);
         buf.clear();
     }
-
-    Ok(())
 }
 
 fn parse_field_attr<'a>(
     current: &mut Option<&'a mut FieldAttrs>,
     attr_buf: &mut Allocator<'a, FieldAttrs>,
     toks: TokenStream,
-) -> Result<(), Error> {
+) {
     let Some(attrs) = extract_jsony_attr(toks) else {
-        return Ok(());
+        return;
     };
     let attr = current.get_or_insert_with(|| attr_buf.alloc_default());
     parse_attrs(attrs, &mut |set, ident, buf| {
@@ -1018,10 +990,7 @@ struct VariantTemp<'a> {
     kind: EnumKind,
 }
 
-pub fn scan_fields<'a>(
-    target: &mut DeriveTargetInner<'a>,
-    fields: &mut Vec<Field<'a>>,
-) -> Result<(), Error> {
+pub fn scan_fields<'a>(target: &mut DeriveTargetInner<'a>, fields: &mut Vec<Field<'a>>) {
     let type_generic_names: Vec<_> = target
         .generics
         .iter()
@@ -1073,8 +1042,6 @@ pub fn scan_fields<'a>(
             throw!("Field version is greater than container version")
         }
     }
-
-    Ok(())
 }
 
 pub fn parse_enum<'a>(
@@ -1083,8 +1050,8 @@ pub fn parse_enum<'a>(
     tt_buf: &'a mut Vec<TokenTree>,
     field_buf: &'a mut Vec<Field<'a>>,
     attr_buf: &mut Allocator<'a, FieldAttrs>,
-) -> Result<Vec<EnumVariant<'a>>, Error> {
-    let mut temp = parse_inner_enum_variants(fields, tt_buf, attr_buf)?;
+) -> Vec<EnumVariant<'a>> {
+    let mut temp = parse_inner_enum_variants(fields, tt_buf, attr_buf);
     match &target.tag {
         Tag::Inline(_) => target.enum_flags |= ENUM_HAS_INLINE_TAG,
         Tag::Untagged => target.enum_flags |= ENUM_HAS_NO_TAG,
@@ -1101,14 +1068,14 @@ pub fn parse_enum<'a>(
                         field_buf,
                         &tt_buf[variant.start..variant.end],
                         attr_buf,
-                    )?;
+                    );
                     variant.start = start;
                     variant.end = field_buf.len();
                 }
                 EnumKind::Struct => {
                     target.enum_flags |= ENUM_CONTAINS_STRUCT_VARIANT;
                     let start = field_buf.len();
-                    parse_struct_fields(field_buf, &tt_buf[variant.start..variant.end], attr_buf)?;
+                    parse_struct_fields(field_buf, &tt_buf[variant.start..variant.end], attr_buf);
                     variant.start = start;
                     variant.end = field_buf.len();
                 }
@@ -1118,9 +1085,8 @@ pub fn parse_enum<'a>(
             }
         }
     }
-    scan_fields(target, field_buf)?;
-    Ok(temp
-        .into_iter()
+    scan_fields(target, field_buf);
+    temp.into_iter()
         .map(|var| EnumVariant {
             name: var.name,
             fields: if matches!(var.kind, EnumKind::None) {
@@ -1131,14 +1097,14 @@ pub fn parse_enum<'a>(
             kind: var.kind,
             attr: var.attr,
         })
-        .collect())
+        .collect()
 }
 
 fn parse_inner_enum_variants<'a>(
     fields: &'a [TokenTree],
     tt_buffer: &mut Vec<TokenTree>,
     attr_buffer: &mut Allocator<'a, FieldAttrs>,
-) -> Result<Vec<VariantTemp<'a>>, Error> {
+) -> Vec<VariantTemp<'a>> {
     let mut f = fields.iter().enumerate();
     let mut enums: Vec<VariantTemp<'a>> = Vec::new();
     let mut next_attr: Option<&'a mut FieldAttrs> = None;
@@ -1152,9 +1118,7 @@ fn parse_inner_enum_variants<'a>(
                 let Some((_, TokenTree::Group(group))) = f.next() else {
                     throw!("Expected attr after" @ punct.span())
                 };
-                if let Err(err) = parse_field_attr(&mut next_attr, attr_buffer, group.stream()) {
-                    return Err(err);
-                }
+                parse_field_attr(&mut next_attr, attr_buffer, group.stream());
                 continue;
             }
             if ch == b',' {
@@ -1245,7 +1209,7 @@ fn parse_inner_enum_variants<'a>(
             break;
         }
     }
-    Ok(enums)
+    enums
 }
 
 fn flags_from_attr(attr: &Option<&mut FieldAttrs>) -> u32 {
@@ -1274,7 +1238,7 @@ pub fn parse_tuple_fields<'a>(
     output: &mut Vec<Field<'a>>,
     fields: &'a [TokenTree],
     attr_buf: &mut Allocator<'a, FieldAttrs>,
-) -> Result<(), Error> {
+) {
     let mut f = fields.iter().enumerate();
     let mut next_attr: Option<&mut FieldAttrs> = None;
     while let Some((mut i, tok)) = f.next() {
@@ -1283,9 +1247,7 @@ pub fn parse_tuple_fields<'a>(
                 let Some((_, TokenTree::Group(group))) = f.next() else {
                     throw!("Expected attr after" @ punct.span())
                 };
-                if let Err(err) = parse_field_attr(&mut next_attr, attr_buf, group.stream()) {
-                    return Err(err);
-                }
+                parse_field_attr(&mut next_attr, attr_buf, group.stream());
                 continue;
             }
         };
@@ -1330,7 +1292,6 @@ pub fn parse_tuple_fields<'a>(
             },
         })
     }
-    Ok(())
 }
 
 struct DefaultFieldAttr(FieldAttrs);
@@ -1346,7 +1307,7 @@ pub fn parse_struct_fields<'a>(
     output: &mut Vec<Field<'a>>,
     fields: &'a [TokenTree],
     attr_buf: &mut Allocator<'a, FieldAttrs>,
-) -> Result<(), Error> {
+) {
     let mut f = fields.iter().enumerate();
     let mut next_attr: Option<&'a mut FieldAttrs> = None;
     while let Some((i, tok)) = f.next() {
@@ -1358,9 +1319,7 @@ pub fn parse_struct_fields<'a>(
             let Some((_, TokenTree::Group(group))) = f.next() else {
                 throw!("Expected attr after" @ punct.span())
             };
-            if let Err(err) = parse_field_attr(&mut next_attr, attr_buf, group.stream()) {
-                return Err(err);
-            }
+            parse_field_attr(&mut next_attr, attr_buf, group.stream());
             continue;
         }
         if ch != b':' {
@@ -1408,5 +1367,4 @@ pub fn parse_struct_fields<'a>(
             },
         })
     }
-    Ok(())
 }

@@ -12,10 +12,10 @@ use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenS
 
 #[rustfmt::skip]
 macro_rules! throw {
-    ($literal: literal @ $span: expr, $($tt:tt)*) => { return Err(Error::span_msg_ctx($literal, &($($tt)*), $span)) };
-    ($literal: literal, $($tt:tt)*) => { return Err(Error::msg_ctx($literal, &($($tt)*))) };
-    ($literal: literal @ $span: expr) => { return Err(Error::span_msg($literal, $span)) };
-    ($literal: literal) => { return Err(Error::msg($literal)) };
+    ($literal: literal @ $span: expr, $($tt:tt)*) => { Error::span_msg_ctx($literal, &($($tt)*), $span) };
+    ($literal: literal, $($tt:tt)*) => { Error::msg_ctx($literal, &($($tt)*)) };
+    ($literal: literal @ $span: expr) => { Error::span_msg($literal, $span) };
+    ($literal: literal) => { Error::msg($literal) };
 }
 
 #[allow(unused)]
@@ -81,9 +81,6 @@ macro_rules! append_tok {
     };
     ([@$($tt:tt)*] $d:tt) => {
         $d.buf.push($($tt)*)
-    };
-    ([try $($tt:tt)*] $d:tt) => {
-        if let Err(err) = $($tt)* { return Err(err); }
     };
     ([for ($($iter:tt)*) {$($body:tt)*}] $d:tt) => {
         for $($iter)* { $(append_tok!($body $d);)* }
@@ -182,7 +179,7 @@ fn bodyless_impl_from(
         generics,
         ..
     }: &Ctx,
-) -> Result<(), Error> {
+) {
     let any_generics = !target.generics.is_empty();
     splat! {
         output;
@@ -194,7 +191,6 @@ fn bodyless_impl_from(
                 [~ty]: [#: &trait_name]<#[#: lifetime]>,
             }] [~&target.where_clauses] ]
     };
-    Ok(())
 }
 
 fn impl_from_binary(
@@ -202,11 +198,11 @@ fn impl_from_binary(
     ctx: &Ctx,
     inner: TokenStream,
     pod_forward: Option<&Field>,
-) -> Result<(), Error> {
+) {
     splat! {
         out;
         ~[[automatically_derived]]
-        unsafe [try bodyless_impl_from(out, None, Ident::new("FromBinary", Span::call_site()), ctx)] {
+        unsafe [bodyless_impl_from(out, None, Ident::new("FromBinary", Span::call_site()), ctx)] {
             [if ctx.target.pod {
                 splat!(out; const POD: bool = true;)
             } else if let Some(pod_field) = pod_forward {
@@ -217,7 +213,6 @@ fn impl_from_binary(
             ]
         }
     };
-    Ok(())
 }
 
 fn impl_from_json_field_visitor(
@@ -225,10 +220,10 @@ fn impl_from_json_field_visitor(
     ctx: &Ctx,
     ty: &dyn Fn(&mut RustWriter),
     inner: TokenStream,
-) -> Result<(), Error> {
+) {
     splat! {
         output;
-        unsafe [try bodyless_impl_from(
+        unsafe [bodyless_impl_from(
             output,
             Some(Ident::new("json", Span::call_site())),
             Ident::new("FromJsonFieldVisitor", Span::call_site()),
@@ -244,21 +239,19 @@ fn impl_from_json_field_visitor(
             ]
         }
     };
-    Ok(())
 }
 
-fn impl_from_json(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) -> Result<(), Error> {
+fn impl_from_json(output: &mut RustWriter, ctx: &Ctx, inner: TokenStream) {
     splat! {
         output;
         ~[[automatically_derived]]
-        unsafe [try bodyless_impl_from(output, None, Ident::new("FromJson", Span::call_site()), ctx)] {
+        unsafe [bodyless_impl_from(output, None, Ident::new("FromJson", Span::call_site()), ctx)] {
             unsafe fn emplace_from_json(dst: ::std::ptr::NonNull<()>, parser: &mut [~&ctx.crate_path]::parser::Parser<#[#: &ctx.lifetime]>)
             -> ::std::result::Result<(), &#static ::jsony::json::DecodeError> [
                 output.buf.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)))
             ]
         }
     };
-    Ok(())
 }
 
 fn impl_to_binary(
@@ -268,7 +261,7 @@ fn impl_to_binary(
     }: &Ctx,
     inner: TokenStream,
     pod_forward: Option<&Field>,
-) -> Result<(), Error> {
+) {
     let any_generics = !target.generics.is_empty();
     splat! {
         out;
@@ -292,7 +285,6 @@ fn impl_to_binary(
             ]
         }
     };
-    Ok(())
 }
 
 enum ToJsonKind<'a> {
@@ -307,7 +299,7 @@ fn impl_to_json(
         target, crate_path, ..
     }: &Ctx,
     inner: TokenStream,
-) -> Result<(), Error> {
+) {
     let any_generics = !target.generics.is_empty();
     splat! {
         output;
@@ -336,7 +328,6 @@ fn impl_to_json(
             ]
         }
     };
-    Ok(())
 }
 
 struct Ctx<'a> {
@@ -358,7 +349,7 @@ impl<'a> Ctx<'a> {
             out, &self.target.generics, USE
         )]>])
     }
-    fn new(out: &mut RustWriter, target: &'a DeriveTargetInner) -> Result<Ctx<'a>, Error> {
+    fn new(out: &mut RustWriter, target: &'a DeriveTargetInner) -> Ctx<'a> {
         // if !out.buf.is_empty() {
         //     todo!();
         // }
@@ -391,13 +382,13 @@ impl<'a> Ctx<'a> {
         } else {
             (Ident::new("de", Span::call_site()), &target.generics[..])
         };
-        Ok(Ctx {
+        Ctx {
             lifetime: lt,
             generics,
             crate_path,
             target,
             temp: Vec::new(),
-        })
+        }
     }
 }
 fn var(num: usize) -> Ident {
@@ -482,7 +473,7 @@ impl Ctx<'_> {
     }
 }
 
-fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) -> Result<(), Error> {
+fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
     if let Some(with) = field.with(FROM_JSON) {
         splat! { out;
            [~&ctx.crate_path]::__internal::emplace_json_for_with_attribute::<&mut ::jsony::parser::Parser<#[#: &ctx.lifetime]>, [~field.ty], _>(
@@ -492,7 +483,6 @@ fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) -> Result
     } else {
         splat! { out; [~&ctx.crate_path]::__internal::erased_emplace_from_json::<#[#: &ctx.lifetime], [~field.ty]>() }
     }
-    Ok(())
 }
 
 fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
@@ -512,7 +502,7 @@ fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
 }
 
 // Probably can merge with field name json
-fn variant_name_json(ctx: &Ctx, field: &EnumVariant, output: &mut String) -> Result<(), Error> {
+fn variant_name_json(ctx: &Ctx, field: &EnumVariant, output: &mut String) {
     output.push('"');
     if let Some(name) = field.rename(TO_JSON) {
         match crate::lit::literal_inline(name.to_string()) {
@@ -533,10 +523,9 @@ fn variant_name_json(ctx: &Ctx, field: &EnumVariant, output: &mut String) -> Res
         output.push_str(&field.name.to_string());
     }
     output.push('"');
-    Ok(())
 }
 
-fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) -> Result<(), Error> {
+fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) {
     output.push('"');
     if let Some(name) = &field.attr.rename(TO_JSON) {
         match crate::lit::literal_inline(name.to_string()) {
@@ -557,15 +546,9 @@ fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) -> Result<(), 
         output.push_str(&field.name.to_string());
     }
     output.push('"');
-    Ok(())
 }
 
-fn struct_schema(
-    out: &mut RustWriter,
-    ctx: &Ctx,
-    fields: &[&Field],
-    temp_tuple: Option<&Ident>,
-) -> Result<(), Error> {
+fn struct_schema(out: &mut RustWriter, ctx: &Ctx, fields: &[&Field], temp_tuple: Option<&Ident>) {
     let ag_gen = if ctx
         .target
         .generics
@@ -598,7 +581,7 @@ fn struct_schema(
                         splat!(out; [#: &ctx.target.name][@ag_gen.clone()], [#: field.name])
                     }
                 ]),
-                decode: [try schema_field_decode(out, ctx, field)]
+                decode: [schema_field_decode(out, ctx, field)]
             },
         }
     ]);
@@ -649,7 +632,6 @@ fn struct_schema(
             defaults: &[@schema_defaults],
         }
     }
-    Ok(())
 }
 
 fn schema_ordered_fields<'a>(fields: &'a [Field<'a>]) -> Vec<&'a Field<'a>> {
@@ -689,7 +671,7 @@ fn required_bitset(ordered: &[&Field]) -> u64 {
     ((1 << ordered.len()) - 1) ^ ((1 << defaults) - 1)
 }
 
-fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
     let head = out.buf.len();
     match fields {
         [] => {
@@ -718,10 +700,10 @@ fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> 
         }
     };
     let stream = out.split_off_stream(head);
-    impl_from_json(out, ctx, stream)
+    impl_from_json(out, ctx, stream);
 }
 
-fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
     let head = out.buf.len();
     let kind = match fields {
         [] => {
@@ -791,7 +773,7 @@ fn inner_struct_to_json(
     fields: &[Field],
     text: &mut String,
     on_self: bool,
-) -> Result<(), Error> {
+) {
     let mut first = true;
     splat!(
         out;
@@ -833,9 +815,7 @@ fn inner_struct_to_json(
             let flattened = field.flatten(TO_JSON);
             first = flattened || if_skip_body.is_some();
             if !flattened {
-                if let Err(err) = field_name_json(ctx, field, text) {
-                    return Err(err)
-                }
+                field_name_json(ctx, field, text);
                 text.push(':');
             }
             if !text.is_empty() {
@@ -899,7 +879,6 @@ fn inner_struct_to_json(
 
         }]
     );
-    Ok(())
 }
 
 fn field_from_default(out: &mut RustWriter, field: &Field, set: TraitSet) {
@@ -932,19 +911,19 @@ fn field_from_default(out: &mut RustWriter, field: &Field, set: TraitSet) {
     );
 }
 
-fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
     let mut text = String::new();
     let body = token_stream!(
         out;
         out.start_json_object();
-        [inner_struct_to_json(out, ctx, fields, &mut text, true)?]
+        [inner_struct_to_json(out, ctx, fields, &mut text, true)]
         out.end_json_object()
     );
 
     impl_to_json(out, ToJsonKind::Static("AlwaysObject"), ctx, body)
 }
 
-fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result<(), Error> {
+fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
     let mut flattening: Option<&Field> = None;
     let mut has_skips = false;
     for field in fields {
@@ -953,10 +932,10 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
         }
         if field.flatten(FROM_JSON) {
             if flattening.is_some() {
-                return Err(Error::span_msg(
+                Error::span_msg(
                     "Only one flatten field is currently supported",
                     field.name.span(),
-                ));
+                );
             }
             flattening = Some(field);
         }
@@ -975,7 +954,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
             ]]
             {
                 ::jsony::__internal::ObjectSchema::<#[#: &ctx.lifetime]> {
-                    inner: &const { [struct_schema(out, ctx, &ordered_fields, None)?] },
+                    inner: &const { [struct_schema(out, ctx, &ordered_fields, None)] },
                     phantom: ::std::marker::PhantomData
                 }
             }
@@ -1001,7 +980,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
             } else {
                 splat!(out;
                 ::jsony::__internal::ObjectSchema::<#[#: &ctx.lifetime]> {
-                    inner: &const { [struct_schema(out, ctx, &ordered_fields, None)?] },
+                    inner: &const { [struct_schema(out, ctx, &ordered_fields, None)] },
                     phantom: ::std::marker::PhantomData
                 })
             }
@@ -1056,7 +1035,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                 );
             }
             let ts = out.split_off_stream(start);
-            impl_from_json(out, ctx, ts)?;
+            impl_from_json(out, ctx, ts);
             if ctx.target.flattenable {
                 if has_skips {
                     throw!("Flattenable does not yet support skipped fields")
@@ -1077,13 +1056,11 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) -> Result
                     ctx,
                     &|out| splat!(out; jsony::__internal::DynamicFieldDecoder<#[#: &ctx.lifetime]>),
                     body
-                )?;
+                )
 
             }
         ]
     );
-
-    Ok(())
 }
 
 fn variant_key_literal(ctx: &Ctx, variant: &EnumVariant) -> Literal {
@@ -1101,7 +1078,7 @@ fn variant_key_literal(ctx: &Ctx, variant: &EnumVariant) -> Literal {
     }
 }
 
-fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
+fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     let mut text = String::with_capacity(64);
     let start = out.buf.len();
     // TODO make this logic smarter
@@ -1127,7 +1104,7 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
                             [for (i, _) in variant.fields.iter().enumerate() { splat!(out; [#: &ctx.temp[i]],) }]
                         ) => [
                             text.clear();
-                            enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
+                            enum_variant_to_json(out, ctx, variant, &mut text, all_objects);
                         ]}
                     },
                     EnumKind::Struct => {
@@ -1135,13 +1112,13 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Re
                             [for (i, field) in variant.fields.iter().enumerate() { splat!(out; [#: field.name]: [#: &ctx.temp[i]],) }]
                         } => [
                             text.clear();
-                            enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
+                            enum_variant_to_json(out, ctx, variant, &mut text, all_objects);
                         ]}
                     },
                     EnumKind::None => {
                         splat!{out; => [
                                 text.clear();
-                                enum_variant_to_json(out, ctx, variant, &mut text, all_objects)?;
+                                enum_variant_to_json(out, ctx, variant, &mut text, all_objects);
                         ]}
                     },
                 }
@@ -1176,7 +1153,7 @@ fn enum_variant_to_json_struct(
     ctx: &Ctx,
     variant: &EnumVariant,
     text: &mut String,
-) -> Result<(), Error> {
+) {
     splat!(
         out;
         [
@@ -1189,7 +1166,7 @@ fn enum_variant_to_json_struct(
                 _ => ()
             }
         ]
-        [inner_struct_to_json(out, ctx, &variant.fields, text, false)?];
+        [inner_struct_to_json(out, ctx, &variant.fields, text, false)];
         [
             // opt: Could do a static '}' push if we know that there isn't a trailing comma which
             // can occur when flattening
@@ -1208,7 +1185,6 @@ fn enum_variant_to_json_struct(
             // }
         ]
     );
-    Ok(())
 }
 
 fn enum_variant_to_json(
@@ -1217,13 +1193,13 @@ fn enum_variant_to_json(
     variant: &EnumVariant,
     text: &mut String,
     all_objects: bool,
-) -> Result<(), Error> {
+) {
     let start = out.buf.len();
     match &ctx.target.tag {
         Tag::Inline(..) => {
             if let EnumKind::None = variant.kind {
             } else {
-                variant_name_json(ctx, variant, text)?;
+                variant_name_json(ctx, variant, text);
                 if let Some(content) = &ctx.target.content {
                     text.push_str(",\"");
                     crate::template::raw_escape(&content, text);
@@ -1243,7 +1219,7 @@ fn enum_variant_to_json(
                 if !all_objects {
                     splat!(out; out.start_json_object(););
                 }
-                variant_name_json(ctx, variant, text)?;
+                variant_name_json(ctx, variant, text);
                 text.push_str(":");
             }
         }
@@ -1273,12 +1249,10 @@ fn enum_variant_to_json(
             }
         }
         EnumKind::Struct => {
-            if let Err(err) = enum_variant_to_json_struct(out, ctx, variant, text) {
-                return Err(err);
-            }
+            enum_variant_to_json_struct(out, ctx, variant, text);
         }
         EnumKind::None => {
-            variant_name_json(ctx, variant, text)?;
+            variant_name_json(ctx, variant, text);
             splat! {
                 out;
                 out.push_str([@Literal::string(&text).into()]);
@@ -1304,23 +1278,22 @@ fn enum_variant_to_json(
     let ts = out.buf.drain(start..).collect();
     out.buf
         .push(TokenTree::Group(Group::new(Delimiter::Brace, ts)));
-    Ok(())
 }
 fn enum_variant_from_json_struct(
     out: &mut RustWriter,
     ctx: &Ctx,
     variant: &EnumVariant,
     untagged: bool,
-) -> Result<(), Error> {
+) {
     let ordered_fields = schema_ordered_fields(variant.fields);
     let mut flattening: Option<&Field> = None;
     for field in variant.fields {
         if field.flatten(FROM_JSON) {
             if flattening.is_some() {
-                return Err(Error::span_msg(
+                Error::span_msg(
                     "Only one flatten field is currently supported",
                     field.name.span(),
-                ));
+                )
             }
             flattening = Some(field);
         }
@@ -1331,7 +1304,7 @@ fn enum_variant_from_json_struct(
             // Note a type alias with an un-used generic is not an error
             type __TEMP[?(ctx.target.has_lifetime())<#[#: &ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
             let schema = ::jsony::__internal::ObjectSchema{
-                inner: const { &[try struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
+                inner: const { &[struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
                 phantom: ::std::marker::PhantomData,
             };
             let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
@@ -1379,7 +1352,7 @@ fn enum_variant_from_json_struct(
             // Note a type alias with an un-used generic is not an error
             type __TEMP[?(ctx.target.has_lifetime())<#[#: &ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
             let schema = ::jsony::__internal::ObjectSchema{
-                inner: const { &[try struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
+                inner: const { &[struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
                 phantom: ::std::marker::PhantomData,
             };
             let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
@@ -1406,7 +1379,6 @@ fn enum_variant_from_json_struct(
             }
         }
     };
-    Ok(())
 }
 
 fn other_variant_key(out: &mut RustWriter, field: &Field) {
@@ -1424,12 +1396,7 @@ fn other_variant_key(out: &mut RustWriter, field: &Field) {
     );
 }
 
-fn enum_variant_from_json(
-    out: &mut RustWriter,
-    ctx: &Ctx,
-    variant: &EnumVariant,
-    untagged: bool,
-) -> Result<(), Error> {
+fn enum_variant_from_json(out: &mut RustWriter, ctx: &Ctx, variant: &EnumVariant, untagged: bool) {
     let start = out.buf.len();
     match variant.kind {
         EnumKind::Tuple => {
@@ -1474,9 +1441,7 @@ fn enum_variant_from_json(
                     }
                 }
             }
-            if let Err(err) = enum_variant_from_json_struct(out, ctx, variant, untagged) {
-                return Err(err);
-            }
+            enum_variant_from_json_struct(out, ctx, variant, untagged);
         }
         EnumKind::None => splat! {
             out;
@@ -1497,14 +1462,9 @@ fn enum_variant_from_json(
         },
     };
     out.tt_group(Delimiter::Brace, start);
-    Ok(())
 }
 
-fn stringly_enum_from_json(
-    out: &mut RustWriter,
-    ctx: &Ctx,
-    variants: &[EnumVariant],
-) -> Result<(), Error> {
+fn stringly_enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     let mut other: Option<&EnumVariant> = None;
     for variant in variants {
         if variant.attr.has_other() {
@@ -1523,7 +1483,7 @@ fn stringly_enum_from_json(
                         [@variant_key_literal(ctx, variant).into()]
                             => [#: &ctx.target.name]::[#: &variant.name],
                     }]
-                    [try enum_from_json_unknown_variant(out, ctx, other, true)]
+                    [enum_from_json_unknown_variant(out, ctx, other, true)]
                 };
                 dst.cast::<[ctx.target_type(out)]>().write(value);
             }
@@ -1539,7 +1499,7 @@ fn enum_from_json_unknown_variant(
     ctx: &Ctx,
     other: Option<&EnumVariant>,
     stringly: bool,
-) -> Result<(), Error> {
+) {
     splat!(out; _ =>);
     let start = out.buf.len();
     if let Some(other) = &other {
@@ -1607,10 +1567,9 @@ fn enum_from_json_unknown_variant(
         }
     }
     out.tt_group(Delimiter::Brace, start);
-    Ok(())
 }
 
-fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
+fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     if ctx.target.flattenable {
         throw!("Flattening enums not supported yet.")
     }
@@ -1633,7 +1592,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                     splat!(
                         out;
                         [?(i != 0) parser.restore_for_retry(&snapshot); ]
-                        [try enum_variant_from_json(out, ctx, variant, true)]
+                        [enum_variant_from_json(out, ctx, variant, true)]
                     )
                 }
                 splat!(
@@ -1646,8 +1605,8 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
             out.tt_group(Delimiter::Brace, start);
             splat!(out; Ok(()));
             let ts = out.split_off_stream(outer);
-            impl_from_json(out, ctx, ts)?;
-            return Ok(());
+            impl_from_json(out, ctx, ts);
+            return;
         }
         Tag::Default => {
             if ctx.target.enum_flags & (ENUM_CONTAINS_TUPLE_VARIANT | ENUM_CONTAINS_STRUCT_VARIANT)
@@ -1729,10 +1688,10 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
 
                 splat!(out;
                     [@variant_key_literal(ctx, variant).into()]
-                        => [try enum_variant_from_json(out, ctx, variant, false)],
+                        => [enum_variant_from_json(out, ctx, variant, false)],
                 );
             }]
-            [try enum_from_json_unknown_variant(out, ctx, other, false)]
+            [enum_from_json_unknown_variant(out, ctx, other, false)]
         }
     };
 
@@ -1786,7 +1745,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
                                     splat!(out; [@variant_key_literal(ctx, variant).into()] => [#: &ctx.target.name]::[#: variant.name],);
                                 }
                             }]
-                            [try enum_from_json_unknown_variant(out, ctx, other, true)]
+                            [enum_from_json_unknown_variant(out, ctx, other, true)]
                         };
                         dst.cast::<[ctx.target_type(out)]>().write(value);
                         return Ok(());
@@ -1803,16 +1762,10 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
         )
     }
 
-    impl_from_json(out, ctx, body)?;
-
-    Ok(())
+    impl_from_json(out, ctx, body);
 }
 
-fn handle_pod_binary_any_struct(
-    out: &mut RustWriter,
-    ctx: &Ctx<'_>,
-    fields: &[Field],
-) -> Result<bool, Error> {
+fn handle_pod_binary_any_struct(out: &mut RustWriter, ctx: &Ctx<'_>, fields: &[Field]) -> bool {
     if !ctx.target.generics.is_empty() {
         throw!("Pod derive doesn't support generics or lifetimes yet.");
     }
@@ -1868,7 +1821,7 @@ fn handle_pod_binary_any_struct(
     );
 
     if fields.len() < 2 {
-        return Ok(false);
+        return false;
     }
 
     // Note we currently omit the endian transform for now, as I doubt anyone
@@ -1880,7 +1833,7 @@ fn handle_pod_binary_any_struct(
             encoder.push_as_bytes(self);
         }};
         let body = out.split_off_stream(start);
-        impl_to_binary(out, &ctx, body, None)?;
+        impl_to_binary(out, &ctx, body, None);
     }
 
     if ctx.target.from_binary {
@@ -1889,18 +1842,14 @@ fn handle_pod_binary_any_struct(
             unsafe { decoder.pod_type() }
         };
         let body = out.split_off_stream(start);
-        impl_from_binary(out, &ctx, body, None)?;
+        impl_from_binary(out, &ctx, body, None);
     }
-    Ok(true)
+    true
 }
 
 // bincode test
-fn handle_struct(
-    output: &mut RustWriter,
-    target: &DeriveTargetInner,
-    fields: &[Field],
-) -> Result<(), Error> {
-    let ctx = Ctx::new(output, target)?;
+fn handle_struct(output: &mut RustWriter, target: &DeriveTargetInner, fields: &[Field]) {
+    let ctx = Ctx::new(output, target);
     if target.from_json {
         if target.transparent_impl {
             let [single_field] = fields else {
@@ -1915,9 +1864,9 @@ fn handle_struct(
                     dst, parser
                 )
             };
-            impl_from_json(output, &ctx, body)?;
+            impl_from_json(output, &ctx, body);
         } else {
-            struct_from_json(output, &ctx, fields)?;
+            struct_from_json(output, &ctx, fields);
         }
     }
     if target.to_json {
@@ -1928,15 +1877,15 @@ fn handle_struct(
             let body = token_stream! {output;
                 self.[#: single_field.name].encode_json__jsony(out)
             };
-            impl_to_json(output, ToJsonKind::Forward(&single_field), &ctx, body)?;
+            impl_to_json(output, ToJsonKind::Forward(&single_field), &ctx, body);
         } else {
-            struct_to_json(output, &ctx, fields)?;
+            struct_to_json(output, &ctx, fields);
         }
     }
 
     if target.pod {
-        if handle_pod_binary_any_struct(output, &ctx, fields)? {
-            return Ok(());
+        if handle_pod_binary_any_struct(output, &ctx, fields) {
+            return;
         }
     }
 
@@ -1964,7 +1913,7 @@ fn handle_struct(
             )
         }
         let body = output.split_off_stream(start);
-        impl_to_binary(output, &ctx, body, auto_pod)?;
+        impl_to_binary(output, &ctx, body, auto_pod);
     }
 
     if target.from_binary {
@@ -1980,10 +1929,8 @@ fn handle_struct(
             }
         };
         let body = output.split_off_stream(start);
-        impl_from_binary(output, &ctx, body, auto_pod)?;
+        impl_from_binary(output, &ctx, body, auto_pod);
     }
-
-    Ok(())
 }
 
 fn decode_binary_version(out: &mut RustWriter, ctx: &Ctx) {
@@ -2011,24 +1958,20 @@ fn decode_binary_version(out: &mut RustWriter, ctx: &Ctx) {
     );
 }
 
-fn handle_tuple_struct(
-    output: &mut RustWriter,
-    target: &DeriveTargetInner,
-    fields: &[Field],
-) -> Result<(), Error> {
-    let ctx = Ctx::new(output, target)?;
+fn handle_tuple_struct(output: &mut RustWriter, target: &DeriveTargetInner, fields: &[Field]) {
+    let ctx = Ctx::new(output, target);
 
     if target.from_json {
-        tuple_struct_from_json(output, &ctx, fields)?;
+        tuple_struct_from_json(output, &ctx, fields);
     }
 
     if target.to_json {
-        tuple_struct_to_json(output, &ctx, fields)?;
+        tuple_struct_to_json(output, &ctx, fields);
     }
 
     if target.pod {
-        if handle_pod_binary_any_struct(output, &ctx, fields)? {
-            return Ok(());
+        if handle_pod_binary_any_struct(output, &ctx, fields) {
+            return;
         }
     }
 
@@ -2047,7 +1990,7 @@ fn handle_tuple_struct(
                 encode_binary_field(output, &ctx, field, &|out| splat!{out; &self.[@TokenTree::Literal(Literal::usize_unsuffixed(i))]})
             }
         ]};
-        impl_to_binary(output, &ctx, body, auto_pod)?;
+        impl_to_binary(output, &ctx, body, auto_pod)
     }
 
     if target.from_binary {
@@ -2059,13 +2002,11 @@ fn handle_tuple_struct(
                 }]
             )
         };
-        impl_from_binary(output, &ctx, body, auto_pod)?;
+        impl_from_binary(output, &ctx, body, auto_pod)
     }
-
-    Ok(())
 }
 
-fn enum_to_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
+fn enum_to_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     let target = &ctx.target;
     let any_generics = !target.generics.is_empty();
     if target.enum_flags != (ENUM_CONTAINS_UNIT_VARIANT | ENUM_HAS_EXTERNAL_TAG) {
@@ -2088,10 +2029,9 @@ fn enum_to_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Res
             }
         }
     };
-    Ok(())
 }
 
-fn enum_from_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
+fn enum_from_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     let target = &ctx.target;
     if target.enum_flags != (ENUM_CONTAINS_UNIT_VARIANT | ENUM_HAS_EXTERNAL_TAG) {
         throw!("FromStr enum must not have any tuple or struct variants nor a tag configuratino")
@@ -2117,10 +2057,9 @@ fn enum_from_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> R
             }
         }
     };
-    Ok(())
 }
 
-fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> Result<(), Error> {
+fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     let body = token_stream! { out;
         [?(let Some(version) = ctx.target.version) encoder.push([out.buf.push(TokenTree::Literal(Literal::u16_unsuffixed(version)))]);]
         match self {[
@@ -2156,14 +2095,10 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) -> 
             }
         ]}
     };
-    impl_to_binary(out, ctx, body, None)
+    impl_to_binary(out, ctx, body, None);
 }
 
-fn enum_from_binary(
-    out: &mut RustWriter,
-    ctx: &Ctx,
-    variants: &[EnumVariant],
-) -> Result<(), Error> {
+fn enum_from_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     let body = token_stream! { out;
         // TODO ENUM SHOUlD support per variant versions.
         [decode_binary_version(out, ctx)]
@@ -2199,15 +2134,11 @@ fn enum_from_binary(
             }
         ]}
     };
-    impl_from_binary(out, ctx, body, None)
+    impl_from_binary(out, ctx, body, None);
 }
 
-fn handle_enum(
-    output: &mut RustWriter,
-    target: &DeriveTargetInner,
-    variants: &[EnumVariant],
-) -> Result<(), Error> {
-    let mut ctx = Ctx::new(output, target)?;
+fn handle_enum(output: &mut RustWriter, target: &DeriveTargetInner, variants: &[EnumVariant]) {
+    let mut ctx = Ctx::new(output, target);
     let mut max_tuples = 0;
     for var in variants {
         if matches!(var.kind, EnumKind::Tuple | EnumKind::Struct) {
@@ -2216,28 +2147,26 @@ fn handle_enum(
     }
     ctx.temp = (0..max_tuples).map(var).collect::<Vec<_>>();
     if target.from_str {
-        enum_from_str(output, &ctx, variants)?;
+        enum_from_str(output, &ctx, variants);
     }
     if target.to_str {
-        enum_to_str(output, &ctx, variants)?;
+        enum_to_str(output, &ctx, variants);
     }
     if target.to_json {
-        enum_to_json(output, &ctx, variants)?;
+        enum_to_json(output, &ctx, variants);
     }
     if target.from_json {
-        enum_from_json(output, &ctx, variants)?;
+        enum_from_json(output, &ctx, variants);
     }
     if target.to_binary {
-        enum_to_binary(output, &ctx, variants)?;
+        enum_to_binary(output, &ctx, variants);
     }
     if target.from_binary {
-        enum_from_binary(output, &ctx, variants)?;
+        enum_from_binary(output, &ctx, variants);
     }
-
-    Ok(())
 }
 
-pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
+pub fn inner_derive(stream: TokenStream) -> TokenStream {
     let outer_tokens: Vec<TokenTree> = stream.into_iter().collect();
     let mut target = DeriveTargetInner {
         transparent_impl: false,
@@ -2263,7 +2192,7 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
         version: None,
         min_version: 0,
     };
-    let (kind, body) = ast::extract_derive_target(&mut target, &outer_tokens)?;
+    let (kind, body) = ast::extract_derive_target(&mut target, &outer_tokens);
 
     // Default to from json
     if !(target.from_binary
@@ -2283,54 +2212,35 @@ pub fn inner_derive(stream: TokenStream) -> Result<TokenStream, Error> {
     let mut rust_writer = RustWriter::new();
     match kind {
         DeriveTargetKind::Struct => {
-            match ast::parse_struct_fields(&mut field_buf, &field_toks, &mut attr_buf) {
-                Ok(_) => {
-                    ast::scan_fields(&mut target, &mut field_buf)?;
-                    handle_struct(&mut rust_writer, &target, &field_buf)?;
-                }
-                Err(err) => return Err(err),
-            }
+            ast::parse_struct_fields(&mut field_buf, &field_toks, &mut attr_buf);
+            ast::scan_fields(&mut target, &mut field_buf);
+            handle_struct(&mut rust_writer, &target, &field_buf);
         }
         DeriveTargetKind::TupleStruct => {
-            match ast::parse_tuple_fields(
-                &Ident::new("a", Span::call_site()),
-                &mut field_buf,
-                &field_toks,
-                &mut attr_buf,
-            ) {
-                Ok(_) => {
-                    ast::scan_fields(&mut target, &mut field_buf)?;
-                    handle_tuple_struct(&mut rust_writer, &target, &field_buf)?;
-                }
-                Err(err) => return Err(err),
-            }
+            let t = Ident::new("a", Span::call_site());
+            ast::parse_tuple_fields(&t, &mut field_buf, &field_toks, &mut attr_buf);
+            ast::scan_fields(&mut target, &mut field_buf);
+            handle_tuple_struct(&mut rust_writer, &target, &field_buf);
         }
         DeriveTargetKind::Enum => {
-            match ast::parse_enum(
+            let variants = ast::parse_enum(
                 &mut target,
                 &field_toks,
                 &mut tt_buf,
                 &mut field_buf,
                 &mut attr_buf,
-            ) {
-                Ok(enums) => {
-                    handle_enum(&mut rust_writer, &target, &enums)?;
-                }
-                Err(err) => return Err(err),
-            }
+            );
+            handle_enum(&mut rust_writer, &target, &variants);
         }
     }
     let ts = rust_writer.split_off_stream(0);
-    Ok(token_stream!(
+    token_stream!(
         (&mut rust_writer);
         ~[[allow(clippy::question_mark)]]
         const _: () = [@TokenTree::Group(Group::new(Delimiter::Brace, ts))];
-    ))
+    )
 }
 
 pub fn derive(stream: TokenStream) -> TokenStream {
-    match inner_derive(stream) {
-        Ok(e) => e,
-        Err(err) => err.to_compiler_error(false),
-    }
+    Error::try_catch_handle(stream, inner_derive)
 }
