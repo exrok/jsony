@@ -1,13 +1,13 @@
 # CHANGELOG
 
-# Unreleased
+# 0.1.3 (2025-04-24)
 
 Enhancements:
 
 - Add `#[jsony(version)]` for binary versioning in FromBinary and ToBinary.
 - Add `#[jsony(zerocopy)]` for deriving zerocopy support in FromBinary and ToBinary.
 - Add FromBinary/ToBinary impls for `Cow<'_, [T]>` and `[T]` for zerocopy types.
-- Avoid type change in compiler format error in template macros. (better error messages)
+- Avoid type change in compiler format error in template macros. (better compiler error messages)
 
 # 0.1.2 (2025-04-05)
 

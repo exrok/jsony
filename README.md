@@ -13,10 +13,10 @@ An **experimental** fast compiling serialization and deserialization rust librar
 - Fast compile times <!-- Todo put link to benchmarks -->
 - Competitive runtime performance
 - Featureful derive macros for implementing To/From for various data formats
-- Encoding checked at compile time, infallible at runtime
-- Data formats
-  - JSON (optional extension: trailing commas, comments, unquoted keys)
-  - Custom Binary Encoding
+- Infallible serialization guaranteed to succeed via the type system
+- Data formats:
+  - **JSON** (optional extension: trailing commas, comments, unquoted keys)
+  - **Compact Binary Encoding** with zerocopy and versioning support.
 - Lazy JSON parser for efficiently extracting small fragments.
 - JSON templating macros
 - Encode directly to a file or stack allocated to buffer.
