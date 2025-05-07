@@ -200,13 +200,13 @@ impl<'a> Decoder<'a> {
     /// Returns a reference to the read array, or a zero-filled array if EOF is reached.
     pub fn byte_array<const N: usize>(&mut self) -> &'a [u8; N] {
         unsafe {
-            let nstart = self.start.add(N);
-            if nstart > self.end {
+            let nstart = self.start.as_ptr().wrapping_add(N);
+            if nstart > self.end.as_ptr() {
                 self.eof = true;
                 return &[0; N];
             }
             let ptr = self.start.as_ptr() as *const [u8; N];
-            self.start = nstart;
+            self.start = NonNull::new_unchecked(nstart);
             &*ptr
         }
     }
