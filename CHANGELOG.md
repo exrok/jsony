@@ -1,5 +1,13 @@
 # CHANGELOG
 
+# 0.1.4 (2025-05-07)
+
+Enhancements:
+
+- Additional helpers where added.
+- Enum variant
+- More defensive use of pointer arthimetic to avoid possiblity of UB
+
 # 0.1.3 (2025-04-24)
 
 Enhancements:

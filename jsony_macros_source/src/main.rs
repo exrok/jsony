@@ -137,18 +137,15 @@ fn main() {
     util::print_pretty(template::object(tokens! {
        @ asdf
     }));
-    // util::print_pretty(codegen::derive(tokens! {
-    //     #[derive(Debug, Clone, Copy, Jsony, PartialEq)]
-    //     #[jsony(Binary, version = 5)]
-    //     #[repr(C)]
-    //     /// An axis-aligned rectangular region of a video frame defined with proportional units.
-    //     pub struct BoundingBox {
-    //         pub w: f32,
-    //         pub h: f32,
-    //         pub x: f32,
-    //         pub y: f32,
-    //         #[jsony(version = 2)]
-    //         pub n: f32,
-    //     }
-    // }));
+    util::print_pretty(codegen::derive(tokens! {
+    #[jsony(Json, rename_all = "snake_case")]
+    enum VehicalKind {
+        Bicycle,
+        Car,
+        Motorcycle,
+        Bus,
+        Truck,
+    }
+
+        }));
 }

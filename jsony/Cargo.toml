@@ -1,6 +1,6 @@
 [package]
 name = "jsony"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 authors = ["Thomas Dagenais <exrok@i64.dev>"]
 license = "MIT"
@@ -12,8 +12,7 @@ categories = ["encoding"]
 rust-version = "1.84"
 
 [dependencies]
-jsony_macros = { version = "0.1.3", optional = true }
-#jsony_macros = { path = "../jsony_macros", optional = true }
+jsony_macros = { version = "0.1.4", optional = true }
 itoa = "1"
 ryu = "1"
 uuid = { version = "1", optional = true }
