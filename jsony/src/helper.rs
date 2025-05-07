@@ -83,3 +83,37 @@ pub mod json_string {
         }
     }
 }
+
+/// With help to represent a JSON object as Vec of tuples containing the key value pairs
+/// of the object.
+/// Note: This allows for duplicate keys both on decoding and encoding.
+pub mod object_as_vec_of_tuple {
+    use crate::{
+        json::{DecodeError, JsonKeyKind},
+        FromJson, TextWriter, ToJson,
+    };
+    pub fn encode_json<K: ToJson<Kind: JsonKeyKind>, V: ToJson>(
+        value: &[(K, V)],
+        output: &mut TextWriter,
+    ) {
+        output.start_json_object();
+        for (key, value) in value {
+            <K::Kind as JsonKeyKind>::key_prefix(output);
+            key.encode_json__jsony(output);
+            <K::Kind as JsonKeyKind>::key_suffix(output);
+            value.encode_json__jsony(output);
+            output.push_colon();
+        }
+        output.end_json_object();
+    }
+    pub fn decode_json<'a, K: FromJson<'a>, V: FromJson<'a>>(
+        parser: &mut crate::parser::Parser<'a>,
+    ) -> Result<Vec<(K, V)>, &'static DecodeError> {
+        let mut output = Vec::<(K, V)>::new();
+        parser.decode_object_sequence::<K, V>(|k, v| {
+            output.push((k, v));
+            Ok(())
+        })?;
+        Ok(output)
+    }
+}

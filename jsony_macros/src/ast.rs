@@ -1,19 +1,5 @@
 // mod template2;
 
-// util::print_pretty(codegen::derive(tokens! {
-//     #[derive(Debug, Clone, Copy, Jsony, PartialEq)]
-//     #[jsony(Binary, version = 5)]
-//     #[repr(C)]
-//     /// An axis-aligned rectangular region of a video frame defined with proportional units.
-//     pub struct BoundingBox {
-//         pub w: f32,
-//         pub h: f32,
-//         pub x: f32,
-//         pub y: f32,
-//         #[jsony(version = 2)]
-//         pub n: f32,
-//     }
-// }));
 use crate::{case::RenameRule, util::Allocator, Error};
 use proc_macro::{Delimiter, Ident, Literal, Span, TokenStream, TokenTree};
 pub enum GenericKind {

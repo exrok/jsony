@@ -1068,11 +1068,11 @@ fn variant_key_literal(ctx: &Ctx, variant: &EnumVariant) -> Literal {
         return name.clone();
     }
     if ctx.target.rename_all != RenameRule::None {
-        Literal::string(
-            &ctx.target
-                .rename_all
-                .apply_to_field(&variant.name.to_string()),
-        )
+        let res = &&ctx
+            .target
+            .rename_all
+            .apply_to_variant(&variant.name.to_string());
+        Literal::string(res)
     } else {
         Literal::string(&variant.name.to_string())
     }

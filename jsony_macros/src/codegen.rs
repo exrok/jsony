@@ -1456,11 +1456,11 @@ fn variant_key_literal(ctx: &Ctx, variant: &EnumVariant) -> Literal {
         return name.clone();
     }
     if ctx.target.rename_all != RenameRule::None {
-        Literal::string(
-            &ctx.target
-                .rename_all
-                .apply_to_field(&variant.name.to_string()),
-        )
+        let res = &&ctx
+            .target
+            .rename_all
+            .apply_to_variant(&variant.name.to_string());
+        Literal::string(res)
     } else {
         Literal::string(&variant.name.to_string())
     }
@@ -3031,7 +3031,7 @@ fn handle_pod_binary_any_struct(out: &mut RustWriter, ctx: &Ctx<'_>, fields: &[F
             out.blit(1185, 4);
             for (i, field) in fields.iter().enumerate() {
                 if i != 0 {
-                    out.blit_punct(16);
+                    out.blit_punct(18);
                 };
                 out.blit(1181, 4);
                 out.buf.extend_from_slice(field.ty);

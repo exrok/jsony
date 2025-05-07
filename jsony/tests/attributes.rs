@@ -1122,3 +1122,34 @@ fn binary_version() {
         V3(32, 342, "Value", 89383, true)
     );
 }
+
+#[test]
+fn object_as_vec_of_tuple_helper() {
+    #[derive(Jsony, PartialEq, Eq, Debug)]
+    #[jsony(Json)]
+    struct Data<'a> {
+        #[jsony(with = jsony::helper::object_as_vec_of_tuple)]
+        pairs: Vec<(&'a str, u32)>,
+    }
+
+    assert_decode_json_eq! {
+        { "pairs": {"hello": 32, "nice": 59} },
+        Data{pairs: vec![("hello", 32), ("nice", 59)]}
+    }
+
+    assert_decode_json_eq! {
+        { "pairs": {} },
+        Data{pairs: vec![]}
+    }
+
+    #[derive(Jsony, PartialEq, Eq, Debug)]
+    #[jsony(Json)]
+    struct DataNum {
+        #[jsony(with = jsony::helper::object_as_vec_of_tuple)]
+        pairs: Vec<(u32, u32)>,
+    }
+    assert_decode_json_eq! {
+        { "pairs": {"34": 234, "112": 452} },
+        DataNum{pairs: vec![(34,234), (112,452)]}
+    }
+}
