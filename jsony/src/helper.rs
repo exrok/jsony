@@ -102,7 +102,7 @@ pub mod object_as_vec_of_tuple {
             key.encode_json__jsony(output);
             <K::Kind as JsonKeyKind>::key_suffix(output);
             value.encode_json__jsony(output);
-            output.push_colon();
+            output.push_comma();
         }
         output.end_json_object();
     }

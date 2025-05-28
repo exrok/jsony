@@ -1,5 +1,11 @@
 # CHANGELOG
 
+# 0.1.5 (2025-05-28)
+
+Enhancements:
+
+- Increase size of tuples supported by To/From Json to 8
+
 # 0.1.4 (2025-05-07)
 
 Enhancements:

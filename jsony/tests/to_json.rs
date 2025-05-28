@@ -13,6 +13,15 @@ macro_rules! compact_stringify {
     ($($tt:tt)*) => {concat!($(flat_stringify_tt!{$tt}),*)};
 }
 
+macro_rules! assert_array_eq {
+    (( $($input:tt)* ), [$($expected:tt)*]) => {
+        assert_eq!(
+            jsony::to_json(&$($input)*).as_str(),
+            compact_stringify!([$($expected)*])
+        )
+    };
+}
+
 macro_rules! assert_object_eq {
     (( $($input:tt)* ), {$($expected:tt)*}) => {
         assert_eq!(
@@ -158,4 +167,33 @@ fn to_vec() {
     assert_eq!(jsony::to_json_into(&100u32, &mut data), "100");
     assert_eq!(jsony::to_json_into(&false, &mut data), "false");
     assert_eq!(String::from_utf8(data).unwrap(), "100false");
+}
+
+#[test]
+fn tuples() {
+    assert_array_eq!(((32u32,)), [32]);
+    assert_array_eq!(
+        ((
+            32u32,
+            false,
+            "hello",
+            true,
+            [1, 2u8, 3],
+            "alpha",
+            "beta",
+            "delta",
+            32,
+        )),
+        [
+            32,
+            false,
+            "hello",
+            true,
+            [1, 2, 3],
+            "alpha",
+            "beta",
+            "delta",
+            32
+        ]
+    );
 }

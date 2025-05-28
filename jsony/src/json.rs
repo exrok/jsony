@@ -945,7 +945,8 @@ tuple_impls! {
     {0: T0, 1: T1, 2: T2, 3: T3, 4: T4},
     {0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5},
     {0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6},
-    {0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6, 7: T7}
+    {0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6, 7: T7},
+    {0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6, 7: T7, 8: T8}
 }
 
 unsafe impl<'de, T: FromJson<'de>, const N: usize> FromJson<'de> for [T; N] {
@@ -1318,56 +1319,39 @@ impl<K: ToJson<Kind: JsonKeyKind>, V: ToJson, S> ToJson for HashMap<K, V, S> {
     }
 }
 
-impl<T1: ToJson> ToJson for (T1,) {
-    type Kind = AlwaysArray;
+macro_rules! to_json_tuple_impls {
+    ($({$($field:literal : $tn: tt),*}),*) => {
+        $(
+        impl <$($tn: ToJson),*>
+            ToJson for ($($tn,)*)
+        {
+            type Kind = AlwaysArray;
 
-    fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
-        output.start_json_array();
-        self.0.encode_json__jsony(output);
-        output.end_json_array()
-    }
+            fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
+                output.start_json_array();
+                #[allow(non_snake_case)]
+                let ($($tn,)*) = self;
+                $(
+                    $tn.encode_json__jsony(output);
+                    output.push_comma();
+                )*
+                output.end_json_array()
+            }
+        }
+        )*
+    };
 }
 
-impl<T1: ToJson, T2: ToJson> ToJson for (T1, T2) {
-    type Kind = AlwaysArray;
-
-    fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
-        output.start_json_array();
-        self.0.encode_json__jsony(output);
-        output.push_comma();
-        self.1.encode_json__jsony(output);
-        output.end_json_array()
-    }
-}
-
-impl<T1: ToJson, T2: ToJson, T3: ToJson> ToJson for (T1, T2, T3) {
-    type Kind = AlwaysArray;
-
-    fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
-        output.start_json_array();
-        self.0.encode_json__jsony(output);
-        output.push_comma();
-        self.1.encode_json__jsony(output);
-        output.push_comma();
-        self.2.encode_json__jsony(output);
-        output.end_json_array()
-    }
-}
-
-impl<T1: ToJson, T2: ToJson, T3: ToJson, T4: ToJson> ToJson for (T1, T2, T3, T4) {
-    type Kind = AlwaysArray;
-
-    fn encode_json__jsony(&self, output: &mut TextWriter) -> Self::Kind {
-        output.start_json_array();
-        self.0.encode_json__jsony(output);
-        output.push_comma();
-        self.1.encode_json__jsony(output);
-        output.push_comma();
-        self.2.encode_json__jsony(output);
-        output.push_comma();
-        self.3.encode_json__jsony(output);
-        output.end_json_array()
-    }
+to_json_tuple_impls! {
+    {0: T0},
+    {0: T0, 1: T1},
+    {0: T0, 1: T1, 2: T2},
+    {0: T0, 1: T1, 2: T2, 3: T3},
+    {0: T0, 1: T1, 2: T2, 3: T3, 4: T4},
+    {0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5},
+    {0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6},
+    {0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6, 7: T7},
+    {0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6, 7: T7, 8: T8}
 }
 
 impl ToJson for bool {
