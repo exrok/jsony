@@ -6,7 +6,7 @@ use std::ops::Range;
 use std::ptr::NonNull;
 
 use crate::__internal::ObjectSchemaInner;
-use crate::json::DecodeError;
+use crate::json::{DecodeError, ParserWithBorrowedKey};
 use crate::strings::{skip_json_string_and_eq, skip_json_string_and_validate};
 use crate::text::Ctx;
 use crate::{FromJson, JsonError, JsonParserConfig};
@@ -82,6 +82,7 @@ pub struct InnerParser<'j> {
 pub struct Parser<'j> {
     pub at: InnerParser<'j>,
     pub(crate) parent_context: JsonParentContext,
+    pub(crate) visit_unused_field: Option<for<'a, 'b> fn(ParserWithBorrowedKey<'a, 'b>)>,
     pub scratch: Vec<u8>,
 }
 
@@ -1145,6 +1146,15 @@ impl<'j> InnerParser<'j> {
 }
 
 impl<'j> Parser<'j> {
+    /// The provided function will be called for every unused field.
+    ///
+    /// Note: Unused fields inside of untyped enums may go unreported.
+    pub fn attach_unused_field_hook(
+        &mut self,
+        hook: for<'a, 'b> fn(ParserWithBorrowedKey<'a, 'b>),
+    ) {
+        self.visit_unused_field = Some(hook);
+    }
     pub fn decode_array_sequence<K: FromJson<'j>>(
         &mut self,
         mut func: impl FnMut(K) -> Result<(), &'static DecodeError>,
@@ -1320,6 +1330,7 @@ impl<'j> Parser<'j> {
                 index: 0,
                 config,
             },
+            visit_unused_field: None,
             parent_context: JsonParentContext::None,
             scratch: Vec::new(),
         }

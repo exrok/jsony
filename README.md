@@ -24,10 +24,8 @@ An **experimental** fast compiling serialization and deserialization rust librar
 ## Example
 
 ```rust
-use jsony::Jsony;
-
 #[derive(Jsony, Debug)]
-#[jsony(FromJson, ToJson, tag = "kind")]
+#[jsony(Json, tag = "kind")]
 enum Status<'a> {
     Online,
     Error {
@@ -35,9 +33,16 @@ enum Status<'a> {
         code: i64,
         message: Cow<'a, str>,
         #[jsony(flatten, via = Iterator)]
-        properties: Vec<(String, JsonItem<'a>)>,
+        properties: Vec<(String, Data)>,
     },
     Offline,
+}
+
+#[derive(Jsony, Debug)]
+#[jsony(Json, untagged)]
+enum Data {
+    Text(String),
+    Array(Vec<Data>),
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -45,23 +50,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         kind: "Error",
         code: 300,
         message: "System Failure",
-        data: [1, 2, 3],
-        value: {
-          previous: {
-            kind: "Offline",
-          }
-        }
+        value: ["alpha", ["beta", "bravo"]],
     };
 
-    let previous: Status = jsony::drill(&input)["value"]["previous"].parse()?;
-    assert!(matches!(previous, Status::Offline));
+    let data: String = jsony::drill(&input)["value"][1][0].parse()?;
+    assert_eq!(data, "beta");
 
     let status: Status = jsony::from_json(&input)?;
 
-    assert_eq!(
-      input,
-      jsony::to_json(&status)
-    );
+    assert_eq!(input, jsony::to_json(&status));
 
     Ok(())
 }

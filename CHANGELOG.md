@@ -1,5 +1,13 @@
 # CHANGELOG
 
+# 0.1.6 (2025-06-08)
+
+Enhancements:
+
+- Aliases now supported in Flattened objects.
+- `Parser::attach_unused_field_hook` added for detecting unused fields in json.
+- More blanket impls added around `Box<[T]>` for Json and Binary conversion.
+
 # 0.1.5 (2025-05-28)
 
 Enhancements:
@@ -12,7 +20,7 @@ Enhancements:
 
 - Additional helpers where added.
 - Enum variant
-- More defensive use of pointer arthimetic to avoid possiblity of UB
+- More defensive use of pointer arithmetic to avoid possibility of UB
 
 # 0.1.3 (2025-04-24)
 

@@ -643,7 +643,7 @@ unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, S: BuildHasher + Default> FromBin
     }
 }
 
-unsafe impl<T: ToBinary> ToBinary for Box<T> {
+unsafe impl<T: ToBinary + ?Sized> ToBinary for Box<T> {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         T::encode_binary(self, encoder)
     }

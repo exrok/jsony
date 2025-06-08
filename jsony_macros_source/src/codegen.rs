@@ -944,8 +944,8 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
 
     splat!(out;
         [?(ctx.target.flattenable)
-        const unsafe fn __schema_inner<#[#: &ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, DEF)]] >()
-            ~> ::jsony::__internal::ObjectSchema<#[#: &ctx.lifetime]>
+        const unsafe fn __schema_inner<#[#: &ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, DEF)]] > ()
+            -> ::jsony::__internal::ObjectSchema<#[#: &ctx.lifetime]>
             [?(!ctx.target.where_clauses.is_empty() || !ctx.target.generic_field_types.is_empty())
             where [
             for (ty in &ctx.target.generic_field_types) {
@@ -965,7 +965,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
                 splat!(out;
                     let mut __flatten_visitor_jsony =
                         <[~flatten_field.ty] as ::jsony::json::FromJsonFieldVisitor>::new_field_visitor(
-                            dst.byte_add(offset_of!([ctx.dead_target_type(out)], [#: flatten_field.name])),
+                            dst.byte_add(std::mem::offset_of!([ctx.dead_target_type(out)], [#: flatten_field.name])),
                             parser,
                         );
                 )
@@ -1047,6 +1047,20 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
                         schema: __schema_inner::<
                             #[#: &ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
                         >(),
+                        alias: &[[
+                            [?(has_alias)
+                                [
+                                    for (i, field) in ordered_fields.iter().enumerate() {
+                                        if let Some(alias) = field.attr.alias(FROM_JSON) {
+                                            splat!(out; (
+                                                [@TokenTree::Literal(Literal::usize_unsuffixed(i))],
+                                                [@TokenTree::Literal(alias.clone())]
+                                            ),)
+                                        }
+                                    }
+                                ]
+                            ]
+                        ]],
                         bitset: [@TokenTree::Literal(Literal::u64_unsuffixed(0))],
                         required: [@TokenTree::Literal(Literal::u64_unsuffixed(required_bitset(&ordered_fields)))],
                     }
@@ -1315,18 +1329,19 @@ fn enum_variant_from_json_struct(
                     ::std::ptr::NonNull::new_unchecked(temp_flatten.as_mut_ptr().cast()),
                     parser,
                 );
-            [?(let Tag::Inline(tag_name) = &ctx.target.tag)
-                [?(ctx.target.content.is_none())
-                    let mut flatten_visitor = jsony::__internal::SkipFieldVisitor{
-                        skipped_field: [@Literal::string(tag_name).into()],
-                        visitor: flatten_visitor
-                    };
-                ]
-            ]
-            if let Err(_err) = schema.decode(
+            if let Err(_err) = schema.[
+                if let Tag::Inline(_) = &ctx.target.tag {
+                    splat!(out; decode_with_alias)
+                } else {
+                    splat!(out; decode)
+                }
+            ](
                 ::std::ptr::NonNull::new_unchecked(temp.as_mut_ptr().cast()),
                 parser,
                 Some(&mut flatten_visitor),
+                [if let Tag::Inline(tag) = &ctx.target.tag {
+                    splat!(out; &[[([@Literal::usize_unsuffixed(1000).into()], [@Literal::string(tag).into()])]])
+                }]
             ) {
                 [?(!untagged) return Err(_err);]
             } else {
@@ -1356,10 +1371,19 @@ fn enum_variant_from_json_struct(
                 phantom: ::std::marker::PhantomData,
             };
             let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
-            if let Err(_err) = schema.decode(
+            if let Err(_err) = schema.[
+                if let Tag::Inline(_) = &ctx.target.tag {
+                    splat!(out; decode_with_alias)
+                } else {
+                    splat!(out; decode)
+                }
+            ](
                 ::std::ptr::NonNull::new_unchecked(temp.as_mut_ptr().cast()),
                 parser,
                 None,
+                [if let Tag::Inline(tag) = &ctx.target.tag {
+                    splat!(out; &[[([@Literal::usize_unsuffixed(1000).into()], [@Literal::string(tag).into()])]])
+                }]
             ) {
                 [?(!untagged) return Err(_err);]
             } else {

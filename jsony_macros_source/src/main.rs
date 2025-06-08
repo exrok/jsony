@@ -134,18 +134,21 @@ fn main() {
         template::object(tokens!());
         codegen::derive(tokens!());
     }
-    util::print_pretty(template::object(tokens! {
-       @ asdf
-    }));
     util::print_pretty(codegen::derive(tokens! {
-    #[jsony(Json, rename_all = "snake_case")]
-    enum VehicalKind {
-        Bicycle,
-        Car,
-        Motorcycle,
-        Bus,
-        Truck,
-    }
 
-        }));
+        #[derive(Jsony)]
+        #[jsony(Binary, version = 1)]
+        pub struct DatabaseState {
+            pub task_id_counter: u64,
+            pub task_map: Map<TaskID, TaskIndex>,
+
+            pub task_overlay: Option<(TaskIndex, Task)>,
+
+            pub task: Vec<Task>,
+            pub user_story: Map<UserStoryID, UserStory>,
+            pub groups: Map<Text, Text>,
+            pub last_updated: Option<UTC>,
+        }
+
+    }));
 }

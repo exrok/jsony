@@ -1153,3 +1153,59 @@ fn object_as_vec_of_tuple_helper() {
         DataNum{pairs: vec![(34,234), (112,452)]}
     }
 }
+
+#[test]
+fn flattenable() {
+    #[derive(Jsony, PartialEq, Eq, Debug)]
+    #[jsony(Json, Flattenable)]
+    struct Data<'a> {
+        #[jsony(default = "centauri")]
+        alpha: &'a str,
+        #[jsony(alias = "beta")]
+        bravo: u32,
+    }
+
+    assert_json_eq! {
+        { "alpha": "value", "bravo": 22 },
+        Data{alpha: "value", bravo: 22}
+    }
+    assert_decode_json_eq! {
+        { "alpha": "value", "beta": 22 },
+        Data{alpha: "value", bravo: 22}
+    }
+    assert_decode_json_eq! {
+        { "beta": 22 },
+        Data{alpha: "centauri", bravo: 22}
+    }
+
+    #[derive(Jsony, PartialEq, Eq, Debug)]
+    #[jsony(Json, Flattenable)]
+    struct Wrapper<'a> {
+        #[jsony(flatten)]
+        data: Data<'a>,
+        other: i32,
+    }
+
+    assert_json_eq! {
+        {"alpha": "value", "bravo": 22, "other": 42},
+        Wrapper{ data: Data{alpha: "value", bravo: 22}, other: 42}
+    }
+    assert_decode_json_eq! {
+        { "alpha": "value", "beta": 22, "other": 42 },
+        Wrapper{ data: Data{alpha: "value", bravo: 22}, other: 42}
+    }
+    assert_decode_json_eq! {
+        { "alpha": "value", "beta": 22, "ignored": true, "other": 42 },
+        Wrapper{ data: Data{alpha: "value", bravo: 22}, other: 42}
+    }
+    assert_decode_json_eq! {
+        { "beta": 22, "other": 42 },
+        Wrapper{ data: Data{alpha: "centauri", bravo: 22}, other: 42}
+    }
+
+    assert_decode_failure! {
+        { "other": 42 },
+        Wrapper,
+        MISSING_REQUIRED_FIELDS /* Missing required beta/bravo field */
+    }
+}

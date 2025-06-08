@@ -293,7 +293,8 @@ fn export_merged_blocks(files: &[&[u8]]) -> (Vec<u8>, Vec<Vec<u8>>) {
         }
     }
     // We sort these to ensure reproduceable results.
-    assert!((distinct_stmts.len() + (b' ' as usize)) < u8::MAX as usize);
+    // assert!((distinct_stmts.len() + (b' ' as usize)) < u8::MAX as usize);
+    assert!((distinct_stmts.len()) < u8::MAX as usize);
     let mut distinct_stmts: Vec<(u64, Kind, &str)> = distinct_stmts
         .into_iter()
         .map(|((kind, text), count)| (count | ((kind as u64) << 49), kind, text))

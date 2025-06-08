@@ -411,7 +411,7 @@ impl JsonError {
         }
     }
 
-    pub(crate) fn new(error: &'static DecodeError, context: Option<String>) -> JsonError {
+    pub fn new(error: &'static DecodeError, context: Option<String>) -> JsonError {
         JsonError {
             inner: Box::new(JsonErrorInner {
                 error,
@@ -423,7 +423,7 @@ impl JsonError {
         }
     }
 
-    fn extract(error: &'static DecodeError, parser: &mut Parser) -> JsonError {
+    pub fn extract(error: &'static DecodeError, parser: &mut Parser) -> JsonError {
         fn surrounding(at: usize, text: &[u8]) -> [u8; 24] {
             let mut s: [u8; 24] = [0; 24];
             let end = (at + 12).min(text.len());

@@ -49,8 +49,17 @@ impl<'a, 'b> ParserWithBorrowedKey<'a, 'b> {
     pub fn key(&self) -> &str {
         unsafe { &*self.key }
     }
-    pub fn key_with_inner_parser<'c>(&'c mut self) -> (&'c str, &'c mut InnerParser<'a>) {
+    pub(crate) fn key_with_inner_parser<'c>(&'c mut self) -> (&'c str, &'c mut InnerParser<'a>) {
         (unsafe { &*self.key }, &mut self.parser.at)
+    }
+    pub(crate) fn parser<'c>(&'c self) -> &'c Parser<'a> {
+        self.parser
+    }
+    pub(crate) fn reborrow<'c>(&'c mut self) -> ParserWithBorrowedKey<'a, 'c> {
+        ParserWithBorrowedKey {
+            key: self.key,
+            parser: self.parser,
+        }
     }
     pub fn into_parser(self) -> &'b mut Parser<'a> {
         self.parser
@@ -293,6 +302,20 @@ unsafe impl<'a> FromJson<'a> for String {
         }
     }
 }
+
+unsafe impl<'a, T: FromJson<'a>> FromJson<'a> for Box<[T]> {
+    unsafe fn emplace_from_json(
+        dest: NonNull<()>,
+        parser: &mut Parser<'a>,
+    ) -> Result<(), &'static DecodeError> {
+        match <Vec<T> as FromJson<'a>>::decode_json(parser) {
+            Ok(value) => unsafe { dest.cast::<Box<[T]>>().write(value.into_boxed_slice()) },
+            Err(err) => return Err(err),
+        }
+        Ok(())
+    }
+}
+
 unsafe impl<'a, T: Sized + FromJson<'a>> FromJson<'a> for Box<T> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,

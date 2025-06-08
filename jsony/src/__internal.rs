@@ -13,6 +13,7 @@ pub struct UnsafeReturn;
 pub struct DynamicFieldDecoder<'a> {
     pub destination: NonNull<()>,
     pub schema: ObjectSchema<'a>,
+    pub alias: &'static [(usize, &'static str)],
     pub bitset: u64,
     pub required: u64,
 }
@@ -71,11 +72,22 @@ impl<'a, F: FieldVisitor<'a>> FieldVisitor<'a> for SkipFieldVisitor<F> {
 impl<'a> FieldVisitor<'a> for DynamicFieldDecoder<'a> {
     fn complete(&mut self) -> Result<(), &'static DecodeError> {
         if self.bitset & self.required != self.required {
-            return Err(&DecodeError {
-                message: "Missing required fields",
-            });
+            return Err(&MISSING_REQUIRED_FIELDS);
         }
-        //todo fill defaults
+        for (i, (emplace_default, field)) in self
+            .schema
+            .inner
+            .defaults
+            .iter()
+            .zip(self.schema.fields())
+            .enumerate()
+        {
+            if self.bitset & (1 << i) == 0 {
+                unsafe {
+                    emplace_default(self.destination.byte_add(field.offset));
+                }
+            }
+        }
         Ok(())
     }
     unsafe fn destroy(&mut self) {
@@ -87,33 +99,50 @@ impl<'a> FieldVisitor<'a> for DynamicFieldDecoder<'a> {
     }
     fn visit(
         &mut self,
-        borrowed: ParserWithBorrowedKey<'a, '_>,
+        mut borrowed: ParserWithBorrowedKey<'a, '_>,
     ) -> Result<(), &'static DecodeError> {
         let field_name = borrowed.key();
-        for (i, field) in self.schema.fields().iter().enumerate() {
-            if field.name == field_name {
-                let parser = borrowed.into_parser();
-                let mask = 1 << i;
-                if self.bitset & mask != 0 {
-                    if let JsonParentContext::None = parser.parent_context {
-                        parser.parent_context = JsonParentContext::ObjectKey(field.name);
+        'unused: {
+            let (index, field) = 'found: {
+                let fields = self.schema.fields();
+                for (index, field) in fields.iter().enumerate() {
+                    if field.name != field_name {
+                        continue;
                     }
-                    return Err(&DUPLICATE_FIELD);
-                } else {
-                    if let Err(err) =
-                        unsafe { (field.decode)(self.destination.byte_add(field.offset), parser) }
-                    {
-                        if let JsonParentContext::None = parser.parent_context {
-                            parser.parent_context = JsonParentContext::ObjectKey(field.name);
-                        }
-                        return Err(err);
-                    }
-                    self.bitset |= mask;
+                    break 'found (index, field);
                 }
-                return Ok(());
+                for (index, alias_name) in self.alias {
+                    if *alias_name != field_name {
+                        continue;
+                    }
+                    break 'found (*index, &fields[*index]);
+                }
+                break 'unused;
+            };
+            let parser = borrowed.into_parser();
+            let mask = 1 << index;
+            if self.bitset & mask != 0 {
+                if let JsonParentContext::None = parser.parent_context {
+                    parser.parent_context = JsonParentContext::ObjectKey(field.name);
+                }
+                return Err(&DUPLICATE_FIELD);
             }
+            if let Err(err) =
+                unsafe { (field.decode)(self.destination.byte_add(field.offset), parser) }
+            {
+                if let JsonParentContext::None = parser.parent_context {
+                    parser.parent_context = JsonParentContext::ObjectKey(field.name);
+                }
+                return Err(err);
+            }
+            self.bitset |= mask;
+            return Ok(());
         }
-        Ok(())
+        if let Some(vis) = borrowed.parser().visit_unused_field {
+            vis(borrowed.reborrow());
+        }
+
+        return borrowed.into_parser().at.skip_value();
     }
 }
 
@@ -150,7 +179,7 @@ pub struct ObjectSchema<'a> {
 }
 
 impl<'a> ObjectSchema<'a> {
-    fn fields(&self) -> &[Field<'a>] {
+    pub fn fields(&self) -> &[Field<'a>] {
         unsafe {
             #[allow(clippy::unnecessary_cast, reason = "clippy false positive")]
             std::slice::from_raw_parts(
@@ -172,59 +201,72 @@ impl<'a> ObjectSchema<'a> {
         let all = (1u64 << self.inner.fields.len()) - 1;
         let mut bitset = 0;
 
-        let error = 'with_next_key: {
+        let error = 'error: {
             match parser.at.enter_object(&mut parser.scratch) {
                 Ok(Some(mut key)) => {
                     'key_loop: loop {
                         'next: {
-                            'unused: {
-                                let (index, field) = 'found: {
-                                    let fields = self.fields();
-                                    for (index, field) in fields.iter().enumerate() {
-                                        if field.name != key {
-                                            continue;
+                            'unused_dont_forward: {
+                                'unused: {
+                                    let (index, field) = 'found: {
+                                        let fields = self.fields();
+                                        for (index, field) in fields.iter().enumerate() {
+                                            if field.name != key {
+                                                continue;
+                                            }
+                                            break 'found (index, field);
                                         }
-                                        break 'found (index, field);
-                                    }
-                                    for (index, alias_name) in alias {
-                                        if *alias_name != key {
-                                            continue;
+                                        for (index, alias_name) in alias {
+                                            if *alias_name != key {
+                                                continue;
+                                            }
+                                            if let Some(field) = fields.get(*index) {
+                                                break 'found (*index, field);
+                                            } else {
+                                                break 'unused_dont_forward;
+                                            }
                                         }
-                                        break 'found (*index, &fields[*index]);
-                                    }
-                                    break 'unused;
-                                };
-                                let mask = 1 << index;
-                                if bitset & mask != 0 {
-                                    if let JsonParentContext::None = parser.parent_context {
-                                        parser.parent_context =
-                                            JsonParentContext::ObjectKey(field.name);
+                                        break 'unused;
+                                    };
+                                    let mask = 1 << index;
+                                    if bitset & mask != 0 {
+                                        if let JsonParentContext::None = parser.parent_context {
+                                            parser.parent_context =
+                                                JsonParentContext::ObjectKey(field.name);
+                                        }
+
+                                        break 'error &DUPLICATE_FIELD;
                                     }
 
-                                    break 'with_next_key &DUPLICATE_FIELD;
-                                }
-                                //todo porpotogate error
-                                if let Err(err) =
-                                    (field.decode)(dest.byte_add(field.offset), parser)
-                                {
-                                    if let JsonParentContext::None = parser.parent_context {
-                                        parser.parent_context =
-                                            JsonParentContext::ObjectKey(field.name);
+                                    if let Err(err) =
+                                        (field.decode)(dest.byte_add(field.offset), parser)
+                                    {
+                                        if let JsonParentContext::None = parser.parent_context {
+                                            parser.parent_context =
+                                                JsonParentContext::ObjectKey(field.name);
+                                        }
+                                        break 'error err;
                                     }
-                                    break 'with_next_key err;
+                                    bitset |= mask;
+                                    break 'next;
                                 }
-                                bitset |= mask;
-                                break 'next;
+                                if let Some(ref mut unused_processor) = unused {
+                                    // Safety: Safe since the `key` was provided by the same parses and still
+                                    // valid here (since it compiles and wasn't casted to a pointer earlier).
+                                    let borrowed =
+                                        unsafe { ParserWithBorrowedKey::new(key, parser) };
+                                    if let Err(err) = unused_processor.visit(borrowed) {
+                                        break 'error err;
+                                    }
+                                    break 'next;
+                                }
+                                if let Some(vis) = parser.visit_unused_field {
+                                    vis(unsafe { ParserWithBorrowedKey::new(key, parser) });
+                                }
                             }
-                            if let Some(ref mut unused_processor) = unused {
-                                // Safety: Safe since the `key` was provided by the same parses and still
-                                // valid here (since it compiles and wasn't casted to a pointer earlier).
-                                let borrowed = unsafe { ParserWithBorrowedKey::new(key, parser) };
-                                if let Err(err) = unused_processor.visit(borrowed) {
-                                    break 'with_next_key err;
-                                }
-                            } else if let Err(error) = parser.at.skip_value() {
-                                break 'with_next_key error;
+
+                            if let Err(error) = parser.at.skip_value() {
+                                break 'error error;
                             }
                         }
 
@@ -236,12 +278,12 @@ impl<'a> ObjectSchema<'a> {
                             Ok(None) => {
                                 break 'key_loop;
                             }
-                            Err(err) => break 'with_next_key err,
+                            Err(err) => break 'error err,
                         }
                     }
                 }
                 Ok(None) => {}
-                Err(err) => break 'with_next_key err,
+                Err(err) => break 'error err,
             };
             let default = (1u64 << self.inner.defaults.len()) - 1;
             if (bitset | default) & all != all {
@@ -249,11 +291,11 @@ impl<'a> ObjectSchema<'a> {
                     schema: self.inner,
                     mask: all & !(bitset | default),
                 };
-                break 'with_next_key &MISSING_REQUIRED_FIELDS;
+                break 'error &MISSING_REQUIRED_FIELDS;
             }
             if let Some(visitor) = &mut unused {
                 if let Err(err) = visitor.complete() {
-                    break 'with_next_key err;
+                    break 'error err;
                 }
             }
             // todo can optimize
@@ -304,7 +346,6 @@ impl<'a> ObjectSchema<'a> {
 
                                     break 'with_next_key &DUPLICATE_FIELD;
                                 }
-                                //todo porpotogate error
                                 if let Err(err) =
                                     (field.decode)(dest.byte_add(field.offset), parser)
                                 {
@@ -317,6 +358,7 @@ impl<'a> ObjectSchema<'a> {
                                 bitset |= mask;
                                 break 'next;
                             }
+
                             if let Some(ref mut unused_processor) = unused {
                                 // Safety: Safe since the `key` was provided by the same parses and still
                                 // valid here (since it compiles and wasn't casted to a pointer earlier).
@@ -324,7 +366,14 @@ impl<'a> ObjectSchema<'a> {
                                 if let Err(err) = unused_processor.visit(borrowed) {
                                     break 'with_next_key err;
                                 }
-                            } else if let Err(error) = parser.at.skip_value() {
+                                break 'next;
+                            }
+
+                            if let Some(vis) = parser.visit_unused_field {
+                                vis(unsafe { ParserWithBorrowedKey::new(key, parser) });
+                            }
+
+                            if let Err(error) = parser.at.skip_value() {
                                 break 'with_next_key error;
                             }
                         }
