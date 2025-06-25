@@ -460,6 +460,19 @@ fn decode_binary_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
             }
         };
     }
+    if let Some(with) = field.validate(FROM_BINARY) {
+        let group = out.split_off_stream(start);
+        splat!(out;
+            {
+                let field = [out.buf.push(TokenTree::Group(Group::new(Delimiter::None, group)))];
+                let func: fn(&[~field.ty]) -> ::std::result::Result<(), String> = [~with];
+                if let Err(err) = (func)(&field) {
+                    decoder.error = Some(err.into());
+                }
+                field
+            }
+        )
+    }
 }
 impl Ctx<'_> {
     // #[allow(non_snake_case)]
@@ -478,6 +491,12 @@ fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
         splat! { out;
            [~&ctx.crate_path]::__internal::emplace_json_for_with_attribute::<&mut ::jsony::parser::Parser<#[#: &ctx.lifetime]>, [~field.ty], _>(
                &[~with]::decode_json
+           )
+        }
+    } else if let Some(with) = field.validate(FROM_JSON) {
+        splat! { out;
+           [~&ctx.crate_path]::__internal::emplace_json_for_validate_attribute::<[~field.ty], _>(
+               &([~with])
            )
         }
     } else {
@@ -1447,6 +1466,14 @@ fn enum_variant_from_json(out: &mut RustWriter, ctx: &Ctx, variant: &EnumVariant
                     }
                 ]::decode_json(parser) {
                     Ok(value) => {
+                        [if let Some(with) = field.validate(FROM_JSON) {
+                            splat!(out;
+                                let func: fn(&[~field.ty]) -> ::std::result::Result<(), String> = [~with];
+                                if let Err(err) = (func)(&value) {
+                                    return Err(&::jsony::error::CUSTOM_FIELD_VALIDATION_ERROR)
+                                }
+                            )
+                        }]
                         dst.cast::<[ctx.target_type(out)]>().write([#: &ctx.target.name]::[#: variant.name](value));
                         [?(untagged || ctx.target.ignore_tag_adjacent_fields) break #success]
                     },

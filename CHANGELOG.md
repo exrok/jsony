@@ -1,5 +1,12 @@
 # CHANGELOG
 
+# 0.1.7 (2025-06-08)
+
+Enhancements:
+
+- Add `#[jsony(validate = ..)]` for specifying additional validation for From traits on fields.
+- Add `require!` to aid in define validation requirements and error messages inline.
+
 # 0.1.6 (2025-06-08)
 
 Enhancements:

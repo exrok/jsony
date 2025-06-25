@@ -714,3 +714,51 @@ pub fn to_binary_into<'a, T: ToBinary + ?Sized, W: IntoByteWriter<'a>>(
     value.encode_binary(&mut buffer);
     W::finish_writing(buffer)
 }
+
+/// Helper for `#[jsony(validate = ..)]` attribute
+///
+/// # Example
+///
+/// ```
+/// use jsony::{Jsony, require};
+/// #[derive(Jsony)]
+/// struct Field {
+///     // Closure requirement
+///     #[jsony(validate = require!(|v| *v > 10, "value must be greater than 10"))]
+///     value: u32,
+///     // Pattern requirement
+///     #[jsony(validate = require!(5..20, "value must be between 4 and 20"))]
+///     other: u32,
+///     // Pattern requirement with implicit method
+///     #[jsony(validate = require!((5..20) | (30..50)))]
+///     last: u32,
+/// }
+/// ```
+#[macro_export]
+macro_rules! require {
+    (|$field:ident $(: $type: ty)?| $expr: expr, $message: literal) => {
+        |$field $(: $type)?| {
+            if $expr {
+                Ok(())
+            } else {
+                Err(format!("{:?} was invalid: {}", $field, $message))
+            }
+        }
+    };
+    ($required_pattern: pat) => {
+        |value| match *value {
+            $required_pattern => Ok(()),
+            _ => Err(format!(
+                "Got `{:?}` which does not match the required pattern `{}`",
+                value,
+                stringify!($required_pattern)
+            )),
+        }
+    };
+    ($required_pattern: pat, $message: literal) => {
+        |value| match *value {
+            $required_pattern => Ok(()),
+            _ => Err(format!("{:?} was invalid: {}", value, $message)),
+        }
+    };
+}

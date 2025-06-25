@@ -1209,3 +1209,76 @@ fn flattenable() {
         MISSING_REQUIRED_FIELDS /* Missing required beta/bravo field */
     }
 }
+
+#[test]
+fn field_validate() {
+    use jsony::require;
+    #[derive(Jsony, PartialEq, Eq, Debug)]
+    #[jsony(Json, Binary)]
+    struct Data<'a> {
+        #[jsony(default = "centauri".into(), validate = require!(|a| a.len() > 4, "alpha must be atleast 5 bytes long"))]
+        alpha: String,
+        #[jsony(alias = "beta", validate = require!(..10, "bravo must be less than 10"))]
+        bravo: u32,
+        #[jsony(validate = require!("bar" | "baz", "canary must be bar or baz"))]
+        canary: &'a str,
+    }
+
+    macro_rules! data_binary_validation_failure {
+        ($($error_fragment: literal {$($tt:tt)*}),* $(,)?) => {
+            $({
+                let data = Data { $($tt)* };
+                let encoded = jsony::to_binary(&data);
+                let data = jsony::from_binary::<Data>(&encoded);
+                assert!(data.err().unwrap().message().contains($error_fragment));
+            })*
+        };
+    }
+    data_binary_validation_failure!(
+        "alpha must be" { alpha: "asd".into(), bravo: 4, canary: "bar" },
+        "bravo must be less than 10" { alpha: "asdasdf".into(), bravo: 12, canary: "bar" },
+        "canary must be bar or baz" { alpha: "asdasdf".into(), bravo: 5, canary: "foo" },
+    );
+
+    assert_binary_round_trip!(Data {
+        alpha: "value".into(),
+        bravo: 2,
+        canary: "bar"
+    });
+
+    assert_json_eq! {
+        { "alpha": "value", "bravo": 2, "canary": "bar" },
+        Data{alpha: "value".into(), bravo: 2, canary: "bar"}
+    }
+    assert_decode_failure! {
+        { "alpha": "value", "bravo": 12, "canary": "bar" },
+        Data,
+        CUSTOM_FIELD_VALIDATION_ERROR
+    }
+    assert_decode_failure! {
+        { "alpha": "value", "beta": 12, "canary": "bar" },
+        Data,
+        CUSTOM_FIELD_VALIDATION_ERROR
+    }
+    assert_decode_failure! {
+        { "alpha": "value", "bravo": 2, "canary": "foo" },
+        Data,
+        CUSTOM_FIELD_VALIDATION_ERROR
+    }
+
+    #[derive(Jsony, PartialEq, Eq, Debug)]
+    #[jsony(Json)]
+    enum DataEnum {
+        Foo(#[jsony(validate = require!(4..6))] u32),
+    }
+
+    assert_json_eq! {
+        { "Foo": 4 },
+        DataEnum::Foo(4)
+    }
+    assert_decode_failure! {
+        { "Foo": 3 },
+        DataEnum,
+        CUSTOM_FIELD_VALIDATION_ERROR
+    }
+}

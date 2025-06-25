@@ -38,6 +38,7 @@ enum FieldAttrInner {
     Via(Via),
     Default(DefaultKind),
     With(Vec<TokenTree>),
+    Validate(Vec<TokenTree>),
     Alias(Literal),
     Version(Literal),
 }
@@ -173,6 +174,16 @@ impl<'a> Field<'a> {
             if attr.enabled & for_trait != 0 {
                 if let FieldAttrInner::Skip(skip) = &attr.inner {
                     return Some(skip);
+                }
+            }
+        }
+        None
+    }
+    pub fn validate(&self, for_trait: TraitSet) -> Option<&[TokenTree]> {
+        for attr in &self.attr.attrs {
+            if attr.enabled & for_trait != 0 {
+                if let FieldAttrInner::Validate(with) = &attr.inner {
+                    return Some(with);
                 }
             }
         }
@@ -753,6 +764,12 @@ fn parse_single_field_attr(
             4u64 * TRAIT_COUNT
         }
         "with" => {
+            if (attrs.flags >> (10 * TRAIT_COUNT)) & FROM_JSON as u64 != 0 {
+                Error::span_msg(
+                    "`with` and `validate` are not supported for the same field",
+                    ident.span(),
+                )
+            }
             attrs.attrs.push(FieldAttr {
                 enabled: trait_set,
                 span: ident.span(),
@@ -819,6 +836,20 @@ fn parse_single_field_attr(
                 inner: FieldAttrInner::Version(version),
             });
             9u64 * TRAIT_COUNT
+        }
+        "validate" => {
+            if (attrs.flags >> (5 * TRAIT_COUNT)) & FROM_JSON as u64 != 0 {
+                Error::span_msg(
+                    "`with` and `validate` not supported for the same field",
+                    ident.span(),
+                )
+            }
+            attrs.attrs.push(FieldAttr {
+                enabled: trait_set,
+                span: ident.span(),
+                inner: FieldAttrInner::Validate(std::mem::take(value)),
+            });
+            10u64 * TRAIT_COUNT
         }
         _ => Error::span_msg("Unknown attr field", ident.span()),
     };

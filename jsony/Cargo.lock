@@ -10,7 +10,7 @@ checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
 
 [[package]]
 name = "jsony"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "itoa",
  "jsony_macros",
@@ -20,9 +20,9 @@ dependencies = [
 
 [[package]]
 name = "jsony_macros"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e54c526131e306c9160455e0e7625a902b2c0d63c4d277d4c7243b63ce43c23"
+checksum = "a62667ae166dd3b39733a43b20899734a9310c4003ae7c819ab2a4d3699e06f8"
 
 [[package]]
 name = "ryu"

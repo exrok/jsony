@@ -99,7 +99,7 @@ pub struct Decoder<'a> {
     start: NonNull<u8>,
     end: NonNull<u8>,
     eof: bool,
-    error: Option<Cow<'static, str>>,
+    pub error: Option<Cow<'static, str>>,
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
@@ -248,7 +248,7 @@ impl<'a> Decoder<'a> {
     /// Reads a slice of bytes from the input.
     ///
     /// Returns a reference to the read slice, or an empty slice if EOF is reached.
-    fn byte_slice(&mut self, n: usize) -> &'a [u8] {
+    pub fn byte_slice(&mut self, n: usize) -> &'a [u8] {
         unsafe {
             if n > self.remaining_size() {
                 self.eof = true;

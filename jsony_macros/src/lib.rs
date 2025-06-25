@@ -221,10 +221,11 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// | `default [= ...]` | `From`   | Use `Default::default()` or provided expression if field is missing.
 /// | `flatten`         | `Json`   | Flatten the contents of the field into the container it is defined in.
 /// | `rename = "..."`  | `Json`   | Use provided string as field name.
+/// | `validate = ...`  | `From`  | Provided a `fn(&T) -> Result<(), String>` function fails deserialization if Err(())
 /// | `version = N`     | `Binary` | Field added in version `N`. Needs `default` when reading older versions.        |
 /// | `via = ...`       | All      | Implement conversion through provided trait.
 /// | `skip`            | All      | Omit field while serializing, use default value when deserializing.
-/// | `skip_if = ...`   | `ToJson`  | Omit field while serializing if provided function returns true.
+/// | `skip_if = ...`   | `ToJson` | Omit field while serializing if provided function returns true.
 /// | `with = ...`      | All      | Use methods from specified module instead of trait. [read more](#jsonywith---on-fields)
 ///
 /// ## Format Aliases
@@ -307,6 +308,13 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// #### `#[jsony(rename_all = "...")]`
 ///
 /// The possible values are "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE", "kebab-case", "SCREAMING-KEBAB-CASE".
+///
+/// #### `#[jsony(validate = ...)]`
+///
+/// Requires of a function of the form `fn(&Self) -> Result<(), String>` that will be called during deserialization, on the
+/// deserialized value. If the function returns `Err(_)`, the deserialization will fail with the provided error message.
+///
+/// The `jsony::require!` macro is provided to aid in defining the logical inline.
 ///
 /// #### Binary Versioning (`#[jsony(version = ...)]`)
 ///

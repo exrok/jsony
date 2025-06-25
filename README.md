@@ -10,7 +10,7 @@ An **experimental** fast compiling serialization and deserialization rust librar
 
 ## Features
 
-- Fast compile times <!-- Todo put link to benchmarks -->
+- Fast compile times
 - Competitive runtime performance
 - Featureful derive macros for implementing To/From for various data formats
 - Infallible serialization guaranteed to succeed via the type system
@@ -20,10 +20,13 @@ An **experimental** fast compiling serialization and deserialization rust librar
 - Lazy JSON parser for efficiently extracting small fragments.
 - JSON templating macros
 - Encode directly to a file or stack allocated to buffer.
+- Custom field property validation
 
 ## Example
 
 ```rust
+use jsony::{Jsony, require};
+
 #[derive(Jsony, Debug)]
 #[jsony(Json, tag = "kind")]
 enum Status<'a> {
@@ -31,6 +34,7 @@ enum Status<'a> {
     Error {
         #[jsony(default = i64::MAX)]
         code: i64,
+        #[jsony(validate = require!(|m| !m.is_empty(), "Message must be non-empty"))]
         message: Cow<'a, str>,
         #[jsony(flatten, via = Iterator)]
         properties: Vec<(String, Data)>,

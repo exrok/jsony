@@ -136,19 +136,12 @@ fn main() {
     }
     util::print_pretty(codegen::derive(tokens! {
 
-        #[derive(Jsony)]
-        #[jsony(Binary, version = 1)]
-        pub struct DatabaseState {
-            pub task_id_counter: u64,
-            pub task_map: Map<TaskID, TaskIndex>,
-
-            pub task_overlay: Option<(TaskIndex, Task)>,
-
-            pub task: Vec<Task>,
-            pub user_story: Map<UserStoryID, UserStory>,
-            pub groups: Map<Text, Text>,
-            pub last_updated: Option<UTC>,
-        }
+    #[derive(Jsony, PartialEq, Eq, Debug)]
+    #[jsony(FromJson)]
+    struct Foo {
+        #[jsony(validate = |a| if a > 10 {Ok(())} else {Err("asdfasdf".into())}, with = foo)]
+        foo: u32
+    }
 
     }));
 }
