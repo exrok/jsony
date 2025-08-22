@@ -442,10 +442,10 @@ impl<'a> Search<'a> {
         match self {
             Search::Flag(flag) => {
                 let mut args = std::env::args();
-                let _ = args.by_ref().find(|a| a == flag);
-                // todo maybe allow specifying multiple times.
-                if let Some(config) = args.next() {
-                    return load_config_file(output, cwd.join(config));
+                while args.by_ref().find(|a| a == flag).is_some() {
+                    if let Some(config) = args.next() {
+                        load_config_file(output, cwd.join(config))?;
+                    }
                 }
             }
             Search::Path(path) => {
