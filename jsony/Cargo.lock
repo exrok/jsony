@@ -20,9 +20,7 @@ dependencies = [
 
 [[package]]
 name = "jsony_macros"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a62667ae166dd3b39733a43b20899734a9310c4003ae7c819ab2a4d3699e06f8"
+version = "0.1.7"
 
 [[package]]
 name = "ryu"

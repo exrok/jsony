@@ -1,5 +1,12 @@
 # CHANGELOG
 
+# 0.1.8 (2025-10-02)
+
+Enhancements:
+
+- Add writer flag inspection in `skip_if` this allows skipping based on the contents, useful
+  for avoiding leaking sensitive data.
+
 # 0.1.7 (2025-06-08)
 
 Enhancements:

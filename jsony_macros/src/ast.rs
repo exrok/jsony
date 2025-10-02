@@ -438,12 +438,9 @@ fn extract_container_attr(target: &mut DeriveTargetInner, stream: TokenStream) {
     };
     let name = ident.to_string();
     if name == "jsony" {
-        parse_attrs(
-            group.stream(),
-            &mut (|_, attr, value| {
-                parse_container_attr(target, attr, value);
-            }),
-        );
+        parse_attrs(group.stream(), &mut |_, attr, value| {
+            parse_container_attr(target, attr, value);
+        });
     } else if name == "repr" {
         for toks in group.stream() {
             let TokenTree::Ident(ident) = toks else {
@@ -917,9 +914,13 @@ fn parse_attrs(toks: TokenStream, func: &mut dyn FnMut(TraitSet, Ident, &mut Vec
                     }
                     _ => Error::span_msg("Expected either `=` or `,`", sep.span()),
                 }
+                let mut in_pipe = false;
                 for tok in toks.by_ref() {
                     if let TokenTree::Punct(punct) = &tok {
-                        if punct.as_char() == ',' {
+                        if punct.as_char() == '|' {
+                            in_pipe ^= true;
+                        }
+                        if punct.as_char() == ',' && !in_pipe {
                             break;
                         }
                     }
@@ -941,10 +942,9 @@ fn parse_field_attr<'a>(
         return;
     };
     let attr = current.get_or_insert_with(|| attr_buf.alloc_default());
-    parse_attrs(
-        attrs,
-        &mut (|set, ident, buf| parse_single_field_attr(attr, set, ident, buf)),
-    )
+    parse_attrs(attrs, &mut |set, ident, buf| {
+        parse_single_field_attr(attr, set, ident, buf)
+    })
 }
 struct VariantTemp<'a> {
     name: &'a Ident,

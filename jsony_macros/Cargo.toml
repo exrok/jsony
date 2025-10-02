@@ -1,6 +1,6 @@
 [package]
 name = "jsony_macros"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 authors = ["Thomas Dagenais <exrok@i64.dev>"]
 license = "MIT"

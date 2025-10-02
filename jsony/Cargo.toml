@@ -1,6 +1,6 @@
 [package]
 name = "jsony"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 authors = ["Thomas Dagenais <exrok@i64.dev>"]
 license = "MIT"
@@ -12,7 +12,7 @@ categories = ["encoding"]
 rust-version = "1.84"
 
 [dependencies]
-jsony_macros = { version = "0.1.6", optional = true }
+jsony_macros = { version = "0.1.7", optional = true }
 itoa = "1"
 ryu = "1"
 uuid = { version = "1", optional = true }
@@ -23,5 +23,5 @@ uuid = ["dep:uuid"]
 macros = ["dep:jsony_macros"]
 json_comments = []
 
-# [patch.crates-io]
-# jsony_macros = { path = "../jsony_macros" }
+#[patch.crates-io]
+#jsony_macros = { path = "../jsony_macros" }

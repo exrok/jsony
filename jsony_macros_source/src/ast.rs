@@ -978,9 +978,13 @@ fn parse_attrs(toks: TokenStream, func: &mut dyn FnMut(TraitSet, Ident, &mut Vec
                     }
                     _ => throw!("Expected either `=` or `,`" @ sep.span()),
                 }
+                let mut in_pipe = false;
                 for tok in toks.by_ref() {
                     if let TokenTree::Punct(punct) = &tok {
-                        if punct.as_char() == ',' {
+                        if punct.as_char() == '|' {
+                            in_pipe ^= true;
+                        }
+                        if punct.as_char() == ',' && !in_pipe {
                             break;
                         }
                     }

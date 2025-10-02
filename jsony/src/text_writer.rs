@@ -7,7 +7,7 @@ use crate::{
 
 /// A UTF-8 wrapper around a [BytesWriter].
 ///
-/// Conceptionally, a TextWriter is somewhere between a `String` and a `dyn std::fmt::Write`.
+/// Conceptually, a TextWriter is somewhere between a `String` and a `dyn std::fmt::Write`.
 ///
 /// Like `dyn std::fmt::Write`, `TextWriter` can be backed by many types like:
 /// - `Vec<u8>`
@@ -25,6 +25,8 @@ use crate::{
 pub struct TextWriter<'a> {
     #[doc(hidden)]
     pub joining: bool,
+    #[doc(hidden)]
+    pub flags: u16,
     buffer: BytesWriter<'a>,
 }
 
@@ -95,12 +97,18 @@ impl Default for TextWriter<'_> {
 }
 
 impl<'a> TextWriter<'a> {
+    #[doc(hidden)]
+    pub const WITH_SECRETS: u16 = 1;
     /// Note: We do not want to make this public.
     fn with_buffer(buffer: BytesWriter<'a>) -> TextWriter<'a> {
         TextWriter {
             joining: false,
+            flags: 0,
             buffer,
         }
+    }
+    pub fn has(&self, flags: u16) -> bool {
+        (self.flags & flags) == flags
     }
     pub fn new() -> TextWriter<'a> {
         TextWriter::with_buffer(BytesWriter::new())

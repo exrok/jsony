@@ -27,6 +27,7 @@
 //! This implementation differs from other crates in its focus on compile-time efficiency
 //! and straightforward error handling approach.
 #![allow(clippy::transmute_int_to_float, reason = "simpler to use same method")]
+#![allow(unnecessary_transmutes)] // reduces code size
 
 use super::{FromBinary, ToBinary};
 use crate::BytesWriter;

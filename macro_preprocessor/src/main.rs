@@ -795,6 +795,8 @@ fn main() {
         .unwrap();
 
     let data = String::from_utf8(output.stdout).unwrap();
+    let data = data.replace("#[allow(non_exhaustive_omitted_patterns)]", "");
+
     let mut codegen_code: Option<Vec<u8>> = None;
     let mut template_code: Option<Vec<u8>> = None;
     for (name, body) in modules(&data) {

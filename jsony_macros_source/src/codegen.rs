@@ -776,14 +776,23 @@ use TokenTree as Tok;
 
 /// If the attr value begins with `| ident |` then it `| ident: & ty |` will be
 /// written instead, otherwise it pass as is.
-fn with_injected_closure_arg_type(out: &mut RustWriter, attr_value: &[Tok], ty: &[Tok]) {
+fn with_injected_closure_arg_type(out: &mut RustWriter, attr_value: &[Tok], ty: &[Tok]) -> bool {
     if let [Tok::Punct(bar1), Tok::Ident(binding), Tok::Punct(bar2), rest @ ..] = attr_value {
         if bar1.as_char() == '|' && bar2.as_char() == '|' {
             splat!(out; | [#: binding]: &[~ty] | [~rest]);
-            return;
+            return false;
         }
     }
-    splat!(out; [~attr_value])
+    if let [Tok::Punct(bar1), Tok::Ident(binding), Tok::Punct(comma), Tok::Ident(writer), Tok::Punct(bar2), rest @ ..] =
+        attr_value
+    {
+        if bar1.as_char() == '|' && bar2.as_char() == '|' && comma.as_char() == ',' {
+            splat!(out; | [#: binding]: &[~ty], [#: writer]: &::jsony::TextWriter | [~rest]);
+            return true;
+        }
+    }
+    splat!(out; [~attr_value]);
+    false
 }
 
 fn inner_struct_to_json(
@@ -817,12 +826,17 @@ fn inner_struct_to_json(
                     }
                     text.clear();
                 }
+                let with_writer;
                 splat!(out;
-                    if !([with_injected_closure_arg_type(out, skip_fn, &field.ty)])([if on_self {
+                    if !([with_writer = with_injected_closure_arg_type(out, skip_fn, &field.ty)])([if on_self {
                         splat!(out; &self.[#: field.name])
                     } else {
                         splat!(out; [#: &ctx.temp[i]])
-                    }])
+                    }]
+                    [if with_writer {
+                        splat!(out; ,out);
+                    }]
+                )
                 );
                 Some(out.buf.len())
             } else {

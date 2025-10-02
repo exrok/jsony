@@ -111,7 +111,7 @@ where
 
     unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Visitor {
         ptr.cast::<Self>().write(Self::new());
-        // this common pattern can be generlized safely once we get safe transmute
+        // this common pattern can be generalized safely once we get safe transmute
         FuncFieldVisitor {
             visit: |ptr, mut borrowed| {
                 let map = &mut *ptr.cast::<Self>().as_ptr();
@@ -139,7 +139,7 @@ where
 
     unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Visitor {
         ptr.cast::<Self>().write(Self::new());
-        // this common pattern can be generlized safely once we get safe transmute
+        // this common pattern can be generalized safely once we get safe transmute
         FuncFieldVisitor {
             visit: |ptr, mut borrowed| {
                 let map = &mut *ptr.cast::<Self>().as_ptr();
@@ -167,7 +167,7 @@ where
 
     unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Visitor {
         ptr.cast::<Self>().write(Self::new());
-        // this common pattern can be generlized safely once we get safe transmute
+        // this common pattern can be generalized safely once we get safe transmute
         FuncFieldVisitor {
             visit: |ptr, mut borrowed| {
                 let map = &mut *ptr.cast::<Self>().as_ptr();

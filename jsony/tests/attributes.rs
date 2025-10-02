@@ -4,7 +4,7 @@ use std::{
     mem::MaybeUninit,
 };
 
-use jsony::{FromBinary, Jsony, ToBinary};
+use jsony::{FromBinary, Jsony, TextWriter, ToBinary};
 
 macro_rules! flat_stringify_tt {
     ({$($tt:tt)*}) => {concat!("{", $(flat_stringify_tt!($tt),)* "}")};
@@ -1050,18 +1050,6 @@ fn binary_version() {
         #[jsony(version = 3, default = true)] bool,
     );
 
-    #[derive(Jsony, PartialEq, Debug)]
-    #[jsony(Binary, version = 4..)]
-    struct V4(i32); // breaking version change. release
-
-    #[derive(Jsony, PartialEq, Debug)]
-    #[jsony(Binary, version = 4..)]
-    struct V5(i32, #[jsony(version = 5)] bool);
-
-    #[derive(Jsony, PartialEq, Debug)]
-    #[jsony(Binary, version = 4..=6)]
-    struct V6(i32, #[jsony(version = 5)] bool);
-
     assert_eq!(
         from_binary::<V1>(&to_binary(&V0 { alpha: 32 })).unwrap(),
         V1 { alpha: 32, beta: 0 }
@@ -1281,4 +1269,36 @@ fn field_validate() {
         DataEnum,
         CUSTOM_FIELD_VALIDATION_ERROR
     }
+}
+
+#[test]
+fn skip_flags() {
+    #[derive(Jsony, PartialEq, Eq, Debug)]
+    #[jsony(Json)]
+    struct Data {
+        #[jsony(skip_if = |_, writer| !writer.has(jsony::TextWriter::WITH_SECRETS))]
+        password: String,
+        value: u32,
+    }
+
+    assert_encode_json_eq! {
+        { "value": 32 },
+        Data{ value: 32, password: "very_secret".into()}
+    }
+    assert_decode_json_eq! {
+        { "value": 32, "password": "very_secret" },
+        Data{ value: 32, password: "very_secret".into()}
+    }
+    let mut target = TextWriter::new();
+    target.flags |= jsony::TextWriter::WITH_SECRETS;
+    use jsony::ToJson;
+    Data {
+        value: 32,
+        password: "very_secret".into(),
+    }
+    .encode_json__jsony(&mut target);
+    assert_eq!(
+        &target.into_string(),
+        r#"{"password":"very_secret","value":32}"#
+    );
 }

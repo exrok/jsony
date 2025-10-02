@@ -137,10 +137,12 @@ fn main() {
     util::print_pretty(codegen::derive(tokens! {
 
     #[derive(Jsony, PartialEq, Eq, Debug)]
-    #[jsony(FromJson)]
-    struct Foo {
-        #[jsony(validate = |a| if a > 10 {Ok(())} else {Err("asdfasdf".into())}, with = foo)]
-        foo: u32
+    #[jsony(ToJson, tag= "type")]
+    enum Foo {
+        Foo{
+            #[jsony(skip_if = |_, writer| x > 10)]
+            billy: u32
+        }
     }
 
     }));
