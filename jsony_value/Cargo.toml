@@ -4,11 +4,12 @@ version = "0.0.1"
 authors = ["Thomas Dagenais <exrok@i64.dev>"]
 description = "A JSON value representation for the jsony crate."
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/exrok/jsony"
 readme = "README.md"
-keywords = ["json", "value"]
-categories = ["data-structures", "no-std"]
+keywords = ["json", "value", "serialization"]
+categories = ["encoding", "data-structures"]
 edition = "2021"
-rust-version = "1.65.0"
+rust-version = "1.84"
 
 [dependencies]
 foldhash = { version = "0.2", default-features = false }

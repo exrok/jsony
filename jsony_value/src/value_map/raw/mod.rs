@@ -507,7 +507,7 @@ struct RawTableInner {
 
     // Number of elements in the table, only really used by len()
     // opt: we could probably remove this as we are storing
-    // the lengh seperate in the object map
+    // the length separate in the object map
     items: u32,
 }
 
@@ -1853,7 +1853,7 @@ impl RawTableInner {
 
     /// Gets the slice of all control bytes.
     fn ctrl_slice(&mut self) -> &mut [Tag] {
-        // SAFETY: We've intiailized all control bytes, and have the correct number.
+        // SAFETY: We've initialized all control bytes, and have the correct number.
         unsafe { slice::from_raw_parts_mut(self.ctrl.as_ptr().cast(), self.num_ctrl_bytes()) }
     }
 

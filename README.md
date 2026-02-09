@@ -3,7 +3,7 @@
 An **experimental** fast compiling serialization and deserialization rust library for JSON like formats.
 
 [![Crates.io](https://img.shields.io/crates/v/jsony?style=flat-square)](https://crates.io/crates/jsony)
-[![Crates.io](https://img.shields.io/docsrs/jsony?style=flat-square)](https://docs.rs/jsony/latest/jsony/)
+[![Docs.rs](https://img.shields.io/docsrs/jsony?style=flat-square)](https://docs.rs/jsony/latest/jsony/)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
 **WARNING:** Jsony is currently in early development and makes extensive use of unsafe.

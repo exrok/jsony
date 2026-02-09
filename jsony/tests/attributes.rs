@@ -1302,3 +1302,131 @@ fn skip_flags() {
         r#"{"password":"very_secret","value":32}"#
     );
 }
+
+#[test]
+fn enum_rename_all() {
+    // rename_all on an enum renames both variant names and field names
+    #[derive(Jsony, Debug, PartialEq)]
+    #[jsony(Json, rename_all = "camelCase")]
+    enum MyEnum<'a> {
+        VariantOne {
+            my_field: &'a str,
+            other_field: u32,
+        },
+        VariantTwo(&'a str),
+        UnitVariant,
+    }
+
+    // Variant "VariantOne" -> "variantOne", fields "my_field" -> "myField"
+    assert_json_eq!(
+        { "variantOne": { "myField": "hello", "otherField": 42 } },
+        MyEnum::VariantOne { my_field: "hello", other_field: 42 }
+    );
+
+    assert_json_eq!(
+        { "variantTwo": "world" },
+        MyEnum::VariantTwo("world")
+    );
+
+    assert_json_eq!("unitVariant", MyEnum::UnitVariant);
+}
+
+#[test]
+fn enum_rename_all_fields() {
+    // rename_all_fields on an enum should only rename fields within struct variants
+    #[derive(Jsony, Debug, PartialEq)]
+    #[jsony(Json, rename_all_fields = "camelCase")]
+    enum MyEnum<'a> {
+        VariantOne { my_field: &'a str, other_field: u32 },
+        VariantTwo(&'a str),
+        UnitVariant,
+    }
+
+    // Variant names unchanged, but field names "my_field" -> "myField", "other_field" -> "otherField"
+    assert_json_eq!(
+        { "VariantOne": { "myField": "hello", "otherField": 42 } },
+        MyEnum::VariantOne { my_field: "hello", other_field: 42 }
+    );
+
+    assert_json_eq!(
+        { "VariantTwo": "world" },
+        MyEnum::VariantTwo("world")
+    );
+
+    assert_json_eq!("UnitVariant", MyEnum::UnitVariant);
+}
+
+#[test]
+fn enum_rename_all_and_rename_all_fields() {
+    // rename_all_fields overrides rename_all for field names,
+    // while rename_all still applies to variant names
+    #[derive(Jsony, Debug, PartialEq)]
+    #[jsony(Json, rename_all = "snake_case", rename_all_fields = "UPPERCASE")]
+    enum MyEnum<'a> {
+        VariantOne { my_field: &'a str, other_field: u32 },
+        VariantTwo(&'a str),
+    }
+
+    // Variant "VariantOne" -> "variant_one" (rename_all)
+    // Fields "my_field" -> "MY_FIELD" (rename_all_fields overrides rename_all for fields)
+    assert_json_eq!(
+        { "variant_one": { "MY_FIELD": "hello", "OTHER_FIELD": 42 } },
+        MyEnum::VariantOne { my_field: "hello", other_field: 42 }
+    );
+
+    assert_json_eq!(
+        { "variant_two": "world" },
+        MyEnum::VariantTwo("world")
+    );
+}
+
+#[test]
+fn enum_variant_rename_all_override() {
+    // Per-variant rename_all should override container rename_all_fields
+    #[derive(Jsony, Debug, PartialEq)]
+    #[jsony(Json, rename_all_fields = "camelCase")]
+    enum MyEnum<'a> {
+        VariantOne {
+            my_field: &'a str,
+            other_field: u32,
+        },
+        #[jsony(rename_all = "SCREAMING_SNAKE_CASE")]
+        VariantTwo {
+            my_field: &'a str,
+            other_field: u32,
+        },
+    }
+
+    // VariantOne uses container rename_all_fields = "camelCase"
+    assert_json_eq!(
+        { "VariantOne": { "myField": "hello", "otherField": 42 } },
+        MyEnum::VariantOne { my_field: "hello", other_field: 42 }
+    );
+
+    // VariantTwo overrides with rename_all = "SCREAMING_SNAKE_CASE"
+    assert_json_eq!(
+        { "VariantTwo": { "MY_FIELD": "world", "OTHER_FIELD": 99 } },
+        MyEnum::VariantTwo { my_field: "world", other_field: 99 }
+    );
+}
+
+#[test]
+fn enum_rename_all_internally_tagged() {
+    // Test with internally tagged enums
+    #[derive(Jsony, Debug, PartialEq)]
+    #[jsony(
+        Json,
+        tag = "type",
+        rename_all = "snake_case",
+        rename_all_fields = "camelCase"
+    )]
+    enum MyEnum<'a> {
+        VariantOne { my_field: &'a str, other_field: u32 },
+        EmptyVariant,
+    }
+
+    assert_json_eq!(
+        { "type": "variant_one", "myField": "hello", "otherField": 42 },
+        MyEnum::VariantOne { my_field: "hello", other_field: 42 }
+    );
+}

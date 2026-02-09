@@ -196,6 +196,7 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// | `Flattenable` | `FromJson` | Allows type to use `#[jsony(flatten)]` in `FromJson`.
 /// | `ignore_tag_adjacent_fields` | `Json` | Ignore extra fields in externally tagged enum object
 /// | `rename_all = "..."` | All | Renames variants and fields not explicitly renamed.
+/// | `rename_all_fields = "..."` | All | On enums, overrides `rename_all` for fields in struct variants.
 /// | `tag = "..."` | `Json` | Field containing the enum variant.
 /// | `transparent` | All | Traits delegate to the single inner type.
 /// | `untagged` | `Json` | Only data content of an enum is stored.
@@ -210,6 +211,7 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// | Format | Supported Traits | Description |
 /// |-------------------|--------|---------------------------------------------------------------------------------|
 /// | `rename = "..."`  | `Json` | Use provided string as variant name.
+/// | `rename_all = "..."` | All | Renames fields within this variant. Overrides container `rename_all_fields`.
 /// | `other`           | `FromJson` | Variant to use if given an unknown variant
 ///
 /// ## Field Attributes
@@ -308,6 +310,18 @@ pub fn object(input: TokenStream) -> TokenStream {
 /// #### `#[jsony(rename_all = "...")]`
 ///
 /// The possible values are "lowercase", "UPPERCASE", "PascalCase", "camelCase", "snake_case", "SCREAMING_SNAKE_CASE", "kebab-case", "SCREAMING-KEBAB-CASE".
+///
+/// On a struct, this renames all fields. On an enum, this renames both variant names and
+/// field names within struct variants. Use `rename_all_fields` to apply a different rule
+/// to fields than to variant names.
+///
+/// #### `#[jsony(rename_all_fields = "...")]`
+///
+/// Accepts the same values as `rename_all`. Only meaningful on enums: overrides `rename_all`
+/// for fields in struct variants while leaving variant names unaffected.
+///
+/// Per-variant `#[jsony(rename_all = "...")]` on an enum variant overrides both the container
+/// `rename_all` and `rename_all_fields` for that variant's fields.
 ///
 /// #### `#[jsony(validate = ...)]`
 ///

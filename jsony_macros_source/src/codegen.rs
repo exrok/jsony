@@ -504,17 +504,12 @@ fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
     }
 }
 
-fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
-    // todo pass context in
+fn field_name_literal(_ctx: &Ctx, field: &Field, rename_rule: RenameRule) -> Literal {
     if let Some(name) = field.attr.rename(FROM_JSON) {
         return name.clone();
     }
-    if ctx.target.rename_all != RenameRule::None {
-        Literal::string(
-            &ctx.target
-                .rename_all
-                .apply_to_field(&field.name.to_string()),
-        )
+    if rename_rule != RenameRule::None {
+        Literal::string(&rename_rule.apply_to_field(&field.name.to_string()))
     } else {
         Literal::string(&field.name.to_string())
     }
@@ -544,7 +539,7 @@ fn variant_name_json(ctx: &Ctx, field: &EnumVariant, output: &mut String) {
     output.push('"');
 }
 
-fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) {
+fn field_name_json(_ctx: &Ctx, field: &Field, output: &mut String, rename_rule: RenameRule) {
     output.push('"');
     if let Some(name) = &field.attr.rename(TO_JSON) {
         match crate::lit::literal_inline(name.to_string()) {
@@ -555,19 +550,15 @@ fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) {
                 throw!("Invalid rename value expected a string" @ name.span())
             }
         }
-    } else if ctx.target.rename_all != RenameRule::None {
-        output.push_str(
-            &ctx.target
-                .rename_all
-                .apply_to_field(&field.name.to_string()),
-        );
+    } else if rename_rule != RenameRule::None {
+        output.push_str(&rename_rule.apply_to_field(&field.name.to_string()));
     } else {
         output.push_str(&field.name.to_string());
     }
     output.push('"');
 }
 
-fn struct_schema(out: &mut RustWriter, ctx: &Ctx, fields: &[&Field], temp_tuple: Option<&Ident>) {
+fn struct_schema(out: &mut RustWriter, ctx: &Ctx, fields: &[&Field], temp_tuple: Option<&Ident>, field_rename: RenameRule) {
     let ag_gen = if ctx
         .target
         .generics
@@ -592,7 +583,7 @@ fn struct_schema(out: &mut RustWriter, ctx: &Ctx, fields: &[&Field], temp_tuple:
     let ts = token_stream!(out; [
         for ((i, field) in fields.iter().enumerate()) {
             [~&ctx.crate_path]::__internal::Field {
-                name: [@field_name_literal(ctx, field).into()],
+                name: [@field_name_literal(ctx, field, field_rename).into()],
                 offset: ::std::mem::offset_of!([
                     if let Some(ty) = temp_tuple {
                         splat!(out; [#: &ty], [@Literal::usize_unsuffixed(i).into()])
@@ -801,6 +792,7 @@ fn inner_struct_to_json(
     fields: &[Field],
     text: &mut String,
     on_self: bool,
+    field_rename: RenameRule,
 ) {
     let mut first = true;
     splat!(
@@ -848,7 +840,7 @@ fn inner_struct_to_json(
             let flattened = field.flatten(TO_JSON);
             first = flattened || if_skip_body.is_some();
             if !flattened {
-                field_name_json(ctx, field, text);
+                field_name_json(ctx, field, text, field_rename);
                 text.push(':');
             }
             if !text.is_empty() {
@@ -949,7 +941,7 @@ fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
     let body = token_stream!(
         out;
         out.start_json_object();
-        [inner_struct_to_json(out, ctx, fields, &mut text, true)]
+        [inner_struct_to_json(out, ctx, fields, &mut text, true, ctx.target.rename_all)]
         out.end_json_object()
     );
 
@@ -987,7 +979,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
             ]]
             {
                 ::jsony::__internal::ObjectSchema::<#[#: &ctx.lifetime]> {
-                    inner: &const { [struct_schema(out, ctx, &ordered_fields, None)] },
+                    inner: &const { [struct_schema(out, ctx, &ordered_fields, None, ctx.target.rename_all)] },
                     phantom: ::std::marker::PhantomData
                 }
             }
@@ -1013,7 +1005,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
             } else {
                 splat!(out;
                 ::jsony::__internal::ObjectSchema::<#[#: &ctx.lifetime]> {
-                    inner: &const { [struct_schema(out, ctx, &ordered_fields, None)] },
+                    inner: &const { [struct_schema(out, ctx, &ordered_fields, None, ctx.target.rename_all)] },
                     phantom: ::std::marker::PhantomData
                 })
             }
@@ -1195,12 +1187,23 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     };
     impl_to_json(out, ToJsonKind::Static(kind), ctx, stream)
 }
+fn variant_field_rename_rule(ctx: &Ctx, variant: &EnumVariant) -> RenameRule {
+    if variant.rename_all != RenameRule::None {
+        variant.rename_all
+    } else if ctx.target.rename_all_fields != RenameRule::None {
+        ctx.target.rename_all_fields
+    } else {
+        ctx.target.rename_all
+    }
+}
+
 fn enum_variant_to_json_struct(
     out: &mut RustWriter,
     ctx: &Ctx,
     variant: &EnumVariant,
     text: &mut String,
 ) {
+    let field_rename = variant_field_rename_rule(ctx, variant);
     splat!(
         out;
         [
@@ -1213,7 +1216,7 @@ fn enum_variant_to_json_struct(
                 _ => ()
             }
         ]
-        [inner_struct_to_json(out, ctx, &variant.fields, text, false)];
+        [inner_struct_to_json(out, ctx, &variant.fields, text, false, field_rename)];
         [
             // opt: Could do a static '}' push if we know that there isn't a trailing comma which
             // can occur when flattening
@@ -1332,6 +1335,7 @@ fn enum_variant_from_json_struct(
     variant: &EnumVariant,
     untagged: bool,
 ) {
+    let field_rename = variant_field_rename_rule(ctx, variant);
     let ordered_fields = schema_ordered_fields(variant.fields);
     let mut flattening: Option<&Field> = None;
     for field in variant.fields {
@@ -1351,7 +1355,7 @@ fn enum_variant_from_json_struct(
             // Note a type alias with an un-used generic is not an error
             type __TEMP[?(ctx.target.has_lifetime())<#[#: &ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
             let schema = ::jsony::__internal::ObjectSchema{
-                inner: const { &[struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
+                inner: const { &[struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())), field_rename)]},
                 phantom: ::std::marker::PhantomData,
             };
             let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
@@ -1400,7 +1404,7 @@ fn enum_variant_from_json_struct(
             // Note a type alias with an un-used generic is not an error
             type __TEMP[?(ctx.target.has_lifetime())<#[#: &ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
             let schema = ::jsony::__internal::ObjectSchema{
-                inner: const { &[struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())))]},
+                inner: const { &[struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())), field_rename)]},
                 phantom: ::std::marker::PhantomData,
             };
             let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
@@ -2075,7 +2079,7 @@ fn enum_to_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     let target = &ctx.target;
     let any_generics = !target.generics.is_empty();
     if target.enum_flags != (ENUM_CONTAINS_UNIT_VARIANT | ENUM_HAS_EXTERNAL_TAG) {
-        throw!("FromStr enum must not have any tuple or struct variants nor a tag configuratino")
+        throw!("FromStr enum must not have any tuple or struct variants nor a tag configuration")
     }
     splat! {
         out;
@@ -2099,7 +2103,7 @@ fn enum_to_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
 fn enum_from_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     let target = &ctx.target;
     if target.enum_flags != (ENUM_CONTAINS_UNIT_VARIANT | ENUM_HAS_EXTERNAL_TAG) {
-        throw!("FromStr enum must not have any tuple or struct variants nor a tag configuratino")
+        throw!("FromStr enum must not have any tuple or struct variants nor a tag configuration")
     }
     let any_generics = !target.generics.is_empty();
     splat! {
@@ -2253,6 +2257,7 @@ pub fn inner_derive(stream: TokenStream) -> TokenStream {
         flattenable: false,
         tag: Tag::Default,
         rename_all: crate::case::RenameRule::None,
+        rename_all_fields: crate::case::RenameRule::None,
         repr: ast::Repr::Default,
         version: None,
         min_version: 0,

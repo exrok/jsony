@@ -1,5 +1,15 @@
 # CHANGELOG
 
+# 0.1.9 (unreleased)
+
+Enhancements:
+
+- Add `#[jsony(rename_all_fields = "...")]` container attribute for enums to override
+  `rename_all` for fields in struct variants, allowing different rules for variant
+  names and field names.
+- Add `#[jsony(rename_all = "...")]` as an enum variant attribute to override the
+  container-level field rename rule for a specific variant's fields.
+
 # 0.1.8 (2025-10-02)
 
 Enhancements:

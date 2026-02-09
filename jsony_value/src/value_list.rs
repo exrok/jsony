@@ -80,7 +80,7 @@ impl<'a> Drop for ValueList<'a> {
 const MIN_CAPACITY: u32 = 1 << 3;
 
 // Note we do not implement deref to keep the index operations predictable where like
-// Value, ValueList null coalesses index operations instead of panicing
+// Value, ValueList null coalesces index operations instead of panicking
 impl<'a> ValueList<'a> {
     pub(crate) fn to_owned_in_place(&mut self) {
         for entry in self.as_mut_slice() {

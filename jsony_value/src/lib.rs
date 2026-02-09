@@ -278,7 +278,7 @@ impl CapacityTag {
     const fn new_list(capacity: u32) -> CapacityTag {
         debug_assert!(capacity & 0b111 == 0);
         CapacityTag {
-            // Saftey: Kind::List is non-zero
+            // Safety: Kind::List is non-zero
             raw: unsafe { NonZeroU32::new_unchecked(capacity | (Kind::List as u32)) },
         }
     }
@@ -287,7 +287,7 @@ impl CapacityTag {
     }
     const fn new_map(capacity: u32) -> CapacityTag {
         CapacityTag {
-            // Saftey: Kind::List is non-zero
+            // Safety: Kind::List is non-zero
             raw: unsafe { NonZeroU32::new_unchecked(capacity | (Kind::Map as u32)) },
         }
     }
@@ -493,7 +493,7 @@ impl<'a> From<ValueBoolean> for Value<'a> {
 // meaning it get passed around with two registers. Additionally, contains a niche
 // so that `Option<Value>` is also 16 bytes.
 //
-// Genernally we avoid boxing, a borrowed string does not allocate. However to achive
+// Genernally we avoid boxing, a borrowed string does not allocate. However to achieve
 // this that capacity has been limited to a maximum of `u32::MAX`. We use the lower
 // bits of capacity sa the type tag and force alignment of capacity. This means that
 // Vec cannot cheaply be converted to Value type in general.
@@ -908,7 +908,7 @@ impl<'a> ValueString<'a> {
     ///
     /// Panics if the string length exceeds `u32::MAX`.
     pub fn from_borrowed(text: &'a str) -> ValueString<'a> {
-        let len = text.len().try_into().expect("JsonStr bounds exceeed");
+        let len = text.len().try_into().expect("JsonStr bounds exceed");
         ValueString {
             tag: CapacityTag::BORROWED_STRING,
             len,
@@ -925,7 +925,7 @@ impl<'a> ValueString<'a> {
     ///
     /// Panics if the string length exceeds `u32::MAX`.
     pub fn from_owned(text: Box<str>) -> ValueString<'static> {
-        let len = text.len().try_into().expect("JsonStr bounds exceeed");
+        let len = text.len().try_into().expect("JsonStr bounds exceed");
         ValueString {
             tag: CapacityTag::OWNED_STRING,
             len,
@@ -943,7 +943,7 @@ impl<'a> ValueString<'a> {
     ///
     /// Panics if the string length exceeds `u32::MAX`.
     pub fn other_borrowed(text: &'a str) -> ValueString<'a> {
-        let len = text.len().try_into().expect("JsonStr bounds exceeed");
+        let len = text.len().try_into().expect("JsonStr bounds exceed");
         ValueString {
             tag: CapacityTag::BORROWED_OTHER,
             len,
@@ -961,7 +961,7 @@ impl<'a> ValueString<'a> {
     ///
     /// Panics if the string length exceeds `u32::MAX`.
     pub fn other_owned(text: Box<str>) -> ValueString<'static> {
-        let len = text.len().try_into().expect("JsonStr bounds exceeed");
+        let len = text.len().try_into().expect("JsonStr bounds exceed");
         ValueString {
             tag: CapacityTag::OWNED_OTHER,
             len,

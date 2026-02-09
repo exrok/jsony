@@ -471,7 +471,7 @@ impl<'a> ValueMap<'a> {
         };
 
         unsafe {
-            // opt: want to be able to resuse this code without triggering index creation
+            // opt: want to be able to reuse this code without triggering index creation
             if init_index && target_capacity > MIN_CAPACITY as u64 {
                 let map = if !self.tag.map_has_index() {
                     let mut index = ObjectKeyIndex {

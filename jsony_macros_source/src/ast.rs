@@ -156,6 +156,7 @@ pub struct DeriveTargetInner<'a> {
     pub from_str: bool,
     pub pod: bool,
     pub rename_all: RenameRule,
+    pub rename_all_fields: RenameRule,
     pub enum_flags: EnumFlag,
     pub flattenable: bool,
     pub ignore_tag_adjacent_fields: bool,
@@ -295,6 +296,7 @@ pub struct EnumVariant<'a> {
     pub kind: EnumKind,
     #[allow(dead_code)]
     pub attr: &'a FieldAttrs,
+    pub rename_all: RenameRule,
 }
 
 #[cfg_attr(feature = "debug", derive(Debug))]
@@ -508,6 +510,16 @@ fn parse_container_attr(
             };
             value = rest;
             target.rename_all = RenameRule::from_literal(&rename);
+        }
+        "rename_all_fields" => {
+            if target.rename_all_fields != RenameRule::None {
+                throw!("Duplicate rename_all_fields attribute" @ attr.span())
+            }
+            let [TokenTree::Literal(rename), rest @ ..] = value else {
+                throw!("Expected a literal" @ attr.span())
+            };
+            value = rest;
+            target.rename_all_fields = RenameRule::from_literal(&rename);
         }
         _ => throw!("Unknown attribute" @ attr.span()),
     }
@@ -1018,6 +1030,7 @@ struct VariantTemp<'a> {
     end: usize,
     attr: &'a FieldAttrs,
     kind: EnumKind,
+    rename_all: RenameRule,
 }
 
 pub fn scan_fields<'a>(target: &mut DeriveTargetInner<'a>, fields: &mut Vec<Field<'a>>) {
@@ -1125,6 +1138,7 @@ pub fn parse_enum<'a>(
                 &field_buf[var.start..var.end]
             },
             kind: var.kind,
+            rename_all: var.rename_all,
             attr: var.attr,
         })
         .collect()
@@ -1138,6 +1152,7 @@ fn parse_inner_enum_variants<'a>(
     let mut f = fields.iter().enumerate();
     let mut enums: Vec<VariantTemp<'a>> = Vec::new();
     let mut next_attr: Option<&'a mut FieldAttrs> = None;
+    let mut next_rename_all = RenameRule::None;
     loop {
         let i = if let Some((i, tok)) = f.next() {
             let TokenTree::Punct(punct) = tok else {
@@ -1148,7 +1163,19 @@ fn parse_inner_enum_variants<'a>(
                 let Some((_, TokenTree::Group(group))) = f.next() else {
                     throw!("Expected attr after" @ punct.span())
                 };
-                parse_field_attr(&mut next_attr, attr_buffer, group.stream());
+                if let Some(attrs) = extract_jsony_attr(group.stream()) {
+                    parse_attrs(attrs, &mut |set, ident, buf| {
+                        if ident.to_string() == "rename_all" {
+                            let Some(TokenTree::Literal(rename)) = buf.pop() else {
+                                throw!("Expected a literal" @ ident.span())
+                            };
+                            next_rename_all = RenameRule::from_literal(&rename);
+                            return;
+                        }
+                        let attr = next_attr.get_or_insert_with(|| attr_buffer.alloc_default());
+                        parse_single_field_attr(attr, set, ident, buf);
+                    });
+                }
                 continue;
             }
             if ch == b',' {
@@ -1234,6 +1261,7 @@ fn parse_inner_enum_variants<'a>(
                 &DEFAULT_ATTR.0
             },
             kind,
+            rename_all: std::mem::replace(&mut next_rename_all, RenameRule::None),
         });
         if f.len() == 0 {
             break;

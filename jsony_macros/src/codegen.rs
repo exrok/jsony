@@ -663,16 +663,12 @@ fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
         out.blit(312, 2);
     }
 }
-fn field_name_literal(ctx: &Ctx, field: &Field) -> Literal {
+fn field_name_literal(_ctx: &Ctx, field: &Field, rename_rule: RenameRule) -> Literal {
     if let Some(name) = field.attr.rename(FROM_JSON) {
         return name.clone();
     }
-    if ctx.target.rename_all != RenameRule::None {
-        Literal::string(
-            &ctx.target
-                .rename_all
-                .apply_to_field(&field.name.to_string()),
-        )
+    if rename_rule != RenameRule::None {
+        Literal::string(&rename_rule.apply_to_field(&field.name.to_string()))
     } else {
         Literal::string(&field.name.to_string())
     }
@@ -697,7 +693,7 @@ fn variant_name_json(ctx: &Ctx, field: &EnumVariant, output: &mut String) {
     }
     output.push('"');
 }
-fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) {
+fn field_name_json(_ctx: &Ctx, field: &Field, output: &mut String, rename_rule: RenameRule) {
     output.push('"');
     if let Some(name) = &field.attr.rename(TO_JSON) {
         match crate::lit::literal_inline(name.to_string()) {
@@ -706,18 +702,20 @@ fn field_name_json(ctx: &Ctx, field: &Field, output: &mut String) {
             }
             _ => Error::span_msg("Invalid rename value expected a string", name.span()),
         }
-    } else if ctx.target.rename_all != RenameRule::None {
-        output.push_str(
-            &ctx.target
-                .rename_all
-                .apply_to_field(&field.name.to_string()),
-        );
+    } else if rename_rule != RenameRule::None {
+        output.push_str(&rename_rule.apply_to_field(&field.name.to_string()));
     } else {
         output.push_str(&field.name.to_string());
     }
     output.push('"');
 }
-fn struct_schema(out: &mut RustWriter, ctx: &Ctx, fields: &[&Field], temp_tuple: Option<&Ident>) {
+fn struct_schema(
+    out: &mut RustWriter,
+    ctx: &Ctx,
+    fields: &[&Field],
+    temp_tuple: Option<&Ident>,
+    field_rename: RenameRule,
+) {
     let ag_gen = if ctx.target.generics.iter().any(|g| !match g.kind {
         GenericKind::Lifetime => true,
         _ => false,
@@ -745,7 +743,8 @@ fn struct_schema(out: &mut RustWriter, ctx: &Ctx, fields: &[&Field], temp_tuple:
             {
                 let at = out.buf.len();
                 out.blit(320, 2);
-                out.buf.push(field_name_literal(ctx, field).into());
+                out.buf
+                    .push(field_name_literal(ctx, field, field_rename).into());
                 out.blit(322, 13);
                 {
                     let at = out.buf.len();
@@ -1045,6 +1044,7 @@ fn inner_struct_to_json(
     fields: &[Field],
     text: &mut String,
     on_self: bool,
+    field_rename: RenameRule,
 ) {
     let mut first = true;
     {
@@ -1114,7 +1114,7 @@ fn inner_struct_to_json(
                 let flattened = field.flatten(TO_JSON);
                 first = flattened || if_skip_body.is_some();
                 if !flattened {
-                    field_name_json(ctx, field, text);
+                    field_name_json(ctx, field, text, field_rename);
                     text.push(':');
                 }
                 if !text.is_empty() {
@@ -1266,7 +1266,7 @@ fn struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
     let body = {
         let len = out.buf.len();
         out.blit(551, 5);
-        inner_struct_to_json(out, ctx, fields, &mut text, true);
+        inner_struct_to_json(out, ctx, fields, &mut text, true, ctx.target.rename_all);
         out.blit(556, 4);
         out.split_off_stream(len)
     };
@@ -1320,7 +1320,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
                     out.blit(594, 4);
                     {
                         let at = out.buf.len();
-                        struct_schema(out, ctx, &ordered_fields, None);
+                        struct_schema(out, ctx, &ordered_fields, None, ctx.target.rename_all);
                         out.tt_group(Delimiter::Brace, at);
                     };
                     out.blit(598, 12);
@@ -1380,7 +1380,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
                         out.blit(594, 4);
                         {
                             let at = out.buf.len();
-                            struct_schema(out, ctx, &ordered_fields, None);
+                            struct_schema(out, ctx, &ordered_fields, None, ctx.target.rename_all);
                             out.tt_group(Delimiter::Brace, at);
                         };
                         out.blit(598, 12);
@@ -1695,12 +1695,22 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     };
     impl_to_json(out, ToJsonKind::Static(kind), ctx, stream)
 }
+fn variant_field_rename_rule(ctx: &Ctx, variant: &EnumVariant) -> RenameRule {
+    if variant.rename_all != RenameRule::None {
+        variant.rename_all
+    } else if ctx.target.rename_all_fields != RenameRule::None {
+        ctx.target.rename_all_fields
+    } else {
+        ctx.target.rename_all
+    }
+}
 fn enum_variant_to_json_struct(
     out: &mut RustWriter,
     ctx: &Ctx,
     variant: &EnumVariant,
     text: &mut String,
 ) {
+    let field_rename = variant_field_rename_rule(ctx, variant);
     {
         {
             match ctx.target.tag {
@@ -1712,7 +1722,7 @@ fn enum_variant_to_json_struct(
                 _ => (),
             }
         };
-        inner_struct_to_json(out, ctx, &variant.fields, text, false);
+        inner_struct_to_json(out, ctx, &variant.fields, text, false, field_rename);
         out.blit_punct(13);
         {
             match ctx.target.tag {
@@ -1842,6 +1852,7 @@ fn enum_variant_from_json_struct(
     variant: &EnumVariant,
     untagged: bool,
 ) {
+    let field_rename = variant_field_rename_rule(ctx, variant);
     let ordered_fields = schema_ordered_fields(variant.fields);
     let mut flattening: Option<&Field> = None;
     for field in variant.fields {
@@ -1885,6 +1896,7 @@ fn enum_variant_from_json_struct(
                             ctx,
                             &ordered_fields,
                             Some(&Ident::new("__TEMP", Span::call_site())),
+                            field_rename,
                         )
                     };
                     out.tt_group(Delimiter::Brace, at);
@@ -2045,6 +2057,7 @@ fn enum_variant_from_json_struct(
                             ctx,
                             &ordered_fields,
                             Some(&Ident::new("__TEMP", Span::call_site())),
+                            field_rename,
                         )
                     };
                     out.tt_group(Delimiter::Brace, at);
@@ -3529,7 +3542,7 @@ fn enum_to_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     let any_generics = !target.generics.is_empty();
     if target.enum_flags != (ENUM_CONTAINS_UNIT_VARIANT | ENUM_HAS_EXTERNAL_TAG) {
         Error::msg(
-            "FromStr enum must not have any tuple or struct variants nor a tag configuratino",
+            "FromStr enum must not have any tuple or struct variants nor a tag configuration",
         )
     }
     {
@@ -3589,7 +3602,7 @@ fn enum_from_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     let target = &ctx.target;
     if target.enum_flags != (ENUM_CONTAINS_UNIT_VARIANT | ENUM_HAS_EXTERNAL_TAG) {
         Error::msg(
-            "FromStr enum must not have any tuple or struct variants nor a tag configuratino",
+            "FromStr enum must not have any tuple or struct variants nor a tag configuration",
         )
     }
     let any_generics = !target.generics.is_empty();
@@ -3900,6 +3913,7 @@ pub fn inner_derive(stream: TokenStream) -> TokenStream {
         flattenable: false,
         tag: Tag::Default,
         rename_all: crate::case::RenameRule::None,
+        rename_all_fields: crate::case::RenameRule::None,
         repr: ast::Repr::Default,
         version: None,
         min_version: 0,
