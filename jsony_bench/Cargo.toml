@@ -1,0 +1,7 @@
+[package]
+name = "jsony_bench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+perf-event2 = "0.7.4"
