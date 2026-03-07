@@ -1027,7 +1027,7 @@ impl<'j> InnerParser<'j> {
         };
         loop {
             if current_field_name == tag {
-                match unsafe { self.read_seen_string(scratch) } {
+                match self.take_string(scratch) {
                     Ok(value) => {
                         if let Some(content_index) = content_index {
                             self.index = content_index;

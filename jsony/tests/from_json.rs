@@ -395,6 +395,58 @@ fn to_from_str() {
 }
 
 #[test]
+fn tag_content_enum_with_attribute_whitespace() {
+    mod parsed_string {
+        use std::{fmt::Display, str::FromStr};
+        use jsony::json::DecodeError;
+        pub fn decode_json<T: FromStr>(
+            parser: &mut jsony::parser::Parser<'_>,
+        ) -> Result<T, &'static DecodeError>
+        where
+            T::Err: Display,
+        {
+            match T::from_str(parser.take_string()?) {
+                Ok(value) => Ok(value),
+                Err(err) => {
+                    parser.report_error(format!("FromStr failed: {err}"));
+                    Err(&DecodeError {
+                        message: "FromStr failed",
+                    })
+                }
+            }
+        }
+    }
+
+    #[derive(Jsony, Debug, PartialEq, Eq)]
+    #[jsony(tag = "type", content = "value", rename_all = "kebab-case")]
+    enum Scalar {
+        Integer(#[jsony(with = parsed_string)] i64),
+    }
+
+    // No whitespace
+    let no_ws = r#"{"type":"integer","value":"42"}"#;
+    assert_eq!(
+        from_json::<Scalar>(no_ws).unwrap(),
+        Scalar::Integer(42)
+    );
+
+    // Whitespace after colons (the bug: parser didn't skip whitespace before
+    // reading tag value string in tag/content enums)
+    let with_ws = r#"{"type": "integer", "value": "42"}"#;
+    assert_eq!(
+        from_json::<Scalar>(with_ws).unwrap(),
+        Scalar::Integer(42)
+    );
+
+    // Content before tag (different code path in tag_query_at_content_next_object)
+    let content_first = r#"{"value": "42", "type": "integer"}"#;
+    assert_eq!(
+        from_json::<Scalar>(content_first).unwrap(),
+        Scalar::Integer(42)
+    );
+}
+
+#[test]
 fn to_from_str_with_json() {
     // Json may utilize the ToStr/FromStr impls we test here that also
     // adding json doesn't break either

@@ -56,6 +56,7 @@
     clippy::question_mark,
     reason = "? introduces extra code bloat slowing down compile times"
 )]
+#![allow(elided_lifetimes_in_paths)]
 use std::ptr::NonNull;
 #[doc(hidden)]
 pub mod __internal;
