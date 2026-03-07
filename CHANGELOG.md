@@ -1,6 +1,6 @@
 # CHANGELOG
 
-# 0.1.9 (unreleased)
+# 0.1.9 (2026-03-07)
 
 Enhancements:
 
@@ -9,6 +9,7 @@ Enhancements:
   names and field names.
 - Add `#[jsony(rename_all = "...")]` as an enum variant attribute to override the
   container-level field rename rule for a specific variant's fields.
+- Switch from ryu to zmij for 10-15% faster float serialization in JSON.
 
 # 0.1.8 (2025-10-02)
 
