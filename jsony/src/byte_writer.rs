@@ -324,16 +324,6 @@ impl<'a> BytesWriter<'a> {
         self.data
     }
 
-    /// Returns a pointer to the start of unused capacity.
-    ///
-    /// Note: May return a dangling pointer if the buffer is empty.
-    #[inline]
-    pub(crate) fn tail_ptr(&self) -> *mut u8 {
-        // Safety: length is guaranteed to be less then or equal to capacity and
-        // capacity is guaranteed meet the criteria of add
-        unsafe { self.data.add(self.len) }
-    }
-
     /// Returns the length of this buffer in bytes
     #[inline]
     pub fn len(&self) -> usize {

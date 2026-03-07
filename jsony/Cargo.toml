@@ -14,7 +14,7 @@ rust-version = "1.84"
 [dependencies]
 jsony_macros = { version = "0.1.7", optional = true }
 itoa = "1"
-ryu = "1"
+zmij = "1"
 uuid = { version = "1", optional = true }
 
 [features]
