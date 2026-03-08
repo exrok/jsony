@@ -10,9 +10,9 @@ An **experimental** fast compiling serialization and deserialization rust librar
 
 ## Features
 
-- Fast compile times
+- Fast compile times: [See Benchmarks](https://github.com/exrok/rust-serialization-build-time-benchmarks)
 - Competitive runtime performance
-- Featureful derive macros for implementing To/From for various data formats
+- Featureful derive macros for implementing To/From for Json, Binary & Str
 - Infallible serialization guaranteed to succeed via the type system
 - Data formats:
   - **JSON** (optional extension: trailing commas, comments, unquoted keys)
