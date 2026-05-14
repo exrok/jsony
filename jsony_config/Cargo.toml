@@ -1,6 +1,6 @@
 [package]
 name = "jsony_config"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 authors = ["Thomas Dagenais <exrok@i64.dev>"]
 license = "MIT"
@@ -12,7 +12,7 @@ categories = ["config"]
 rust-version = "1.85"
 
 [dependencies]
-jsony = "0.1.6"
+jsony = "0.1.9"
 kvlog = { version = "0.1", optional = true }
 
 [features]

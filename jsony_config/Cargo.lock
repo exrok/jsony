@@ -10,18 +10,18 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 
 [[package]]
 name = "jsony"
-version = "0.1.6"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db453cf83fe127144257503b20038d84af91ad7b6eb5e6951b73462f12e59b8d"
+checksum = "6f9c02f2563a1e82063359e007c578d96116ef348b0ac360d34a8159feff92e6"
 dependencies = [
  "itoa",
  "jsony_macros",
- "ryu",
+ "zmij",
 ]
 
 [[package]]
 name = "jsony_config"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "jsony",
  "kvlog",
@@ -29,9 +29,9 @@ dependencies = [
 
 [[package]]
 name = "jsony_macros"
-version = "0.1.5"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e54c526131e306c9160455e0e7625a902b2c0d63c4d277d4c7243b63ce43c23"
+checksum = "4da8678b34d03a741a66990d2344e354cc95292992b981804dc6da059635e611"
 
 [[package]]
 name = "kvlog"
@@ -51,13 +51,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "175e52cba734851ef3ed52c39c5df2937b5ffe912d3ab0c757bb53aa8e58b522"
 
 [[package]]
-name = "ryu"
-version = "1.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
-
-[[package]]
 name = "uuid"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3cf4199d1e5d15ddd86a694e4d0dffa9c323ce759fea589f00fef9d81cc1931d"
+
+[[package]]
+name = "zmij"
+version = "1.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"

@@ -98,6 +98,8 @@ pub enum Search<'a> {
     /// Looks for a configuration file path specified by a command-line flag.
     ///
     /// Example: `--config ../data/config.json`
+    /// If multiple flag configs are provided, missing files are warnings as long as at least
+    /// one flag config exists. A missing file is still fatal when no flag config can be loaded.
     Flag(&'a str),
     /// Searches for a configuration file at a specific path relative to the current working directory.
     Path(&'a std::path::Path),
@@ -424,29 +426,72 @@ fn load_config_file(output: &mut Vec<ConfigFile>, path: PathBuf) -> Result<(), E
     Ok(())
 }
 
+fn warn_missing_config_file(handler: &mut DiagnosticHandler, path: &Path) {
+    handler(Diagnostic {
+        level: DiagnosticLevel::Warn,
+        message: "Configuration file does not exist",
+        file: Some(path),
+        line: None,
+    });
+}
+
+fn load_flag_config_files(
+    flag: &str,
+    args: impl IntoIterator<Item = String>,
+    output: &mut Vec<ConfigFile>,
+    cwd: &std::path::Path,
+    handler: &mut DiagnosticHandler,
+) -> Result<(), Error> {
+    let loaded_before = output.len();
+    let mut missing_configs = Vec::new();
+    let mut args = args.into_iter();
+    while args.by_ref().find(|a| a == flag).is_some() {
+        if let Some(config) = args.next() {
+            let path = cwd.join(config);
+            match load_config_file(output, path) {
+                Ok(()) => {}
+                Err(Error::IOError(path, err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                    missing_configs.push((path, err));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+    for (path, _) in &missing_configs {
+        warn_missing_config_file(handler, path);
+    }
+    if output.len() == loaded_before {
+        if let Some((path, err)) = missing_configs.into_iter().next() {
+            return Err(Error::IOError(path, err));
+        }
+    }
+    Ok(())
+}
+
 impl<'a> Search<'a> {
     fn search_until_found(
         many: &'a [Search<'a>],
         output: &mut Vec<ConfigFile>,
         cwd: &std::path::Path,
+        handler: &mut DiagnosticHandler,
     ) -> Result<(), Error> {
         for strategy in many {
-            strategy.search(output, cwd)?;
+            strategy.search(output, cwd, handler)?;
             if !output.is_empty() {
                 return Ok(());
             }
         }
         Ok(())
     }
-    fn search(&self, output: &mut Vec<ConfigFile>, cwd: &std::path::Path) -> Result<(), Error> {
+    fn search(
+        &self,
+        output: &mut Vec<ConfigFile>,
+        cwd: &std::path::Path,
+        handler: &mut DiagnosticHandler,
+    ) -> Result<(), Error> {
         match self {
             Search::Flag(flag) => {
-                let mut args = std::env::args();
-                while args.by_ref().find(|a| a == flag).is_some() {
-                    if let Some(config) = args.next() {
-                        load_config_file(output, cwd.join(config))?;
-                    }
-                }
+                load_flag_config_files(flag, std::env::args(), output, cwd, handler)?;
             }
             Search::Path(path) => {
                 if path.exists() {
@@ -545,7 +590,8 @@ pub fn load<T: JsonyConfig>(
         Ok(cwd) => cwd,
         Err(err) => return Err(Error::Other(err.to_string())),
     };
-    if let Err(err) = Search::search_until_found(locations, &mut configs, &cwd) {
+    if let Err(err) = Search::search_until_found(locations, &mut configs, &cwd, diagnostic_handler)
+    {
         return Err(err);
     };
     if configs.is_empty() {
@@ -791,4 +837,111 @@ unsafe fn initialize_configs_inner<'a>(
         return Err(Error::JsonError(err));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        cell::RefCell,
+        rc::Rc,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    static TEST_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    type RecordedDiagnostics = Rc<RefCell<Vec<(bool, String, Option<PathBuf>)>>>;
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let id = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("jsony_config_{name}_{}_{}", std::process::id(), id));
+        std::fs::create_dir(&path).unwrap();
+        path
+    }
+
+    fn string_args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| (*arg).to_owned()).collect()
+    }
+
+    #[test]
+    fn missing_flag_overlay_is_warning_when_another_flag_config_loads() {
+        let cwd = temp_test_dir("missing_flag_overlay");
+        let found_path = cwd.join("found.json");
+        let missing_path = cwd.join("missing.json");
+        std::fs::write(&found_path, "{}").unwrap();
+
+        let mut configs = Vec::new();
+        let diagnostics: RecordedDiagnostics = Rc::new(RefCell::new(Vec::new()));
+        {
+            let diagnostics = Rc::clone(&diagnostics);
+            let mut handler = move |diagnostic: Diagnostic<'_>| {
+                diagnostics.borrow_mut().push((
+                    matches!(diagnostic.level, DiagnosticLevel::Warn),
+                    diagnostic.message.to_owned(),
+                    diagnostic.file.map(std::path::Path::to_path_buf),
+                ));
+            };
+            let result = load_flag_config_files(
+                "--config",
+                string_args(&["app", "--config", "missing.json", "--config", "found.json"]),
+                &mut configs,
+                &cwd,
+                &mut handler,
+            );
+            assert!(result.is_ok(), "{result:?}");
+        }
+
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].path, found_path);
+        let diagnostics = diagnostics.borrow();
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].0);
+        assert_eq!(diagnostics[0].1, "Configuration file does not exist");
+        assert_eq!(diagnostics[0].2.as_deref(), Some(missing_path.as_path()));
+
+        let _ = std::fs::remove_dir_all(cwd);
+    }
+
+    #[test]
+    fn missing_flag_config_is_fatal_when_no_flag_config_loads() {
+        let cwd = temp_test_dir("missing_only_flag_config");
+        let missing_path = cwd.join("missing.json");
+
+        let mut configs = Vec::new();
+        let diagnostics: RecordedDiagnostics = Rc::new(RefCell::new(Vec::new()));
+        let error = {
+            let diagnostics = Rc::clone(&diagnostics);
+            let mut handler = move |diagnostic: Diagnostic<'_>| {
+                diagnostics.borrow_mut().push((
+                    matches!(diagnostic.level, DiagnosticLevel::Warn),
+                    diagnostic.message.to_owned(),
+                    diagnostic.file.map(std::path::Path::to_path_buf),
+                ));
+            };
+            load_flag_config_files(
+                "--config",
+                string_args(&["app", "--config", "missing.json"]),
+                &mut configs,
+                &cwd,
+                &mut handler,
+            )
+            .expect_err("missing only config should be fatal")
+        };
+
+        assert!(configs.is_empty());
+        match error {
+            Error::IOError(path, err) => {
+                assert_eq!(path, missing_path);
+                assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+            }
+            other => panic!("expected not found IO error, got {other:?}"),
+        }
+        let diagnostics = diagnostics.borrow();
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].0);
+        assert_eq!(diagnostics[0].1, "Configuration file does not exist");
+        assert_eq!(diagnostics[0].2.as_deref(), Some(missing_path.as_path()));
+
+        let _ = std::fs::remove_dir_all(cwd);
+    }
 }
