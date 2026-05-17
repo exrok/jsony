@@ -1,4 +1,4 @@
-use jsony_value::{Entry, Value, ValueMap, ValueString};
+use jsony_value::{Entry, Value, ValueList, ValueMap, ValueString};
 
 fn assert_static<T: 'static>(_: T) {}
 
@@ -35,6 +35,29 @@ fn static_string() {
 }
 
 #[test]
+fn value_layout_invariants() {
+    assert_eq!(std::mem::size_of::<Value<'_>>(), 16);
+    assert_eq!(std::mem::size_of::<Option<Value<'_>>>(), 16);
+    assert_eq!(std::mem::align_of::<Value<'_>>(), 8);
+    assert_eq!(std::mem::size_of::<ValueString<'_>>(), 16);
+    assert_eq!(std::mem::align_of::<ValueString<'_>>(), 8);
+    assert_eq!(std::mem::size_of::<ValueList<'_>>(), 16);
+    assert_eq!(std::mem::align_of::<ValueList<'_>>(), 8);
+    assert_eq!(std::mem::size_of::<ValueMap<'_>>(), 16);
+    assert_eq!(std::mem::align_of::<ValueMap<'_>>(), 8);
+}
+
+#[test]
+fn value_list_zero_capacity_reserve_does_not_allocate() {
+    let mut list = ValueList::new();
+    assert!(list.try_reserve(0));
+    assert_eq!(list.to_vec().capacity(), 0);
+
+    let list = ValueList::with_capacity(0);
+    assert_eq!(list.to_vec().capacity(), 0);
+}
+
+#[test]
 fn text() {
     let mut buffer = String::new();
     let empty: ValueString = buffer.as_str().into();
@@ -64,6 +87,23 @@ fn other_borrowed_to_owned_copies_buffer() {
 
     assert_eq!(owned.as_str(), "raw-token");
     assert_static(owned);
+}
+
+#[test]
+fn empty_borrowed_to_owned_does_not_keep_source_pointer() {
+    let string = {
+        let source = String::new();
+        ValueString::from_borrowed(source.as_str()).to_owned()
+    };
+    assert_eq!(string.as_str(), "");
+    assert_static(string);
+
+    let other = {
+        let source = String::new();
+        ValueString::other_borrowed(source.as_str()).to_owned()
+    };
+    assert_eq!(other.as_str(), "");
+    assert_static(other);
 }
 
 #[test]
@@ -108,6 +148,32 @@ fn conversions() {
 }
 
 #[test]
+fn overflowing_json_number_is_rejected_instead_of_becoming_null() {
+    assert!(jsony::from_json::<Value<'_>>("1e9999").is_err());
+    assert!(jsony::from_json::<Value<'_>>("-1e9999").is_err());
+}
+
+#[test]
+fn invalid_json_number_syntax_is_rejected() {
+    for input in ["+1", "01", "-01", "1.", "1.e2", ".1", "NaN", "Infinity"] {
+        assert!(
+            jsony::from_json::<Value<'_>>(input).is_err(),
+            "{input:?} should not decode as a JSON number"
+        );
+    }
+}
+
+#[test]
+fn valid_json_number_syntax_is_accepted() {
+    for input in ["0", "-0", "10", "-10", "0.1", "1.0", "1e2", "1e+2", "1E-2"] {
+        assert!(
+            jsony::from_json::<Value<'_>>(input).is_ok(),
+            "{input:?} should decode as a JSON number"
+        );
+    }
+}
+
+#[test]
 fn map() {
     let mut map = ValueMap::from_iter([("hello", true), ("nice", false)]);
     map.insert("hy".into(), 43i32.into());
@@ -121,6 +187,101 @@ fn map() {
     map.sort();
     assert!(map.entries().iter().map(|(x, _)| &**x).is_sorted());
     assert_eq!(map["43"], 43.into());
+}
+
+#[test]
+fn indexed_get_all_preserves_insertion_order() {
+    let mut map = ValueMap::new();
+    let mut expected = Vec::new();
+
+    for i in 0..64 {
+        map.insert(format!("filler{i}").into(), Value::from(i as i64));
+        if i % 3 == 0 {
+            expected.push(i as i64);
+            map.insert("dup".into(), Value::from(i as i64));
+        }
+    }
+
+    let actual = map
+        .get_all("dup")
+        .map(|value| value.as_i64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn indexed_duplicate_lookup_uses_first_entry() {
+    let mut map = ValueMap::new();
+    map.insert("dup".into(), Value::from(100i64));
+    for i in 0..64 {
+        map.insert(format!("filler{i}").into(), Value::from(i as i64));
+        if i % 11 == 0 {
+            map.insert("dup".into(), Value::from(i as i64));
+        }
+    }
+
+    assert_eq!(map.get("dup"), Some(&Value::from(100)));
+    assert_eq!(map.entry("dup").or_default(), &Value::from(100));
+}
+
+#[test]
+fn indexed_duplicate_remove_uses_first_entry() {
+    let mut map = ValueMap::new();
+    map.insert("dup".into(), Value::from(100i64));
+    for i in 0..64 {
+        map.insert(format!("filler{i}").into(), Value::from(i as i64));
+        if i % 11 == 0 {
+            map.insert("dup".into(), Value::from(i as i64));
+        }
+    }
+
+    assert_eq!(map.remove("dup"), Some(Value::from(100)));
+    assert_eq!(
+        map.get_all("dup")
+            .map(|value| value.as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![0, 11, 22, 33, 44, 55]
+    );
+}
+
+#[test]
+fn indexed_remove_with_owned_entries_is_drop_safe() {
+    let mut map = ValueMap::new();
+    for i in 0..64 {
+        map.insert(format!("key{i}").into(), Value::from(format!("value{i}")));
+    }
+
+    let removed = map.remove("key31").unwrap();
+    assert_eq!(removed, Value::from("value31"));
+    assert!(map.get("key31").is_none());
+    assert_eq!(map.get("key30"), Some(&Value::from("value30")));
+    assert_eq!(map.get("key32"), Some(&Value::from("value32")));
+}
+
+#[test]
+fn indexed_swap_remove_with_owned_entries_is_drop_safe() {
+    let mut map = ValueMap::new();
+    for i in 0..64 {
+        map.insert(format!("key{i}").into(), Value::from(format!("value{i}")));
+    }
+
+    let removed = map.swap_remove("key31").unwrap();
+    assert_eq!(removed, Value::from("value31"));
+    assert!(map.get("key31").is_none());
+    assert_eq!(map.get("key63"), Some(&Value::from("value63")));
+}
+
+#[test]
+fn sort_all_objects_recurses_into_map_values() {
+    let mut value: Value<'_> =
+        jsony::from_json(r#"{"outer":{"b":1,"a":2},"list":[{"d":4,"c":3}]}"#).unwrap();
+
+    value.sort_all_objects();
+
+    assert_eq!(
+        jsony::to_json(&value),
+        r#"{"list":[{"c":3,"d":4}],"outer":{"a":2,"b":1}}"#
+    );
 }
 
 #[test]

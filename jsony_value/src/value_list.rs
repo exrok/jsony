@@ -184,7 +184,7 @@ impl<'a> ValueList<'a> {
     pub fn try_reserve(&mut self, size: u32) -> bool {
         let needed = self.len as u64 + size as u64;
         let capacity = self.tag.capacity();
-        if needed < capacity as u64 {
+        if needed <= capacity as u64 {
             return true;
         }
 
@@ -232,7 +232,7 @@ impl<'a> Clone for ValueList<'a> {
 
         let new_list = ValueList {
             tag: self.tag,
-            len: self.len,
+            len: 0,
             ptr: unsafe {
                 // Allocate new memory for the clone
                 let layout = Layout::array::<Value>(self.tag.capacity() as usize).unwrap();
@@ -243,12 +243,14 @@ impl<'a> Clone for ValueList<'a> {
                 ptr
             },
         };
+        let mut new_list = new_list;
 
         // Clone each Value since they might contain reference counted or other heap data
         unsafe {
             for (i, value) in self.as_slice().iter().enumerate() {
                 let value_ptr = new_list.ptr.as_ptr().add(i);
                 std::ptr::write(value_ptr, value.clone());
+                new_list.len += 1;
             }
         }
 

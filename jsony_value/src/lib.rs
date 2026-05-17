@@ -277,6 +277,7 @@ impl CapacityTag {
     }
     const fn new_list(capacity: u32) -> CapacityTag {
         debug_assert!(capacity & 0b111 == 0);
+        debug_assert!(capacity == 0 || capacity & 0b1_000 != 0);
         CapacityTag {
             // Safety: Kind::List is non-zero
             raw: unsafe { NonZeroU32::new_unchecked(capacity | (Kind::List as u32)) },
@@ -286,8 +287,10 @@ impl CapacityTag {
         self.raw.get() > (MIN_CAPACITY | Kind::Map as u32)
     }
     const fn new_map(capacity: u32) -> CapacityTag {
+        debug_assert!(capacity & 0b111 == 0);
+        debug_assert!(capacity == 0 || capacity & 0b1_000 != 0);
         CapacityTag {
-            // Safety: Kind::List is non-zero
+            // Safety: Kind::Map is non-zero
             raw: unsafe { NonZeroU32::new_unchecked(capacity | (Kind::Map as u32)) },
         }
     }
@@ -614,7 +617,7 @@ impl<'a> Value<'a> {
     /// This is useful for deterministic serialization or comparison.
     pub fn sort_all_objects(&mut self) {
         match self.as_mut() {
-            ValueMut::Map(m) => m.sort(),
+            ValueMut::Map(m) => m.sort_all_objects(),
             ValueMut::List(l) => {
                 for i in l.as_mut_slice() {
                     i.sort_all_objects();
@@ -1233,12 +1236,48 @@ unsafe impl<'a> FromJson<'a> for ValueList<'a> {
         Ok(array)
     }
 }
+
+fn has_valid_json_number_integer_prefix(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    if len == 0 {
+        return false;
+    }
+
+    let mut i = 0;
+    if bytes[i] == b'-' {
+        i += 1;
+        if i == len {
+            return false;
+        }
+    }
+
+    match bytes[i] {
+        b'0' => !matches!(bytes.get(i + 1), Some(b'0'..=b'9')),
+        b'1'..=b'9' => true,
+        _ => false,
+    }
+}
+
+fn has_valid_json_number_fraction(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let Some(dot) = bytes.iter().position(|&byte| byte == b'.') else {
+        return true;
+    };
+    matches!(bytes.get(dot + 1), Some(b'0'..=b'9'))
+}
+
 unsafe impl<'a> FromJson<'a> for ValueNumber {
     fn decode_json(
         parser: &mut jsony::json::Parser<'a>,
     ) -> Result<Self, &'static jsony::json::DecodeError> {
         //todo optimize
         let text = parser.at.consume_numeric_literal()?;
+        if !has_valid_json_number_integer_prefix(text) {
+            return Err(&DecodeError {
+                message: "Invalid number",
+            });
+        }
         if text.starts_with("-") {
             if text == "-0" {
                 return Ok(ValueNumber::F64(-0.0));
@@ -1251,9 +1290,17 @@ unsafe impl<'a> FromJson<'a> for ValueNumber {
                 return Ok(ValueNumber::U64(value));
             }
         }
+        if !has_valid_json_number_fraction(text) {
+            return Err(&DecodeError {
+                message: "Invalid number",
+            });
+        }
         match text.parse::<f64>() {
-            Ok(num) => Ok(ValueNumber::F64(num)),
+            Ok(num) if num.is_finite() => Ok(ValueNumber::F64(num)),
             Err(_) => Err(&DecodeError {
+                message: "Invalid number",
+            }),
+            Ok(_) => Err(&DecodeError {
                 message: "Invalid number",
             }),
         }

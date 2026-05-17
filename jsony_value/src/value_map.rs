@@ -101,7 +101,8 @@ use super::CapacityTag;
 
 /// A JSON object mapping string keys to values.
 ///
-/// `ValueMap` preserves insertion order and allows duplicate keys. For small
+/// `ValueMap` preserves insertion order and allows duplicate keys, with
+/// notable exceptions like the [`remove`] or [`swap_remove`] methods. For small
 /// maps (8 entries or fewer), lookups use linear scan. Larger maps build a
 /// hash index for O(1) lookup.
 ///
@@ -124,6 +125,8 @@ use super::CapacityTag;
 ///
 /// [`get`]: ValueMap::get
 /// [`get_all`]: ValueMap::get_all
+/// [`remove`]: ValueMap::remove
+/// [`swap_remove`]: ValueMap::swap_remove
 #[repr(C)]
 pub struct ValueMap<'a> {
     tag: CapacityTag,
@@ -194,24 +197,25 @@ impl<'a> ValueMapBuilder<'a> {
         r
     }
     fn try_reserve(&mut self, size: u32) -> bool {
-        let needed = self.len as u64 + size as u64;
+        let needed_entries = self.len as u64 + size as u64;
 
-        if needed < self.entry_capacity as u64 {
+        if needed_entries <= self.entry_capacity as u64 {
             return true;
         }
-        let capacity = self.entry_capacity + INDEX_ENTRY_COUNT as u32;
+        let needed_capacity = needed_entries + INDEX_ENTRY_COUNT as u64;
+        let capacity = self.entry_capacity as u64 + INDEX_ENTRY_COUNT as u64;
 
-        let mut target_capacity = if capacity == INDEX_ENTRY_COUNT as u32 {
-            MIN_CAPACITY
+        let mut target_capacity = if self.entry_capacity == 0 {
+            MIN_CAPACITY as u64
         } else {
             let Some(ok) = capacity.checked_mul(2) else {
                 return false;
             };
             ok | 0b1_000
-        } as u64;
-        if target_capacity <= needed {
+        };
+        if target_capacity < needed_capacity {
             // note since size as u32, this can't overflow
-            target_capacity = ((needed + 0b111) & (!0b111)) | 0b1_000
+            target_capacity = ((needed_capacity + 0b111) & (!0b111)) | 0b1_000
         }
         unsafe { self.try_reserve_inner(target_capacity) }
     }
@@ -375,7 +379,9 @@ impl<'a> Clone for ValueMap<'a> {
         }
         let mut new = ValueMap::new();
         unsafe {
-            new.try_reserve_inner(self.tag.capacity() as u64, false);
+            if !new.try_reserve_inner(self.tag.capacity() as u64, false) {
+                oom();
+            }
         }
         if let Some(index) = self.key_index() {
             unsafe {
@@ -389,8 +395,8 @@ impl<'a> Clone for ValueMap<'a> {
             unsafe {
                 new.ptr.add(i).write((key.clone(), value.clone()));
             }
+            new.len += 1;
         }
-        new.len = self.len;
         new
     }
 }
@@ -401,6 +407,13 @@ impl<'a> ValueMap<'a> {
             key.to_owned_in_place();
             value.to_owned_in_place();
         }
+    }
+
+    pub(crate) fn sort_all_objects(&mut self) {
+        for (_, value) in self.inner_entries_mut() {
+            value.sort_all_objects();
+        }
+        self.sort();
     }
 
     /// Converts borrowed data to owned, returning a `'static` lifetime map.
@@ -446,7 +459,7 @@ impl<'a> ValueMap<'a> {
     fn try_reserve(&mut self, size: u32, init_index: bool) -> bool {
         let needed = self.len as u64 + size as u64 + INDEX_ENTRY_COUNT as u64;
 
-        if needed < self.tag.capacity() as u64 {
+        if needed <= self.tag.capacity() as u64 {
             return true;
         }
         let capacity = self.tag.map_entry_capacity();
@@ -459,7 +472,7 @@ impl<'a> ValueMap<'a> {
             };
             ok | 0b1_000
         } as u64;
-        if target_capacity <= needed {
+        if target_capacity < needed {
             // note since size as u32, this can't overflow
             target_capacity = ((needed + 0b111) & (!0b111)) | 0b1_000
         }
@@ -559,7 +572,8 @@ impl<'a> ValueMap<'a> {
         }
     }
 
-    /// Removes the first entry with the given key, preserving order.
+    /// Removes an entry with the given key, preserving the current entry slice
+    /// order for the remaining entries.
     ///
     /// Returns the removed value, or [`None`] if the key was not found.
     pub fn remove(&mut self, key: &str) -> Option<Value<'a>> {
@@ -617,7 +631,7 @@ impl<'a> ValueMap<'a> {
         None
     }
 
-    /// Removes the first entry with the given key using swap-remove.
+    /// Removes an entry with the given key using swap-remove.
     ///
     /// This is faster than [`remove`] but does not preserve order. The last
     /// entry is moved into the removed entry's position.
@@ -760,7 +774,12 @@ impl<'a> ValueMap<'a> {
     /// Returns an iterator over all values matching the given key.
     ///
     /// Since `ValueMap` allows duplicate keys, this iterator yields all values
-    /// associated with the key.
+    /// associated with the key. Values are yielded in insertion order unless a
+    /// removal method such as [`remove`] or [`swap_remove`] has changed the map's
+    /// ordering.
+    ///
+    /// [`remove`]: ValueMap::remove
+    /// [`swap_remove`]: ValueMap::swap_remove
     #[inline]
     pub fn get_all<'m, 'k>(&'m self, key: &'k str) -> MatchIter<'a, 'm, 'k> {
         if let Some(index) = self.key_index() {

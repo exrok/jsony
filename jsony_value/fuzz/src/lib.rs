@@ -5,14 +5,19 @@ use std::fmt::Write;
 
 pub enum ValidationOutcome {
     Equivalent,
-    IgnoredInvalidSerdeJson { message: String },
+    BothRejected {
+        serde_json_error: String,
+        jsony_value_error: String,
+    },
 }
 
 pub struct ValidationError {
     path: JsonPath,
     issue: String,
     serde_json: Option<String>,
+    serde_json_error: Option<String>,
     jsony_value: Option<String>,
+    jsony_value_error: Option<String>,
 }
 
 impl ValidationError {
@@ -26,16 +31,27 @@ impl ValidationError {
             path: path.clone(),
             issue: issue.into(),
             serde_json: serde_value.map(format_serde_value),
+            serde_json_error: None,
             jsony_value: jsony_value.map(format_jsony_value),
+            jsony_value_error: None,
         }
     }
 
-    fn parse_error(path: &JsonPath, issue: impl Into<String>, serde_value: &SerdeValue) -> Self {
+    fn parse_mismatch(
+        path: &JsonPath,
+        issue: impl Into<String>,
+        serde_value: Option<&SerdeValue>,
+        serde_error: Option<String>,
+        jsony_value: Option<&Value<'_>>,
+        jsony_error: Option<String>,
+    ) -> Self {
         Self {
             path: path.clone(),
             issue: issue.into(),
-            serde_json: Some(format_serde_value(serde_value)),
-            jsony_value: None,
+            serde_json: serde_value.map(format_serde_value),
+            serde_json_error: serde_error,
+            jsony_value: jsony_value.map(format_jsony_value),
+            jsony_value_error: jsony_error,
         }
     }
 
@@ -70,10 +86,27 @@ impl ValidationError {
             output.push_str("diff:\n--- serde_json\n+++ jsony_value\n");
             push_diff_lines(output, '-', serde_json);
             push_diff_lines(output, '+', jsony_value);
-        } else if let Some(serde_json) = &self.serde_json {
-            output.push_str("serde_json:\n");
-            output.push_str(serde_json);
-            output.push('\n');
+        } else {
+            if let Some(serde_json) = &self.serde_json {
+                output.push_str("serde_json value:\n");
+                output.push_str(serde_json);
+                output.push('\n');
+            }
+            if let Some(error) = &self.serde_json_error {
+                output.push_str("serde_json error:\n");
+                output.push_str(error);
+                output.push('\n');
+            }
+            if let Some(jsony_value) = &self.jsony_value {
+                output.push_str("jsony_value value:\n");
+                output.push_str(jsony_value);
+                output.push('\n');
+            }
+            if let Some(error) = &self.jsony_value_error {
+                output.push_str("jsony_value error:\n");
+                output.push_str(error);
+                output.push('\n');
+            }
         }
     }
 }
@@ -90,7 +123,9 @@ impl std::fmt::Debug for ValidationError {
             .field("path", &self.path.to_string())
             .field("issue", &self.issue)
             .field("serde_json", &self.serde_json)
+            .field("serde_json_error", &self.serde_json_error)
             .field("jsony_value", &self.jsony_value)
+            .field("jsony_value_error", &self.jsony_value_error)
             .finish()
     }
 }
@@ -155,35 +190,51 @@ pub fn assert_serde_json_equivalence(data: &[u8]) {
 }
 
 pub fn is_serde_json_equivalent(data: &[u8]) -> bool {
-    let Ok(serde_value) = serde_json::from_slice::<SerdeValue>(data) else {
-        return true;
-    };
-
-    let Ok(jsony_value) = jsony::from_json_bytes::<Value<'_>>(data) else {
-        return false;
-    };
-
-    compare_values(&serde_value, &jsony_value)
+    match (
+        serde_json::from_slice::<SerdeValue>(data),
+        jsony::from_json_bytes::<Value<'_>>(data),
+    ) {
+        (Ok(serde_value), Ok(jsony_value)) => compare_values(&serde_value, &jsony_value),
+        (Err(_), Err(_)) => true,
+        _ => false,
+    }
 }
 
 pub fn validate_serde_json_equivalence(data: &[u8]) -> Result<ValidationOutcome, ValidationError> {
-    let serde_value = match serde_json::from_slice::<SerdeValue>(data) {
-        Ok(value) => value,
-        Err(error) => {
-            return Ok(ValidationOutcome::IgnoredInvalidSerdeJson {
-                message: error.to_string(),
+    let serde_result = serde_json::from_slice::<SerdeValue>(data);
+    let jsony_result = jsony::from_json_bytes::<Value<'_>>(data);
+
+    let (serde_value, jsony_value) = match (serde_result, jsony_result) {
+        (Ok(serde_value), Ok(jsony_value)) => (serde_value, jsony_value),
+        (Err(serde_error), Err(jsony_error)) => {
+            return Ok(ValidationOutcome::BothRejected {
+                serde_json_error: serde_error.to_string(),
+                jsony_value_error: jsony_error.to_string(),
             });
         }
+        (Ok(serde_value), Err(jsony_error)) => {
+            let path = JsonPath::default();
+            return Err(ValidationError::parse_mismatch(
+                &path,
+                "serde_json accepted input but jsony_value rejected it",
+                Some(&serde_value),
+                None,
+                None,
+                Some(jsony_error.to_string()),
+            ));
+        }
+        (Err(serde_error), Ok(jsony_value)) => {
+            let path = JsonPath::default();
+            return Err(ValidationError::parse_mismatch(
+                &path,
+                "serde_json rejected input but jsony_value accepted it",
+                None,
+                Some(serde_error.to_string()),
+                Some(&jsony_value),
+                None,
+            ));
+        }
     };
-
-    let path = JsonPath::default();
-    let jsony_value = jsony::from_json_bytes::<Value<'_>>(data).map_err(|error| {
-        ValidationError::parse_error(
-            &path,
-            format!("serde_json accepted input but jsony_value rejected it: {error:?}"),
-            &serde_value,
-        )
-    })?;
 
     let mut path = JsonPath::default();
     compare_values_detailed(&serde_value, &jsony_value, &mut path)?;
@@ -578,4 +629,45 @@ fn is_simple_path_key(key: &str) -> bool {
     }
 
     chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_inputs_must_be_rejected_by_both_parsers() {
+        let input = b"+1";
+
+        assert!(is_serde_json_equivalent(input));
+        match validate_serde_json_equivalence(input).unwrap() {
+            ValidationOutcome::BothRejected {
+                serde_json_error,
+                jsony_value_error,
+            } => {
+                assert!(!serde_json_error.is_empty());
+                assert!(!jsony_value_error.is_empty());
+            }
+            ValidationOutcome::Equivalent => panic!("invalid input should not decode"),
+        }
+    }
+
+    #[test]
+    fn parse_mismatch_report_prints_value_and_error() {
+        let path = JsonPath::default();
+        let jsony_value = Value::from(1u64);
+        let error = ValidationError::parse_mismatch(
+            &path,
+            "serde_json rejected input but jsony_value accepted it",
+            None,
+            Some("expected value at line 1 column 1".to_owned()),
+            Some(&jsony_value),
+            None,
+        );
+
+        let report = error.render_report_with_input(b"+1");
+        assert!(report.contains("input (escaped):\n+1"));
+        assert!(report.contains("serde_json error:\nexpected value at line 1 column 1"));
+        assert!(report.contains("jsony_value value:\n1"));
+    }
 }

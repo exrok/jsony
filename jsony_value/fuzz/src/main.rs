@@ -75,11 +75,8 @@ fn run_serde_json_equivalence(paths: Vec<PathBuf>) -> ExitCode {
             Ok(ValidationOutcome::Equivalent) => {
                 println!("ok {}", path.display());
             }
-            Ok(ValidationOutcome::IgnoredInvalidSerdeJson { message }) => {
-                println!(
-                    "skip {}: serde_json rejected input: {message}",
-                    path.display()
-                );
+            Ok(ValidationOutcome::BothRejected { .. }) => {
+                println!("ok {}: both parsers rejected input", path.display());
             }
             Err(error) => {
                 failed += 1;
