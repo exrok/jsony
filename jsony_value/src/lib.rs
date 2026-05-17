@@ -1236,6 +1236,9 @@ unsafe impl<'a> FromJson<'a> for ValueNumber {
         //todo optimize
         let text = parser.at.consume_numeric_literal()?;
         if text.starts_with("-") {
+            if text == "-0" {
+                return Ok(ValueNumber::F64(-0.0));
+            }
             if let Ok(value) = text.parse::<i64>() {
                 return Ok(ValueNumber::I64(value));
             }

@@ -3,6 +3,7 @@ name = "jsony_value-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
+default-run = "jsony_value-fuzz"
 
 [package.metadata]
 cargo-fuzz = true
@@ -11,7 +12,10 @@ cargo-fuzz = true
 jsony = "0.1.9"
 jsony_value = { path = ".." }
 libfuzzer-sys = "0.4"
-serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_json = { version = "1.0", features = [
+    "preserve_order",
+    "float_roundtrip",
+] }
 
 [[bin]]
 name = "binary_roundtrip"

@@ -1,0 +1,27 @@
+
+
+
+[action.build-macros]
+pwd = "./macro_preprocessor/"
+cmd = ["cargo", "run", "../jsony_macros_source", "../jsony_macros"]
+cache.key = [
+    { modified = "./macro_preprocessor/" },
+    { modified = "./jsony_macros_source/" },
+]
+
+[test.jsony_unit_tests]
+pwd = "./jsony"
+cmd = ["cargo", "test"]
+require = ["build-jsony-macros"]
+
+[test.typos]
+cmd = ["typos"]
+
+[action.jsony_tester]
+pwd = "./jsony_tester"
+cmd = ["cargo", "run"]
+require = ["build-jsony-macros"]
+
+[action.macro_tester]
+pwd = "./jsony_macros_source"
+cmd = ["cargo", "run"]

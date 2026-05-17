@@ -49,20 +49,32 @@ impl ValidationError {
 
     pub fn render_report(&self) -> String {
         let mut output = String::new();
+        self.push_report_body(&mut output);
+        output
+    }
+
+    pub fn render_report_with_input(&self, input: &[u8]) -> String {
+        let mut output = String::new();
+        output.push_str("input (escaped):\n");
+        push_escaped_input(&mut output, input);
+        output.push('\n');
+        self.push_report_body(&mut output);
+        output
+    }
+
+    fn push_report_body(&self, output: &mut String) {
         let _ = writeln!(output, "path: {}", self.path);
         let _ = writeln!(output, "issue: {}", self.issue);
 
         if let (Some(serde_json), Some(jsony_value)) = (&self.serde_json, &self.jsony_value) {
             output.push_str("diff:\n--- serde_json\n+++ jsony_value\n");
-            push_diff_lines(&mut output, '-', serde_json);
-            push_diff_lines(&mut output, '+', jsony_value);
+            push_diff_lines(output, '-', serde_json);
+            push_diff_lines(output, '+', jsony_value);
         } else if let Some(serde_json) = &self.serde_json {
             output.push_str("serde_json:\n");
             output.push_str(serde_json);
             output.push('\n');
         }
-
-        output
     }
 }
 
@@ -138,7 +150,7 @@ pub fn assert_serde_json_equivalence(data: &[u8]) {
 
     match validate_serde_json_equivalence(data) {
         Ok(_) => panic!("serde_json and jsony_value equivalence check failed"),
-        Err(error) => panic!("{error}"),
+        Err(error) => panic!("{}", error.render_report_with_input(data)),
     }
 }
 
@@ -539,6 +551,19 @@ fn format_jsony_value(value: &Value<'_>) -> String {
 fn push_diff_lines(output: &mut String, marker: char, value: &str) {
     for line in value.lines() {
         let _ = writeln!(output, "{marker} {line}");
+    }
+}
+
+fn push_escaped_input(output: &mut String, input: &[u8]) {
+    if input.is_empty() {
+        output.push_str("<empty>");
+        return;
+    }
+
+    for byte in input {
+        for escaped in std::ascii::escape_default(*byte) {
+            output.push(char::from(escaped));
+        }
     }
 }
 
