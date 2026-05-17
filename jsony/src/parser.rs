@@ -1217,13 +1217,13 @@ impl<'j> Parser<'j> {
         }
         loop {
             match key_from_json(key_ptr, self) {
-                Ok(value) => value,
+                Ok(()) => (),
                 Err(err) => {
                     if std::ptr::addr_eq(err, &EXPECTED_NUMBER_BUT_FOUND_STRING) {
                         debug_assert_eq!(self.at.ctx.input[self.at.index], b'"');
                         self.at.index += 1;
                         match key_from_json(key_ptr, self) {
-                            Ok(value) => {
+                            Ok(()) => {
                                 if self.at.ctx.input.get(self.at.index) != Some(&b'"') {
                                     return (
                                         true,
@@ -1231,12 +1231,11 @@ impl<'j> Parser<'j> {
                                     );
                                 }
                                 self.at.index += 1;
-                                value
                             }
-                            Err(err) => return (true, Err(err)),
+                            Err(err) => return (false, Err(err)),
                         }
                     } else {
-                        return (true, Err(err));
+                        return (false, Err(err));
                     }
                 }
             };
@@ -1244,17 +1243,17 @@ impl<'j> Parser<'j> {
                 return (true, Err(err));
             }
             match val_from_json(val_ptr, self) {
-                Ok(value) => value,
+                Ok(()) => (),
                 Err(err) => return (true, Err(err)),
             };
             match func(key_ptr, val_ptr) {
                 Ok(()) => (),
-                Err(err) => return (true, Err(err)),
+                Err(err) => return (false, Err(err)),
             }
             match self.at.object_step_at_key() {
                 Ok(Some(())) => (),
                 Ok(None) => return (false, Ok(())),
-                Err(err) => return (true, Err(err)),
+                Err(err) => return (false, Err(err)),
             }
         }
     }
