@@ -234,8 +234,10 @@ impl<'a> ValueMapBuilder<'a> {
         }
 
         if self.entry_capacity != 0 {
-            let layout =
-                Layout::array::<ObjectEntry<'static>>(self.entry_capacity as usize).unwrap();
+            let layout = Layout::array::<ObjectEntry<'static>>(
+                self.entry_capacity as usize + INDEX_ENTRY_COUNT,
+            )
+            .unwrap();
             let layout = layout.align_to(align_of::<ObjectKeyIndex>()).unwrap();
             unsafe {
                 std::alloc::dealloc(self.ptr.sub(INDEX_ENTRY_COUNT).as_ptr() as *mut u8, layout);
@@ -571,8 +573,8 @@ impl<'a> ValueMap<'a> {
             };
             let hash = index.hasher.hash_one(key.as_bytes());
             let entry_index = index.table.remove_entry(hash, |idx| {
-                let (key, _) = unsafe { &*(self.ptr.add(*idx as usize).as_ptr()) };
-                key.as_bytes() == key.as_bytes()
+                let (entry_key, _) = unsafe { &*(self.ptr.add(*idx as usize).as_ptr()) };
+                key.as_bytes() == entry_key.as_bytes()
             })?;
             let ptr = unsafe { self.ptr.add(entry_index as usize) };
             let (_, value) = unsafe { ptr.read() };
@@ -634,8 +636,8 @@ impl<'a> ValueMap<'a> {
             };
             let hash = index.hasher.hash_one(key.as_bytes());
             let entry_index = index.table.remove_entry(hash, |idx| {
-                let (key, _) = unsafe { &*(self.ptr.add(*idx as usize).as_ptr()) };
-                key.as_bytes() == key.as_bytes()
+                let (entry_key, _) = unsafe { &*(self.ptr.add(*idx as usize).as_ptr()) };
+                key.as_bytes() == entry_key.as_bytes()
             })?;
             let (_, value) = unsafe { self.ptr.add(entry_index as usize).read() };
             if self.len - 1 != entry_index {
@@ -694,8 +696,8 @@ impl<'a> ValueMap<'a> {
         if let Some(index) = self.key_index() {
             let hash = index.hasher.hash_one(key.as_bytes());
             let index = index.table.get(hash, |idx| {
-                let (key, _) = unsafe { &*(self.ptr.add(*idx as usize).as_ptr()) };
-                key.as_bytes() == key.as_bytes()
+                let (entry_key, _) = unsafe { &*(self.ptr.add(*idx as usize).as_ptr()) };
+                key.as_bytes() == entry_key.as_bytes()
             })?;
             let (_, value) = unsafe { self.ptr.add(*index as usize).as_mut() };
             return Some(value);
@@ -742,8 +744,8 @@ impl<'a> ValueMap<'a> {
         if let Some(index) = self.key_index() {
             let hash = index.hasher.hash_one(key.as_bytes());
             let index = index.table.get(hash, |idx| {
-                let (key, _) = unsafe { &*(self.ptr.add(*idx as usize).as_ptr()) };
-                key.as_bytes() == key.as_bytes()
+                let (entry_key, _) = unsafe { &*(self.ptr.add(*idx as usize).as_ptr()) };
+                key.as_bytes() == entry_key.as_bytes()
             })?;
             let (_, value) = unsafe { &*(self.ptr.add(*index as usize).as_ptr()) };
             return Some(value);

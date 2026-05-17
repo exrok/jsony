@@ -56,6 +56,17 @@ fn text() {
 }
 
 #[test]
+fn other_borrowed_to_owned_copies_buffer() {
+    let owned = {
+        let source = String::from("raw-token");
+        ValueString::other_borrowed(source.as_str()).to_owned()
+    };
+
+    assert_eq!(owned.as_str(), "raw-token");
+    assert_static(owned);
+}
+
+#[test]
 fn conversions() {
     macro_rules! assert_from_eq {
         ($value: expr, $expected_string: literal) => {
@@ -135,6 +146,17 @@ fn empty_builder_map_is_drop_safe_and_insertable() {
     let mut map = jsony_value::ValueMapBuilder::new().build();
     map.entry("first").or_default();
     assert_eq!(map.get("first"), Some(&Value::NULL));
+}
+
+#[test]
+fn value_map_builder_growth_is_drop_safe() {
+    let mut builder = jsony_value::ValueMapBuilder::new();
+    for i in 0..32 {
+        builder.insert(format!("key{i}").into(), Value::from(i as i64));
+    }
+
+    let map = builder.build();
+    assert_eq!(map.get("key31"), Some(&Value::from(31)));
 }
 
 #[test]

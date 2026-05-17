@@ -920,11 +920,15 @@ impl ValueString<'_> {
         &*self
     }
     pub(crate) fn to_owned_in_place(&mut self) {
-        if self.tag != CapacityTag::BORROWED_STRING {
-            return;
+        let owned_tag = match self.tag {
+            tag if tag == CapacityTag::BORROWED_STRING => CapacityTag::OWNED_STRING,
+            tag if tag == CapacityTag::BORROWED_OTHER => CapacityTag::OWNED_OTHER,
+            _ => return,
+        };
+        if self.len != 0 {
+            self.ptr = strndup(self.ptr, self.len as usize);
         }
-        self.ptr = strndup(self.ptr, self.len as usize);
-        self.tag = CapacityTag::OWNED_STRING;
+        self.tag = owned_tag;
     }
 
     /// Converts borrowed data to owned, returning a `'static` lifetime string.
