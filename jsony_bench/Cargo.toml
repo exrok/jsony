@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 perf-event2 = "0.7.4"
+jsony = { version = "0.1.9", default-features = false }
+jsony_macros = "0.1.8"
