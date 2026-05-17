@@ -221,6 +221,10 @@ fn escapes() {
         obj(""),
         "Should decoded needless escaped text"
     );
+    assert!(
+        from_json::<String>("\"AA4\\uDCACA4\\\"D\\\"\"\r\r").is_err(),
+        "lone trailing surrogate escape should be rejected"
+    );
 }
 
 #[test]

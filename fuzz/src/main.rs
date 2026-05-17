@@ -1,4 +1,4 @@
-use jsony_value_fuzz::{validate_serde_json_equivalence, ValidationOutcome};
+use jsony_fuzz::{validate_serde_json_equivalence, ValidationOutcome};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -96,7 +96,7 @@ fn run_serde_json_equivalence(paths: Vec<PathBuf>) -> ExitCode {
 fn print_usage() {
     let program = std::env::args_os()
         .next()
-        .unwrap_or_else(|| OsString::from("jsony_value-fuzz"));
+        .unwrap_or_else(|| OsString::from("jsony-fuzz"));
 
     eprintln!(
         "usage: {} <target> <input> [input ...]",

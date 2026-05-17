@@ -19,7 +19,7 @@ jsony = "0.1.9"
 default = []
 
 [workspace]
-members = ["benchmark", "fuzz"]
+members = ["benchmark"]
 
 [patch.crates-io]
 jsony = { path = "/home/user/Projects/git/jsony/jsony" }

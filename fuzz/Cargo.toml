@@ -1,21 +1,25 @@
 [package]
-name = "jsony_value-fuzz"
+name = "jsony-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
-default-run = "jsony_value-fuzz"
+default-run = "jsony-fuzz"
 
 [package.metadata]
 cargo-fuzz = true
 
 [dependencies]
-jsony = "0.1.9"
-jsony_value = { path = ".." }
+jsony = { version = "0.1.9", path = "../jsony" }
+jsony_value = { path = "../jsony_value" }
 libfuzzer-sys = "0.4"
 serde_json = { version = "1.0", features = [
     "preserve_order",
     "float_roundtrip",
 ] }
+
+[patch.crates-io]
+jsony = { path = "../jsony" }
+jsony_macros = { path = "../jsony_macros" }
 
 [[bin]]
 name = "binary_roundtrip"

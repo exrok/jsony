@@ -221,10 +221,14 @@ fn parse_unicode_escape(
         }
     };
 
-    if !(0xD800..=0xDBFF).contains(&n) {
+    if !(0xD800..=0xDFFF).contains(&n) {
         // Every u16 outside of the surrogate ranges is guaranteed to be a
         // legal char.
         return Ok((index, push_wtf8_codepoint(n as u32, scratch)));
+    }
+
+    if n >= 0xDC00 {
+        return Err(());
     }
 
     // n is a leading surrogate, we now expect a trailing surrogate.
