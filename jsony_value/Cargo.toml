@@ -13,7 +13,13 @@ rust-version = "1.84"
 
 [dependencies]
 foldhash = { version = "0.2", default-features = false }
-jsony = "0.1.8"
+jsony = "0.1.9"
 
 [features]
 default = []
+
+[workspace]
+members = ["benchmark", "fuzz"]
+
+[patch.crates-io]
+jsony = { path = "/home/user/Projects/git/jsony/jsony" }

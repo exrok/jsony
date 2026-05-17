@@ -164,7 +164,6 @@ impl<'a> ValueList<'a> {
             self.grow_one();
         }
         unsafe {
-            println!("{} {}", len, self.tag.capacity());
             let end = self.ptr.as_ptr().add(len as usize);
             std::ptr::write(end, value);
             self.len = len + 1;

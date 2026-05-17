@@ -10,14 +10,20 @@ fn static_string() {
     let ptr_before = s.as_str().as_ptr();
     let owned = s.to_owned();
     let ptr_after = owned.as_str().as_ptr();
-    assert_eq!(ptr_before, ptr_after, "to_owned should not clone static strings");
+    assert_eq!(
+        ptr_before, ptr_after,
+        "to_owned should not clone static strings"
+    );
     assert_static(owned);
 
     let s2 = ValueString::from_static("clone test");
     let ptr_before = s2.as_str().as_ptr();
     let cloned = s2.clone();
     let ptr_after = cloned.as_str().as_ptr();
-    assert_eq!(ptr_before, ptr_after, "clone should not allocate for static strings");
+    assert_eq!(
+        ptr_before, ptr_after,
+        "clone should not allocate for static strings"
+    );
 
     drop(cloned);
     drop(s2);
@@ -107,6 +113,41 @@ fn map() {
 }
 
 #[test]
+fn json_map_decode_handles_escaped_keys() {
+    let value: Value<'_> = jsony::from_json(r#"{"escaped\nkey": 1}"#).unwrap();
+
+    assert_eq!(value["escaped\nkey"], Value::from(1u64));
+}
+
+#[test]
+fn malformed_object_key_does_not_drop_uninitialized_key() {
+    let input = b"{\"111112>1'111111\0\0\0 150+\0\0\0\0\0[\t";
+
+    assert!(jsony::from_json_bytes::<Value<'_>>(input).is_err());
+}
+
+#[test]
+fn empty_builder_map_is_drop_safe_and_insertable() {
+    let map = jsony_value::ValueMapBuilder::new().build();
+    assert!(map.entries().is_empty());
+    drop(map);
+
+    let mut map = jsony_value::ValueMapBuilder::new().build();
+    map.entry("first").or_default();
+    assert_eq!(map.get("first"), Some(&Value::NULL));
+}
+
+#[test]
+fn indexed_map_clone_is_drop_safe_and_lookup_works() {
+    let map = ValueMap::from_iter((0..32).map(|i| (format!("key{i:02}"), Value::from(i))));
+    let cloned = map.clone();
+
+    assert_eq!(cloned.get("key10"), Some(&Value::from(10)));
+    drop(map);
+    assert_eq!(cloned.get("key31"), Some(&Value::from(31)));
+}
+
+#[test]
 fn entry_or_insert() {
     let mut map = ValueMap::new();
     map.entry("a").or_insert(1.into());
@@ -138,10 +179,10 @@ fn entry_remove() {
 fn entry_large_map() {
     let mut map = ValueMap::new();
     for i in 0..20 {
-        map.entry(format!("key{i}")).or_insert(Value::from(i as i64));
+        map.entry(format!("key{i}"))
+            .or_insert(Value::from(i as i64));
     }
-    map.entry("key10")
-        .and_modify(|v| *v = 100.into());
+    map.entry("key10").and_modify(|v| *v = 100.into());
     assert_eq!(map.get("key10"), Some(&Value::from(100)));
 }
 
@@ -155,7 +196,8 @@ fn entry_or_insert_with() {
 #[test]
 fn entry_or_insert_with_key() {
     let mut map = ValueMap::new();
-    map.entry("length").or_insert_with_key(|k| Value::from(k.len() as i64));
+    map.entry("length")
+        .or_insert_with_key(|k| Value::from(k.len() as i64));
     assert_eq!(map.get("length"), Some(&Value::from(6)));
 }
 

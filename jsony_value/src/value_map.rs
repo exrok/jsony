@@ -275,6 +275,10 @@ impl<'a> ValueMapBuilder<'a> {
     /// For maps with more than 8 entries, this builds a hash index for O(1) lookups.
     pub fn build(self) -> ValueMap<'a> {
         let this = std::mem::ManuallyDrop::new(self);
+        if this.entry_capacity == 0 {
+            return ValueMap::new();
+        }
+
         let map = ValueMap {
             tag: CapacityTag::new_map(this.entry_capacity + INDEX_ENTRY_COUNT as u32),
             len: this.len,
@@ -373,7 +377,7 @@ impl<'a> Clone for ValueMap<'a> {
         }
         if let Some(index) = self.key_index() {
             unsafe {
-                self.ptr
+                new.ptr
                     .sub(INDEX_ENTRY_COUNT)
                     .cast::<ObjectKeyIndex>()
                     .write(index.clone());

@@ -46,8 +46,8 @@ fn oom() -> ! {
     panic!()
 }
 use jsony::{
-    json::{DecodeError, Peek},
-    FromJson,
+    json::{AlwaysArray, AlwaysNumber, AlwaysObject, AlwaysString, AnyValue, DecodeError, Peek},
+    FromJson, TextWriter, ToJson,
 };
 use strings::fmt_string;
 pub use value_list::ValueList;
@@ -376,11 +376,7 @@ impl std::fmt::Display for Value<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.as_ref() {
             ValueRef::Null(_) => f.write_str("null"),
-            ValueRef::Number(n) => match n {
-                ValueNumber::U64(n) => n.fmt(f),
-                ValueNumber::I64(n) => n.fmt(f),
-                ValueNumber::F64(n) => n.fmt(f),
-            },
+            ValueRef::Number(n) => n.fmt(f),
             ValueRef::String(s) => fmt_string(s, f),
             ValueRef::Other(s) => fmt_string(s, f),
             ValueRef::Map(map) => {
@@ -413,6 +409,76 @@ impl std::fmt::Display for Value<'_> {
         }
     }
 }
+
+impl ToJson for ValueNumber {
+    type Kind = AlwaysNumber;
+
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AlwaysNumber {
+        match self {
+            ValueNumber::U64(n) => n.encode_json__jsony(output),
+            ValueNumber::I64(n) => n.encode_json__jsony(output),
+            ValueNumber::F64(n) => n.encode_json__jsony(output),
+        }
+    }
+}
+
+impl ToJson for ValueString<'_> {
+    type Kind = AlwaysString;
+
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AlwaysString {
+        self.as_str().encode_json__jsony(output)
+    }
+}
+
+impl ToJson for ValueList<'_> {
+    type Kind = AlwaysArray;
+
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AlwaysArray {
+        self.as_slice().encode_json__jsony(output)
+    }
+}
+
+impl ToJson for ValueMap<'_> {
+    type Kind = AlwaysObject;
+
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AlwaysObject {
+        output.start_json_object();
+        for (key, value) in self.entries() {
+            key.encode_json__jsony(output);
+            output.push_colon();
+            value.encode_json__jsony(output);
+            output.push_comma();
+        }
+        output.end_json_object()
+    }
+}
+
+impl ToJson for Value<'_> {
+    type Kind = AnyValue;
+
+    fn encode_json__jsony(&self, output: &mut TextWriter) -> AnyValue {
+        match self.as_ref() {
+            ValueRef::Null(_) => output.push_str("null"),
+            ValueRef::Number(n) => {
+                n.encode_json__jsony(output);
+            }
+            ValueRef::String(s) | ValueRef::Other(s) => {
+                s.encode_json__jsony(output);
+            }
+            ValueRef::Map(map) => {
+                map.encode_json__jsony(output);
+            }
+            ValueRef::List(list) => {
+                list.encode_json__jsony(output);
+            }
+            ValueRef::Boolean(boolean) => {
+                (boolean.value != 0).encode_json__jsony(output);
+            }
+        }
+        AnyValue
+    }
+}
+
 impl std::fmt::Debug for Value<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.as_ref() {
@@ -1127,12 +1193,27 @@ unsafe impl<'a> FromJson<'a> for ValueMap<'a> {
     fn decode_json(
         parser: &mut jsony::json::Parser<'a>,
     ) -> Result<Self, &'static jsony::json::DecodeError> {
+        if parser.peek()? != Peek::Object {
+            return Err(&DecodeError {
+                message: "Expected an object",
+            });
+        }
+
         let mut map = ValueMapBuilder::new();
-        parser.decode_object_sequence::<ValueString<'a>, Value<'a>>(|key, value| {
+        if parser.at.enter_seen_object_at_first_key()?.is_none() {
+            return Ok(map.build());
+        }
+
+        loop {
+            let key = ValueString::decode_json(parser)?;
+            parser.at.discard_colon()?;
+            let value = Value::decode_json(parser)?;
             map.insert(key, value);
-            Ok(())
-        })?;
-        Ok(map.build())
+
+            if parser.at.object_step_at_key()?.is_none() {
+                return Ok(map.build());
+            }
+        }
     }
 }
 unsafe impl<'a> FromJson<'a> for ValueList<'a> {
