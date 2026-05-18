@@ -1,4 +1,4 @@
-use std::hint::black_box;
+use std::{fs, hint::black_box, path::PathBuf};
 
 use jsony_bench::{Bench, BenchParameters, Router};
 use jsony_value::{
@@ -10,6 +10,7 @@ const MEDIUM_TEXT: &str =
     "jsony_value benchmark medium text with punctuation, spaces, and digits 0123456789";
 const ESCAPED_TEXT: &str = "line one\nline two\twith tab \"quote\" and slash \\";
 const INPUT_DISTRIBUTION_LEN: usize = 32;
+const SELF_FIXTURE_RELATIVE_PATH: &str = "../../jsony_bench/fixture/self.json";
 
 fn main() {
     benchmark_router().eval_from_env();
@@ -94,6 +95,14 @@ fn bench_parse(bench: &mut Bench<'_>) {
                 jsony::from_json(black_box(corpus[(i as usize) % len].as_str())).unwrap();
             black_box(list);
         });
+    });
+
+    bench.named("fixture").named("self").func({
+        let json = read_self_fixture_json();
+        move || {
+            let value: Value<'_> = jsony::from_json(black_box(json.as_str())).unwrap();
+            black_box(value);
+        }
     });
 }
 
@@ -845,6 +854,16 @@ fn number_values() -> Vec<NumberCase> {
     ]
 }
 
+fn read_self_fixture_json() -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(SELF_FIXTURE_RELATIVE_PATH);
+    fs::read_to_string(&path).unwrap_or_else(|err| {
+        panic!(
+            "failed to read JSON benchmark fixture {}: {err}",
+            path.display()
+        )
+    })
+}
+
 fn map_sizes() -> [usize; 3] {
     [8, 32, 160]
 }
@@ -1223,6 +1242,14 @@ mod tests {
                 assert!(count_nodes(&parsed) > 0);
             }
         }
+    }
+
+    #[test]
+    fn self_fixture_parses() {
+        let json = read_self_fixture_json();
+        let parsed: Value<'_> =
+            jsony::from_json(&json).unwrap_or_else(|err| panic!("self fixture failed: {err:?}"));
+        assert!(count_nodes(&parsed) > 0);
     }
 
     #[test]

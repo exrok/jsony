@@ -1,3 +1,6 @@
+[profile.release]
+debug = 1
+
 [workspace]
 members = ["jsony_bench", "jsony_value", "jsony_value/benchmark"]
 resolver = "2"

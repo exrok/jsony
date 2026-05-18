@@ -17,4 +17,3 @@ jsony = "0.1.9"
 
 [features]
 default = []
-

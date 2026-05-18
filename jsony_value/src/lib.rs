@@ -1207,19 +1207,19 @@ unsafe impl<'a> FromJson<'a> for ValueMap<'a> {
         }
 
         let mut map = ValueMapBuilder::new();
-        if parser.at.enter_seen_object_at_first_key()?.is_none() {
-            return Ok(map.build());
-        }
+        let mut key = match parser.at.enter_seen_object(&mut parser.scratch)? {
+            Some(key) => value_string_from_parser_text(&parser.at.ctx, key),
+            None => return Ok(map.build()),
+        };
 
         loop {
-            let key = ValueString::decode_json(parser)?;
-            parser.at.discard_colon()?;
             let value = Value::decode_json(parser)?;
             map.insert(key, value);
 
-            if parser.at.object_step_at_key()?.is_none() {
-                return Ok(map.build());
-            }
+            key = match parser.at.object_step(&mut parser.scratch)? {
+                Some(key) => value_string_from_parser_text(&parser.at.ctx, key),
+                None => return Ok(map.build()),
+            };
         }
     }
 }
@@ -1237,26 +1237,76 @@ unsafe impl<'a> FromJson<'a> for ValueList<'a> {
     }
 }
 
-fn has_valid_json_number_integer_prefix(text: &str) -> bool {
+static INVALID_NUMBER: DecodeError = DecodeError {
+    message: "Invalid number",
+};
+
+fn decode_json_integer_fast_path(text: &str) -> Result<Option<ValueNumber>, &'static DecodeError> {
     let bytes = text.as_bytes();
     let len = bytes.len();
     if len == 0 {
-        return false;
+        return Err(&INVALID_NUMBER);
     }
 
     let mut i = 0;
-    if bytes[i] == b'-' {
+    let negative = bytes[i] == b'-';
+    if negative {
         i += 1;
         if i == len {
-            return false;
+            return Err(&INVALID_NUMBER);
         }
     }
 
-    match bytes[i] {
-        b'0' => !matches!(bytes.get(i + 1), Some(b'0'..=b'9')),
-        b'1'..=b'9' => true,
-        _ => false,
+    let mut value = match bytes[i] {
+        b'0' => {
+            i += 1;
+            if i == len {
+                return Ok(Some(if negative {
+                    ValueNumber::F64(-0.0)
+                } else {
+                    ValueNumber::U64(0)
+                }));
+            }
+            if bytes[i].is_ascii_digit() {
+                return Err(&INVALID_NUMBER);
+            }
+            return Ok(None);
+        }
+        b'1'..=b'9' => {
+            let value = (bytes[i] - b'0') as u64;
+            i += 1;
+            value
+        }
+        _ => return Err(&INVALID_NUMBER),
+    };
+
+    while i < len {
+        let digit = bytes[i].wrapping_sub(b'0');
+        if digit > 9 {
+            return Ok(None);
+        }
+        let digit = digit as u64;
+        if value > (u64::MAX - digit) / 10 {
+            return Ok(None);
+        }
+        value = value * 10 + digit;
+        i += 1;
     }
+
+    finish_json_integer(negative, value)
+}
+
+#[inline]
+fn is_json_numeric_literal_byte(byte: u8) -> bool {
+    matches!(byte, b'0'..=b'9' | b'+' | b'-' | b'.' | b'e' | b'E')
+}
+
+#[inline]
+fn scan_json_numeric_literal_end(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() && is_json_numeric_literal_byte(bytes[index]) {
+        index += 1;
+    }
+    index
 }
 
 fn has_valid_json_number_fraction(text: &str) -> bool {
@@ -1267,43 +1317,134 @@ fn has_valid_json_number_fraction(text: &str) -> bool {
     matches!(bytes.get(dot + 1), Some(b'0'..=b'9'))
 }
 
+#[inline]
+fn finish_json_float(text: &str) -> Result<ValueNumber, &'static DecodeError> {
+    if !has_valid_json_number_fraction(text) {
+        return Err(&INVALID_NUMBER);
+    }
+    match text.parse::<f64>() {
+        Ok(num) if num.is_finite() => Ok(ValueNumber::F64(num)),
+        Err(_) => Err(&INVALID_NUMBER),
+        Ok(_) => Err(&INVALID_NUMBER),
+    }
+}
+
+#[inline]
+fn finish_json_integer(
+    negative: bool,
+    value: u64,
+) -> Result<Option<ValueNumber>, &'static DecodeError> {
+    if negative {
+        const I64_MIN_MAGNITUDE: u64 = i64::MAX as u64 + 1;
+        if value == I64_MIN_MAGNITUDE {
+            Ok(Some(ValueNumber::I64(i64::MIN)))
+        } else if value <= i64::MAX as u64 {
+            Ok(Some(ValueNumber::I64(-(value as i64))))
+        } else {
+            Ok(None)
+        }
+    } else {
+        Ok(Some(ValueNumber::U64(value)))
+    }
+}
+
+fn decode_json_number_fast_path(
+    parser: &mut jsony::json::Parser<'_>,
+) -> Result<ValueNumber, &'static DecodeError> {
+    let Some(first) = parser.at.eat_whitespace() else {
+        return Err(&INVALID_NUMBER);
+    };
+    if !matches!(first, b'-' | b'0'..=b'9') {
+        let text = parser.at.consume_numeric_literal()?;
+        if let Some(value) = decode_json_integer_fast_path(text)? {
+            return Ok(value);
+        }
+        return finish_json_float(text);
+    }
+
+    let bytes = parser.at.ctx.as_bytes();
+    let start = parser.at.index;
+    let len = bytes.len();
+    let negative = first == b'-';
+    let mut index = start + usize::from(negative);
+
+    if index == len {
+        parser.at.index = index;
+        return Err(&INVALID_NUMBER);
+    }
+
+    let mut value = match bytes[index] {
+        b'0' => {
+            index += 1;
+            if index == len || !is_json_numeric_literal_byte(bytes[index]) {
+                parser.at.index = index;
+                return Ok(if negative {
+                    ValueNumber::F64(-0.0)
+                } else {
+                    ValueNumber::U64(0)
+                });
+            }
+            if bytes[index].is_ascii_digit() {
+                parser.at.index = scan_json_numeric_literal_end(bytes, index);
+                return Err(&INVALID_NUMBER);
+            }
+            let end = scan_json_numeric_literal_end(bytes, index);
+            parser.at.index = end;
+            let text = unsafe { std::str::from_utf8_unchecked(&bytes[start..end]) };
+            return finish_json_float(text);
+        }
+        b'1'..=b'9' => {
+            let value = (bytes[index] - b'0') as u64;
+            index += 1;
+            value
+        }
+        _ => {
+            parser.at.index = scan_json_numeric_literal_end(bytes, start);
+            return Err(&INVALID_NUMBER);
+        }
+    };
+
+    while index < len {
+        let byte = bytes[index];
+        let digit = byte.wrapping_sub(b'0');
+        if digit <= 9 {
+            let digit = digit as u64;
+            if value > (u64::MAX - digit) / 10 {
+                let end = scan_json_numeric_literal_end(bytes, index);
+                parser.at.index = end;
+                let text = unsafe { std::str::from_utf8_unchecked(&bytes[start..end]) };
+                return finish_json_float(text);
+            }
+            value = value * 10 + digit;
+            index += 1;
+            continue;
+        }
+
+        if is_json_numeric_literal_byte(byte) {
+            let end = scan_json_numeric_literal_end(bytes, index);
+            parser.at.index = end;
+            let text = unsafe { std::str::from_utf8_unchecked(&bytes[start..end]) };
+            return finish_json_float(text);
+        }
+
+        break;
+    }
+
+    parser.at.index = index;
+    match finish_json_integer(negative, value)? {
+        Some(value) => Ok(value),
+        None => {
+            let text = unsafe { std::str::from_utf8_unchecked(&bytes[start..index]) };
+            finish_json_float(text)
+        }
+    }
+}
+
 unsafe impl<'a> FromJson<'a> for ValueNumber {
     fn decode_json(
         parser: &mut jsony::json::Parser<'a>,
     ) -> Result<Self, &'static jsony::json::DecodeError> {
-        //todo optimize
-        let text = parser.at.consume_numeric_literal()?;
-        if !has_valid_json_number_integer_prefix(text) {
-            return Err(&DecodeError {
-                message: "Invalid number",
-            });
-        }
-        if text.starts_with("-") {
-            if text == "-0" {
-                return Ok(ValueNumber::F64(-0.0));
-            }
-            if let Ok(value) = text.parse::<i64>() {
-                return Ok(ValueNumber::I64(value));
-            }
-        } else {
-            if let Ok(value) = text.parse::<u64>() {
-                return Ok(ValueNumber::U64(value));
-            }
-        }
-        if !has_valid_json_number_fraction(text) {
-            return Err(&DecodeError {
-                message: "Invalid number",
-            });
-        }
-        match text.parse::<f64>() {
-            Ok(num) if num.is_finite() => Ok(ValueNumber::F64(num)),
-            Err(_) => Err(&DecodeError {
-                message: "Invalid number",
-            }),
-            Ok(_) => Err(&DecodeError {
-                message: "Invalid number",
-            }),
-        }
+        decode_json_number_fast_path(parser)
     }
 }
 
@@ -1337,9 +1478,14 @@ unsafe impl<'a> FromJson<'a> for ValueString<'a> {
         parser: &mut jsony::json::Parser<'a>,
     ) -> Result<Self, &'static jsony::json::DecodeError> {
         let result = parser.at.take_string(&mut parser.scratch)?;
-        match parser.at.ctx.try_extend_lifetime(result) {
-            Some(value) => Ok(ValueString::from_borrowed(value)),
-            None => Ok(ValueString::from_owned(result.into())),
-        }
+        Ok(value_string_from_parser_text(&parser.at.ctx, result))
+    }
+}
+
+#[inline]
+fn value_string_from_parser_text<'a>(ctx: &jsony::text::Ctx<'a>, text: &str) -> ValueString<'a> {
+    match ctx.try_extend_lifetime(text) {
+        Some(value) => ValueString::from_borrowed(value),
+        None => ValueString::from_owned(text.into()),
     }
 }
