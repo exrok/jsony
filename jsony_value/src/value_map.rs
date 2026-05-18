@@ -258,9 +258,12 @@ impl<'a> ValueMapBuilder<'a> {
     /// # Panics
     ///
     /// Panics if memory allocation fails.
+    #[inline]
     pub fn insert(&mut self, key: ValueString<'a>, value: Value<'a>) {
         let len = self.len;
-        self.reserve(1);
+        if len == self.entry_capacity {
+            self.grow_one();
+        }
         let ptr = self.ptr;
 
         let ret = unsafe { ptr.add(len as usize) };
@@ -268,6 +271,12 @@ impl<'a> ValueMapBuilder<'a> {
             ret.write((key, value));
         }
         self.len += 1;
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn grow_one(&mut self) {
+        self.reserve(1);
     }
 
     fn reserve(&mut self, size: u32) {
