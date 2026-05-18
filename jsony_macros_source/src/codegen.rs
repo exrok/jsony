@@ -558,7 +558,13 @@ fn field_name_json(_ctx: &Ctx, field: &Field, output: &mut String, rename_rule: 
     output.push('"');
 }
 
-fn struct_schema(out: &mut RustWriter, ctx: &Ctx, fields: &[&Field], temp_tuple: Option<&Ident>, field_rename: RenameRule) {
+fn struct_schema(
+    out: &mut RustWriter,
+    ctx: &Ctx,
+    fields: &[&Field],
+    temp_tuple: Option<&Ident>,
+    field_rename: RenameRule,
+) {
     let ag_gen = if ctx
         .target
         .generics
@@ -2168,42 +2174,54 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
 }
 
 fn enum_from_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
+    let fallback = variants
+        .iter()
+        .find(|variant| matches!(variant.kind, EnumKind::None))
+        .unwrap_or(&variants[0]);
     let body = token_stream! { out;
         // TODO ENUM SHOUlD support per variant versions.
         [decode_binary_version(out, ctx)]
-        match decoder.byte() {[
-            for (i, variant) in variants.iter().enumerate() {
-                splat!{out; [if i + 1 == variants.len() {
-                    splat!(out; _)
-                }else {
-                    splat!(out; [@TokenTree::Literal(Literal::u8_unsuffixed(i as u8))])
-                }] =>
-                    [match variant.kind {
-                        EnumKind::Tuple => {
-                            splat!{out;
-                                [#: &ctx.target.name]::[#: variant.name](
-                                    [for field in variant.fields {
-                                        splat!{out; [decode_binary_field(out, ctx, field)], }
-                                    }]
-                                )
-                            }
-                        }
-                        EnumKind::Struct => {
-                            splat!{out;
-                                [#: &ctx.target.name]::[#: variant.name]{
-                                    [for field in variant.fields {
-                                        splat!{out; [#: field.name]: [decode_binary_field(out, ctx, field)], }
-                                    }]
-                                }
-                            }
-                        }
-                        EnumKind::None => splat!{out; [#: &ctx.target.name]::[#: variant.name] }
-                    }],
+        match decoder.byte() {
+            [for (i, variant) in variants.iter().enumerate() {
+                splat!{out;
+                    [@TokenTree::Literal(Literal::u8_unsuffixed(i as u8))] => [decode_binary_enum_variant(out, ctx, variant)],
                 }
+            }]
+            tag => {
+                decoder.report_error(format_args!(
+                    [@TokenTree::Literal(Literal::string("{} unknown binary enum tag = {}"))],
+                    [@TokenTree::Literal(Literal::string(&ctx.target.name.to_string()))],
+                    tag,
+                ));
+                [decode_binary_enum_variant(out, ctx, fallback)]
             }
-        ]}
+        }
     };
     impl_from_binary(out, ctx, body, None);
+}
+
+fn decode_binary_enum_variant(out: &mut RustWriter, ctx: &Ctx, variant: &EnumVariant) {
+    match variant.kind {
+        EnumKind::Tuple => {
+            splat! { out;
+                [#: &ctx.target.name]::[#: variant.name](
+                    [for field in variant.fields {
+                        splat! { out; [decode_binary_field(out, ctx, field)], }
+                    }]
+                )
+            }
+        }
+        EnumKind::Struct => {
+            splat! { out;
+                [#: &ctx.target.name]::[#: variant.name] {
+                    [for field in variant.fields {
+                        splat! { out; [#: field.name]: [decode_binary_field(out, ctx, field)], }
+                    }]
+                }
+            }
+        }
+        EnumKind::None => splat! { out; [#: &ctx.target.name]::[#: variant.name] },
+    }
 }
 
 fn handle_enum(output: &mut RustWriter, target: &DeriveTargetInner, variants: &[EnumVariant]) {

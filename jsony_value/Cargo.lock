@@ -62,8 +62,6 @@ dependencies = [
 [[package]]
 name = "jsony_macros"
 version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4da8678b34d03a741a66990d2344e354cc95292992b981804dc6da059635e611"
 
 [[package]]
 name = "jsony_value"

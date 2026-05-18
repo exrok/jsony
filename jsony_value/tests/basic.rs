@@ -174,6 +174,16 @@ fn valid_json_number_syntax_is_accepted() {
 }
 
 #[test]
+fn invalid_binary_value_type_tag_is_rejected() {
+    let err = jsony::from_binary::<Value<'_>>(&[255, 0]).unwrap_err();
+    assert!(
+        err.message()
+            .contains("TypeTag unknown binary enum tag = 255"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn map() {
     let mut map = ValueMap::from_iter([("hello", true), ("nice", false)]);
     map.insert("hy".into(), 43i32.into());
