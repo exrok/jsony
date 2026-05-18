@@ -1200,27 +1200,35 @@ unsafe impl<'a> FromJson<'a> for ValueMap<'a> {
     fn decode_json(
         parser: &mut jsony::json::Parser<'a>,
     ) -> Result<Self, &'static jsony::json::DecodeError> {
-        if parser.peek()? != Peek::Object {
+        if parser.at.peek()? != Peek::Object {
             return Err(&DecodeError {
                 message: "Expected an object",
             });
         }
 
-        let mut map = ValueMapBuilder::new();
-        let mut key = match parser.at.enter_seen_object(&mut parser.scratch)? {
+        decode_json_map_seen(parser)
+    }
+}
+
+#[inline]
+fn decode_json_map_seen<'a>(
+    parser: &mut jsony::json::Parser<'a>,
+) -> Result<ValueMap<'a>, &'static DecodeError> {
+    let mut map = ValueMapBuilder::new();
+    let mut key = match parser.at.enter_seen_object(&mut parser.scratch)? {
+        Some(key) => value_string_from_parser_text(&parser.at.ctx, key),
+        None => return Ok(map.build()),
+    };
+
+    loop {
+        let value_peek = parser.at.peek()?;
+        let value = decode_json_value_seen(parser, value_peek)?;
+        map.insert(key, value);
+
+        key = match parser.at.object_step(&mut parser.scratch)? {
             Some(key) => value_string_from_parser_text(&parser.at.ctx, key),
             None => return Ok(map.build()),
         };
-
-        loop {
-            let value = Value::decode_json(parser)?;
-            map.insert(key, value);
-
-            key = match parser.at.object_step(&mut parser.scratch)? {
-                Some(key) => value_string_from_parser_text(&parser.at.ctx, key),
-                None => return Ok(map.build()),
-            };
-        }
     }
 }
 unsafe impl<'a> FromJson<'a> for ValueList<'a> {
@@ -1234,6 +1242,25 @@ unsafe impl<'a> FromJson<'a> for ValueList<'a> {
         })?;
 
         Ok(array)
+    }
+}
+
+#[inline]
+fn decode_json_list_seen<'a>(
+    parser: &mut jsony::json::Parser<'a>,
+) -> Result<ValueList<'a>, &'static DecodeError> {
+    let mut array = ValueList::new();
+    let mut next = match parser.at.enter_seen_array()? {
+        Some(next) => next,
+        None => return Ok(array),
+    };
+
+    loop {
+        array.push(decode_json_value_seen(parser, next)?);
+        next = match parser.at.array_step()? {
+            Some(next) => next,
+            None => return Ok(array),
+        };
     }
 }
 
@@ -1348,13 +1375,57 @@ fn finish_json_integer(
     }
 }
 
-fn decode_json_number_fast_path(
+#[cold]
+fn decode_json_long_integer_tail(
     parser: &mut jsony::json::Parser<'_>,
+    bytes: &[u8],
+    start: usize,
+    mut index: usize,
+    mut value: u64,
+    negative: bool,
 ) -> Result<ValueNumber, &'static DecodeError> {
-    let Some(first) = parser.at.eat_whitespace() else {
-        return Err(&INVALID_NUMBER);
-    };
-    if !matches!(first, b'-' | b'0'..=b'9') {
+    while index < bytes.len() {
+        let byte = bytes[index];
+        let digit = byte.wrapping_sub(b'0');
+        if digit <= 9 {
+            let digit = digit as u64;
+            if value > (u64::MAX - digit) / 10 {
+                let end = scan_json_numeric_literal_end(bytes, index);
+                parser.at.index = end;
+                let text = unsafe { std::str::from_utf8_unchecked(&bytes[start..end]) };
+                return finish_json_float(text);
+            }
+            value = value * 10 + digit;
+            index += 1;
+            continue;
+        }
+
+        if is_json_numeric_literal_byte(byte) {
+            let end = scan_json_numeric_literal_end(bytes, index);
+            parser.at.index = end;
+            let text = unsafe { std::str::from_utf8_unchecked(&bytes[start..end]) };
+            return finish_json_float(text);
+        }
+
+        break;
+    }
+
+    parser.at.index = index;
+    match finish_json_integer(negative, value)? {
+        Some(value) => Ok(value),
+        None => {
+            let text = unsafe { std::str::from_utf8_unchecked(&bytes[start..index]) };
+            finish_json_float(text)
+        }
+    }
+}
+
+#[inline]
+fn decode_json_number_seen(
+    parser: &mut jsony::json::Parser<'_>,
+    first: Peek,
+) -> Result<ValueNumber, &'static DecodeError> {
+    if !matches!(first.into_inner(), b'-' | b'0'..=b'9') {
         let text = parser.at.consume_numeric_literal()?;
         if let Some(value) = decode_json_integer_fast_path(text)? {
             return Ok(value);
@@ -1365,7 +1436,7 @@ fn decode_json_number_fast_path(
     let bytes = parser.at.ctx.as_bytes();
     let start = parser.at.index;
     let len = bytes.len();
-    let negative = first == b'-';
+    let negative = first == Peek::Minus;
     let mut index = start + usize::from(negative);
 
     if index == len {
@@ -1404,18 +1475,17 @@ fn decode_json_number_fast_path(
         }
     };
 
+    let mut digits = 1usize;
     while index < len {
         let byte = bytes[index];
         let digit = byte.wrapping_sub(b'0');
         if digit <= 9 {
-            let digit = digit as u64;
-            if value > (u64::MAX - digit) / 10 {
-                let end = scan_json_numeric_literal_end(bytes, index);
-                parser.at.index = end;
-                let text = unsafe { std::str::from_utf8_unchecked(&bytes[start..end]) };
-                return finish_json_float(text);
+            if digits == 19 {
+                return decode_json_long_integer_tail(parser, bytes, start, index, value, negative);
             }
+            let digit = digit as u64;
             value = value * 10 + digit;
+            digits += 1;
             index += 1;
             continue;
         }
@@ -1440,6 +1510,15 @@ fn decode_json_number_fast_path(
     }
 }
 
+fn decode_json_number_fast_path(
+    parser: &mut jsony::json::Parser<'_>,
+) -> Result<ValueNumber, &'static DecodeError> {
+    let Some(first) = parser.at.eat_whitespace() else {
+        return Err(&INVALID_NUMBER);
+    };
+    decode_json_number_seen(parser, Peek::new(first))
+}
+
 unsafe impl<'a> FromJson<'a> for ValueNumber {
     fn decode_json(
         parser: &mut jsony::json::Parser<'a>,
@@ -1452,24 +1531,8 @@ unsafe impl<'a> FromJson<'a> for Value<'a> {
     fn decode_json(
         parser: &mut jsony::json::Parser<'a>,
     ) -> Result<Self, &'static jsony::json::DecodeError> {
-        match parser.peek()? {
-            Peek::Array => Ok(Value::from(ValueList::decode_json(parser)?)),
-            Peek::Object => Ok(Value::from(ValueMap::decode_json(parser)?)),
-            Peek::String => Ok(Value::from(ValueString::decode_json(parser)?)),
-            Peek::False => {
-                parser.at.discard_seen_false()?;
-                Ok(Value::from(false))
-            }
-            Peek::True => {
-                parser.at.discard_seen_true()?;
-                Ok(Value::from(true))
-            }
-            Peek::Null => {
-                parser.at.discard_seen_null()?;
-                Ok(Value::NULL)
-            }
-            _ => Ok(Value::from(ValueNumber::decode_json(parser)?)),
-        }
+        let peek = parser.at.peek()?;
+        decode_json_value_seen(parser, peek)
     }
 }
 
@@ -1479,6 +1542,39 @@ unsafe impl<'a> FromJson<'a> for ValueString<'a> {
     ) -> Result<Self, &'static jsony::json::DecodeError> {
         let result = parser.at.take_string(&mut parser.scratch)?;
         Ok(value_string_from_parser_text(&parser.at.ctx, result))
+    }
+}
+
+#[inline]
+fn decode_json_string_seen<'a>(
+    parser: &mut jsony::json::Parser<'a>,
+) -> Result<ValueString<'a>, &'static DecodeError> {
+    let result = unsafe { parser.at.read_seen_string(&mut parser.scratch)? };
+    Ok(value_string_from_parser_text(&parser.at.ctx, result))
+}
+
+#[inline]
+fn decode_json_value_seen<'a>(
+    parser: &mut jsony::json::Parser<'a>,
+    peek: Peek,
+) -> Result<Value<'a>, &'static DecodeError> {
+    match peek {
+        Peek::Array => Ok(Value::from(decode_json_list_seen(parser)?)),
+        Peek::Object => Ok(Value::from(decode_json_map_seen(parser)?)),
+        Peek::String => Ok(Value::from(decode_json_string_seen(parser)?)),
+        Peek::False => {
+            parser.at.discard_seen_false()?;
+            Ok(Value::from(false))
+        }
+        Peek::True => {
+            parser.at.discard_seen_true()?;
+            Ok(Value::from(true))
+        }
+        Peek::Null => {
+            parser.at.discard_seen_null()?;
+            Ok(Value::NULL)
+        }
+        _ => Ok(Value::from(decode_json_number_seen(parser, peek)?)),
     }
 }
 
