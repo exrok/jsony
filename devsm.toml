@@ -1,6 +1,5 @@
 
 
-
 [action.build-macros]
 pwd = "./macro_preprocessor/"
 cmd = ["cargo", "run", "../jsony_macros_source", "../jsony_macros"]

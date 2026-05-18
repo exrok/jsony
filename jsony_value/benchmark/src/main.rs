@@ -9,6 +9,7 @@ const SHORT_TEXT: &str = "short borrowed text";
 const MEDIUM_TEXT: &str =
     "jsony_value benchmark medium text with punctuation, spaces, and digits 0123456789";
 const ESCAPED_TEXT: &str = "line one\nline two\twith tab \"quote\" and slash \\";
+const INPUT_DISTRIBUTION_LEN: usize = 32;
 
 fn main() {
     benchmark_router().eval_from_env();
@@ -32,14 +33,31 @@ fn benchmark_router() -> Router {
 fn bench_parse(bench: &mut Bench<'_>) {
     let mut bench = bench.with_parameters(BenchParameters::QUICK);
     let cases = json_cases();
-    let names = case_names(&cases);
+    let parse_cases = select_cases(
+        &cases,
+        &[
+            "borrowed_string",
+            "escaped_string",
+            "mixed_array",
+            "number_array",
+            "string_array",
+            "small_object",
+            "large_object",
+            "duplicate_keys",
+            "nested_document",
+        ],
+    );
+    let names = case_names(&parse_cases);
 
     bench
         .named("value")
         .param_str("doc", &names, |bench, name| {
-            let case = find_case(&cases, &name);
-            bench.func(|| {
-                let value: Value<'_> = jsony::from_json(black_box(case.json.as_str())).unwrap();
+            let case = find_case(&parse_cases, &name);
+            let corpus = json_case_variants(case);
+            let len = corpus.len();
+            bench.indexed_cyclic(len, move |i| {
+                let value: Value<'_> =
+                    jsony::from_json(black_box(corpus[(i as usize) % len].as_str())).unwrap();
                 black_box(value);
             });
         });
@@ -56,8 +74,11 @@ fn bench_parse(bench: &mut Bench<'_>) {
     let names = case_names(&map_cases);
     bench.named("map").param_str("doc", &names, |bench, name| {
         let case = find_case(&map_cases, &name);
-        bench.func(|| {
-            let map: ValueMap<'_> = jsony::from_json(black_box(case.json.as_str())).unwrap();
+        let corpus = json_case_variants(case);
+        let len = corpus.len();
+        bench.indexed_cyclic(len, move |i| {
+            let map: ValueMap<'_> =
+                jsony::from_json(black_box(corpus[(i as usize) % len].as_str())).unwrap();
             black_box(map);
         });
     });
@@ -66,8 +87,11 @@ fn bench_parse(bench: &mut Bench<'_>) {
     let names = case_names(&list_cases);
     bench.named("list").param_str("doc", &names, |bench, name| {
         let case = find_case(&list_cases, &name);
-        bench.func(|| {
-            let list: ValueList<'_> = jsony::from_json(black_box(case.json.as_str())).unwrap();
+        let corpus = json_case_variants(case);
+        let len = corpus.len();
+        bench.indexed_cyclic(len, move |i| {
+            let list: ValueList<'_> =
+                jsony::from_json(black_box(corpus[(i as usize) % len].as_str())).unwrap();
             black_box(list);
         });
     });
@@ -224,8 +248,10 @@ fn bench_map(bench: &mut Bench<'_>) {
         .named("get_hit")
         .param_str("shape", &names, |bench, name| {
             let case = find_map_case(&maps, &name);
-            bench.func(|| {
-                black_box(case.map.get(black_box(case.hit_key)));
+            let keys = map_hit_keys(case);
+            let len = keys.len();
+            bench.indexed_cyclic(len, move |i| {
+                black_box(case.map.get(black_box(keys[(i as usize) % len].as_str())));
             });
         });
 
@@ -233,8 +259,10 @@ fn bench_map(bench: &mut Bench<'_>) {
         .named("get_miss")
         .param_str("shape", &names, |bench, name| {
             let case = find_map_case(&maps, &name);
-            bench.func(|| {
-                black_box(case.map.get(black_box("missing_key")));
+            let keys = map_miss_keys(case);
+            let len = keys.len();
+            bench.indexed_cyclic(len, move |i| {
+                black_box(case.map.get(black_box(keys[(i as usize) % len].as_str())));
             });
         });
 
@@ -242,8 +270,10 @@ fn bench_map(bench: &mut Bench<'_>) {
         .named("index_hit")
         .param_str("shape", &names, |bench, name| {
             let case = find_map_case(&maps, &name);
-            bench.func(|| {
-                black_box(&case.map[black_box(case.hit_key)]);
+            let keys = map_hit_keys(case);
+            let len = keys.len();
+            bench.indexed_cyclic(len, move |i| {
+                black_box(&case.map[black_box(keys[(i as usize) % len].as_str())]);
             });
         });
 
@@ -262,52 +292,66 @@ fn bench_map(bench: &mut Bench<'_>) {
 
     bench
         .named("entry_occupied")
-        .items("size", map_sizes(), |bench, size| {
-            bench.func(|| {
-                let mut map = make_map_with_builder(size);
-                black_box(map.entry(format!("key{:04}", size / 2)).or_default());
-                black_box(map);
+        .items("size", non_empty_map_sizes(), |bench, size| {
+            let keys = static_map_hit_keys(size);
+            let len = keys.len();
+            let mut map = make_map_with_builder(size);
+            bench.indexed_cyclic(len, move |i| {
+                black_box(map.entry(black_box(keys[(i as usize) % len])).or_default());
             });
         });
 
     bench
         .named("entry_vacant")
         .items("size", map_sizes(), |bench, size| {
-            bench.func(|| {
-                let mut map = make_map_with_builder(size);
-                black_box(map.entry("inserted_key").or_insert(Value::from(17u64)));
-                black_box(map);
-            });
+            bench.generated(
+                move || make_map_with_builder(size),
+                move |mut map| {
+                    black_box(
+                        map.entry(black_box("inserted_key"))
+                            .or_insert(Value::from(17u64)),
+                    );
+                    black_box(map);
+                },
+            );
         });
 
     bench
         .named("remove_ordered")
-        .items("size", map_sizes(), |bench, size| {
-            bench.func(|| {
-                let mut map = make_map_with_builder(size);
-                black_box(map.remove(black_box(&format!("key{:04}", size / 2))));
-                black_box(map);
-            });
+        .items("size", non_empty_map_sizes(), |bench, size| {
+            let key = map_middle_key(size);
+            bench.generated(
+                move || make_map_with_builder(size),
+                move |mut map| {
+                    black_box(map.remove(black_box(key)));
+                    black_box(map);
+                },
+            );
         });
 
     bench
         .named("remove_swap")
-        .items("size", map_sizes(), |bench, size| {
-            bench.func(|| {
-                let mut map = make_map_with_builder(size);
-                black_box(map.swap_remove(black_box(&format!("key{:04}", size / 2))));
-                black_box(map);
-            });
+        .items("size", non_empty_map_sizes(), |bench, size| {
+            let key = map_middle_key(size);
+            bench.generated(
+                move || make_map_with_builder(size),
+                move |mut map| {
+                    black_box(map.swap_remove(black_box(key)));
+                    black_box(map);
+                },
+            );
         });
 
     bench
         .named("sort")
         .items("size", map_sizes(), |bench, size| {
-            bench.func(|| {
-                let mut map = make_reverse_map(size);
-                map.sort();
-                black_box(map);
-            });
+            bench.generated(
+                move || make_reverse_map(size),
+                move |mut map| {
+                    map.sort();
+                    black_box(map);
+                },
+            );
         });
 }
 
@@ -450,33 +494,22 @@ fn bench_number(bench: &mut Bench<'_>) {
         });
 
     let numbers = number_values();
-    let names = number_case_names(&numbers);
-    bench
-        .named("as_i64")
-        .param_str("kind", &names, |bench, name| {
-            let case = find_number_case(&numbers, &name);
-            bench.func(|| {
-                black_box(case.value.as_i64());
-            });
-        });
+    let len = numbers.len();
+    bench.named("as_i64").indexed_cyclic(len, move |i| {
+        black_box(numbers[(i as usize) % len].value.as_i64());
+    });
 
-    bench
-        .named("as_u64")
-        .param_str("kind", &names, |bench, name| {
-            let case = find_number_case(&numbers, &name);
-            bench.func(|| {
-                black_box(case.value.as_u64());
-            });
-        });
+    let numbers = number_values();
+    let len = numbers.len();
+    bench.named("as_u64").indexed_cyclic(len, move |i| {
+        black_box(numbers[(i as usize) % len].value.as_u64());
+    });
 
-    bench
-        .named("as_f64")
-        .param_str("kind", &names, |bench, name| {
-            let case = find_number_case(&numbers, &name);
-            bench.func(|| {
-                black_box(case.value.as_f64());
-            });
-        });
+    let numbers = number_values();
+    let len = numbers.len();
+    bench.named("as_f64").indexed_cyclic(len, move |i| {
+        black_box(numbers[(i as usize) % len].value.as_f64());
+    });
 }
 
 fn bench_traverse(bench: &mut Bench<'_>) {
@@ -533,7 +566,6 @@ struct BinaryCase {
 struct MapCase {
     name: &'static str,
     map: ValueMap<'static>,
-    hit_key: &'static str,
 }
 
 struct ListCase {
@@ -561,7 +593,6 @@ impl std::fmt::Display for NumberInput {
 }
 
 struct NumberCase {
-    name: &'static str,
     value: Value<'static>,
 }
 
@@ -622,6 +653,48 @@ fn json_cases() -> Vec<JsonCase> {
     ]
 }
 
+fn json_case_variants(case: &JsonCase) -> Vec<String> {
+    (0..INPUT_DISTRIBUTION_LEN)
+        .map(|seed| match case.name {
+            "scalar_null" => "null".to_owned(),
+            "scalar_bool" => {
+                if seed % 2 == 0 {
+                    "true".to_owned()
+                } else {
+                    "false".to_owned()
+                }
+            }
+            "integer" => (1_000_000_000_000u64 + seed as u64 * 1_000_003).to_string(),
+            "float" => format!(
+                "-{}.{}e-{}",
+                10_000 + seed * 37,
+                (seed * 17) % 10_000,
+                1 + seed % 6
+            ),
+            "borrowed_string" => {
+                format!(
+                    r#""plain borrowed text {seed:02} without escapes {}""#,
+                    seed * 17
+                )
+            }
+            "escaped_string" => {
+                format!(
+                    r#""line {seed}\nline {}\twith unicode \u263a and quote\"""#,
+                    seed + 1
+                )
+            }
+            "mixed_array" => make_mixed_array_json(48 + (seed % 5) * 8),
+            "number_array" => make_number_array_json(384 + (seed % 5) * 32),
+            "string_array" => make_string_array_json(128 + (seed % 5) * 16),
+            "small_object" => make_object_json(6 + seed % 5, seed % 2 == 1),
+            "large_object" => make_object_json(128 + (seed % 5) * 16, seed % 2 == 1),
+            "duplicate_keys" => make_duplicate_object_json(72 + (seed % 5) * 8),
+            "nested_document" => make_nested_document_json(18 + seed % 8),
+            _ => case.json.clone(),
+        })
+        .collect()
+}
+
 fn value_cases() -> Vec<ValueCase> {
     vec![
         ValueCase {
@@ -664,19 +737,31 @@ fn map_cases() -> Vec<MapCase> {
         MapCase {
             name: "small_linear",
             map: make_map_with_builder(8),
-            hit_key: "key0004",
         },
         MapCase {
             name: "large_indexed",
             map: make_map_with_builder(160),
-            hit_key: "key0080",
         },
         MapCase {
             name: "duplicates",
             map: make_duplicate_map(48),
-            hit_key: "dupe",
         },
     ]
+}
+
+fn map_hit_keys(case: &MapCase) -> Vec<String> {
+    case.map
+        .entries()
+        .iter()
+        .map(|(key, _)| key.as_str().to_owned())
+        .collect()
+}
+
+fn map_miss_keys(case: &MapCase) -> Vec<String> {
+    let len = case.map.entries().len().max(1).min(INPUT_DISTRIBUTION_LEN);
+    (0..len)
+        .map(|index| format!("missing_{}_{}", case.name, index))
+        .collect()
 }
 
 fn list_cases() -> Vec<ListCase> {
@@ -712,7 +797,7 @@ fn string_cases() -> Vec<ValueStringCase> {
         },
         ValueStringCase {
             name: "long",
-            value: ValueString::from_owned(make_text(4096).into_boxed_str()),
+            value: ValueString::from_static(LONG_TEXT),
         },
     ]
 }
@@ -743,34 +828,59 @@ fn number_inputs() -> [NumberInput; 3] {
 fn number_values() -> Vec<NumberCase> {
     vec![
         NumberCase {
-            name: "i64",
             value: Value::from(-9_876_543_210i64),
         },
         NumberCase {
-            name: "u64",
             value: Value::from(9_876_543_210u64),
         },
         NumberCase {
-            name: "f64",
             value: Value::from(987_654.321f64),
         },
         NumberCase {
-            name: "other_integer",
             value: Value::from(ValueString::other_borrowed("18446744073709551616000")).to_owned(),
         },
         NumberCase {
-            name: "other_float",
             value: Value::from(ValueString::other_borrowed("-123.456e78")).to_owned(),
         },
     ]
 }
 
-fn map_sizes() -> [usize; 5] {
-    [0, 4, 8, 32, 160]
+fn map_sizes() -> [usize; 3] {
+    [8, 32, 160]
 }
 
-fn list_sizes() -> [usize; 5] {
-    [0, 4, 32, 256, 1024]
+fn non_empty_map_sizes() -> [usize; 4] {
+    [4, 8, 32, 160]
+}
+
+fn map_middle_key(size: usize) -> &'static str {
+    match size {
+        4 => "key0002",
+        8 => "key0004",
+        32 => "key0016",
+        160 => "key0080",
+        _ => panic!("no static middle key for map size {size}"),
+    }
+}
+
+fn static_map_hit_keys(size: usize) -> &'static [&'static str] {
+    match size {
+        4 => &["key0000", "key0001", "key0002", "key0003"],
+        8 => &[
+            "key0000", "key0001", "key0002", "key0003", "key0004", "key0005", "key0006", "key0007",
+        ],
+        32 => &[
+            "key0000", "key0003", "key0007", "key0011", "key0016", "key0021", "key0027", "key0031",
+        ],
+        160 => &[
+            "key0000", "key0007", "key0019", "key0031", "key0063", "key0080", "key0127", "key0159",
+        ],
+        _ => panic!("no static hit-key distribution for map size {size}"),
+    }
+}
+
+fn list_sizes() -> [usize; 3] {
+    [32, 256, 1024]
 }
 
 fn string_names() -> [&'static str; 4] {
@@ -787,14 +897,20 @@ fn string_by_name(name: &str) -> &'static str {
     }
 }
 
-const LONG_TEXT: &str = "jsony_value benchmark long static text: abcdefghijklmnopqrstuvwxyz0123456789 abcdefghijklmnopqrstuvwxyz0123456789 abcdefghijklmnopqrstuvwxyz0123456789 abcdefghijklmnopqrstuvwxyz0123456789 abcdefghijklmnopqrstuvwxyz0123456789 abcdefghijklmnopqrstuvwxyz0123456789";
+const LONG_TEXT: &str = concat!(
+    "jsony_value benchmark long static text: ",
+    "abcdefghijklmnopqrstuvwxyz0123456789 abcdefghijklmnopqrstuvwxyz0123456789 ",
+    "abcdefghijklmnopqrstuvwxyz0123456789 abcdefghijklmnopqrstuvwxyz0123456789 ",
+    "abcdefghijklmnopqrstuvwxyz0123456789 abcdefghijklmnopqrstuvwxyz0123456789 ",
+    "abcdefghijklmnopqrstuvwxyz0123456789 abcdefghijklmnopqrstuvwxyz0123456789 "
+);
 
 fn make_map_with_insert(size: usize) -> ValueMap<'static> {
     let mut map = ValueMap::new();
     for i in 0..size {
         map.insert(
             ValueString::from_owned(format!("key{i:04}").into_boxed_str()),
-            Value::from(i as u64),
+            make_mixed_value(i),
         );
     }
     map
@@ -822,7 +938,7 @@ fn make_reverse_map(size: usize) -> ValueMap<'static> {
     for i in (0..size).rev() {
         builder.insert(
             ValueString::from_owned(format!("key{i:04}").into_boxed_str()),
-            Value::from(i as u64),
+            make_mixed_value(i),
         );
     }
     builder.build()
@@ -980,16 +1096,6 @@ fn make_nested_document_json(width: usize) -> String {
     )
 }
 
-fn make_text(size: usize) -> String {
-    const CHUNK: &str = "abcdefghijklmnopqrstuvwxyz0123456789";
-    let mut output = String::with_capacity(size);
-    while output.len() < size {
-        output.push_str(CHUNK);
-    }
-    output.truncate(size);
-    output
-}
-
 fn count_nodes(value: &Value<'_>) -> usize {
     match value.as_ref() {
         ValueRef::Null(_)
@@ -1051,10 +1157,6 @@ fn value_string_case_names(cases: &[ValueStringCase]) -> Vec<&'static str> {
     cases.iter().map(|case| case.name).collect()
 }
 
-fn number_case_names(cases: &[NumberCase]) -> Vec<&'static str> {
-    cases.iter().map(|case| case.name).collect()
-}
-
 fn select_cases(cases: &[JsonCase], names: &[&str]) -> Vec<JsonCase> {
     names
         .iter()
@@ -1104,13 +1206,6 @@ fn find_value_string_case<'a>(cases: &'a [ValueStringCase], name: &str) -> &'a V
         .unwrap_or_else(|| panic!("unknown string case {name}"))
 }
 
-fn find_number_case<'a>(cases: &'a [NumberCase], name: &str) -> &'a NumberCase {
-    cases
-        .iter()
-        .find(|case| case.name == name)
-        .unwrap_or_else(|| panic!("unknown number case {name}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1121,6 +1216,12 @@ mod tests {
             let parsed: Value<'_> = jsony::from_json(&case.json)
                 .unwrap_or_else(|err| panic!("case {} failed to parse: {err:?}", case.name));
             assert!(count_nodes(&parsed) > 0);
+            for variant in json_case_variants(&case) {
+                let parsed: Value<'_> = jsony::from_json(&variant).unwrap_or_else(|err| {
+                    panic!("case {} variant failed to parse: {err:?}", case.name)
+                });
+                assert!(count_nodes(&parsed) > 0);
+            }
         }
     }
 
@@ -1130,6 +1231,32 @@ mod tests {
         assert_eq!(cases[0].map.entries().len(), 8);
         assert!(cases[1].map.entries().len() > 8);
         assert!(cases[2].map.get_all("dupe").count() > 1);
+    }
+
+    #[test]
+    fn map_build_fixtures_use_the_same_payloads() {
+        for size in map_sizes() {
+            let inserted = make_map_with_insert(size);
+            let built = make_map_with_builder(size);
+            let from_iter = make_map_with_from_iter(size);
+            assert_eq!(map_signature(&inserted), map_signature(&built));
+            assert_eq!(map_signature(&built), map_signature(&from_iter));
+        }
+    }
+
+    #[test]
+    fn string_fixtures_share_canonical_long_text() {
+        assert_eq!(string_by_name("long"), LONG_TEXT);
+        let cases = string_cases();
+        let long = find_value_string_case(&cases, "long").value.as_str();
+        assert_eq!(long, LONG_TEXT);
+    }
+
+    fn map_signature(map: &ValueMap<'_>) -> Vec<(String, String)> {
+        map.entries()
+            .iter()
+            .map(|(key, value)| (key.as_str().to_owned(), value.to_string()))
+            .collect()
     }
 
     #[test]
