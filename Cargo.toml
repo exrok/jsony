@@ -1,10 +1,38 @@
-[profile.release]
-debug = 1
+[package]
+name = "jsony"
+version = "0.1.9"
+edition = "2021"
+authors = ["Thomas Dagenais <exrok@i64.dev>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/exrok/jsony"
+description = "An experimental fast compiling serialization and deserialization libary for JSON like formats."
+keywords = ["serialization"]
+categories = ["encoding"]
+rust-version = "1.84"
 
-[workspace]
-members = ["jsony_bench", "jsony_value", "jsony_value/benchmark"]
-resolver = "2"
+[dependencies]
+jsony_macros = { version = "0.1.8", optional = true }
+itoa = "1"
+zmij = "1"
+uuid = { version = "1", optional = true }
+
+[features]
+default = ["json_comments", "macros"]
+uuid = ["dep:uuid"]
+macros = ["dep:jsony_macros"]
+json_comments = []
 
 [patch.crates-io]
-jsony = { path = "jsony" }
-jsony_macros = { path = "jsony_macros" }
+jsony = { path = "." }
+jsony_macros = { path = "crates/jsony_macros" }
+
+[workspace]
+members = [
+    "crates/*",
+    "crates/jsony_value/benchmark",
+]
+resolver = "2"
+
+[profile.release]
+debug = 1

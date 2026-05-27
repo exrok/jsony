@@ -571,7 +571,7 @@ fn decode_binary_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
                 out.blit(223, 5);
                 {
                     let at = out.buf.len();
-                    out.blit_punct(4);
+                    out.blit_punct(5);
                     out.buf.extend_from_slice(field.ty);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
@@ -583,7 +583,7 @@ fn decode_binary_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
                     out.blit_ident(196);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
-                out.blit_punct(5);
+                out.blit_punct(4);
                 {
                     let at = out.buf.len();
                     out.blit_ident(140);
@@ -631,7 +631,7 @@ fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
             out.blit(287, 3);
             {
                 let at = out.buf.len();
-                out.blit_punct(4);
+                out.blit_punct(5);
                 out.buf.extend_from_slice(with);
                 out.blit(290, 3);
                 out.tt_group(Delimiter::Parenthesis, at);
@@ -645,7 +645,7 @@ fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
             out.blit(287, 3);
             {
                 let at = out.buf.len();
-                out.blit_punct(4);
+                out.blit_punct(5);
                 {
                     let at = out.buf.len();
                     out.buf.extend_from_slice(with);
@@ -802,7 +802,7 @@ fn struct_schema(
                             let at = out.buf.len();
                             out.blit(378, 3);
                             out.buf.extend_from_slice(field.ty);
-                            out.blit_punct(5);
+                            out.blit_punct(4);
                             out.buf.extend_from_slice(expr);
                             out.blit(54, 2);
                             {
@@ -1874,7 +1874,7 @@ fn enum_variant_from_json_struct(
                 out.push_ident(&ctx.lifetime);
                 out.blit_punct(2);
             };
-            out.blit_punct(5);
+            out.blit_punct(4);
             {
                 let at = out.buf.len();
                 for field in &ordered_fields {
@@ -1889,7 +1889,7 @@ fn enum_variant_from_json_struct(
                 out.blit(731, 3);
                 {
                     let at = out.buf.len();
-                    out.blit_punct(4);
+                    out.blit_punct(5);
                     {
                         struct_schema(
                             out,
@@ -1952,7 +1952,7 @@ fn enum_variant_from_json_struct(
                 {
                     if let Tag::Inline(tag) = &ctx.target.tag {
                         {
-                            out.blit_punct(4);
+                            out.blit_punct(5);
                             {
                                 let at = out.buf.len();
                                 {
@@ -2035,7 +2035,7 @@ fn enum_variant_from_json_struct(
                 out.push_ident(&ctx.lifetime);
                 out.blit_punct(2);
             };
-            out.blit_punct(5);
+            out.blit_punct(4);
             {
                 let at = out.buf.len();
                 for field in &ordered_fields {
@@ -2050,7 +2050,7 @@ fn enum_variant_from_json_struct(
                 out.blit(731, 3);
                 {
                     let at = out.buf.len();
-                    out.blit_punct(4);
+                    out.blit_punct(5);
                     {
                         struct_schema(
                             out,
@@ -2091,7 +2091,7 @@ fn enum_variant_from_json_struct(
                 {
                     if let Tag::Inline(tag) = &ctx.target.tag {
                         {
-                            out.blit_punct(4);
+                            out.blit_punct(5);
                             {
                                 let at = out.buf.len();
                                 {
@@ -2273,7 +2273,7 @@ fn enum_variant_from_json(out: &mut RustWriter, ctx: &Ctx, variant: &EnumVariant
                                     out.blit(224, 4);
                                     {
                                         let at = out.buf.len();
-                                        out.blit_punct(4);
+                                        out.blit_punct(5);
                                         out.buf.extend_from_slice(field.ty);
                                         out.tt_group(Delimiter::Parenthesis, at);
                                     };
@@ -2285,7 +2285,7 @@ fn enum_variant_from_json(out: &mut RustWriter, ctx: &Ctx, variant: &EnumVariant
                                         out.blit_ident(196);
                                         out.tt_group(Delimiter::Parenthesis, at);
                                     };
-                                    out.blit_punct(5);
+                                    out.blit_punct(4);
                                     {
                                         let at = out.buf.len();
                                         out.blit_ident(140);
@@ -3213,7 +3213,7 @@ fn handle_pod_binary_any_struct(out: &mut RustWriter, ctx: &Ctx<'_>, fields: &[F
             let at = out.buf.len();
             for (i, field) in fields.iter().enumerate() {
                 if i != 0 {
-                    out.blit_punct(4);
+                    out.blit_punct(5);
                 };
                 out.blit_punct(3);
                 out.buf.extend_from_slice(field.ty);
@@ -3243,7 +3243,7 @@ fn handle_pod_binary_any_struct(out: &mut RustWriter, ctx: &Ctx<'_>, fields: &[F
             out.blit(1237, 4);
             for (i, field) in fields.iter().enumerate() {
                 if i != 0 {
-                    out.blit_punct(17);
+                    out.blit_punct(18);
                 };
                 out.blit(1233, 4);
                 out.buf.extend_from_slice(field.ty);

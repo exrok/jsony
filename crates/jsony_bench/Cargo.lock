@@ -4,24 +4,15 @@ version = 4
 
 [[package]]
 name = "autocfg"
-version = "1.5.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
-
-[[package]]
-name = "benchmark"
-version = "0.1.0"
-dependencies = [
- "jsony",
- "jsony_bench",
- "jsony_value",
-]
+checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 
 [[package]]
 name = "bitflags"
-version = "2.11.1"
+version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+checksum = "5c8214115b7bf84099f1309324e63141d4c5d7cc26862f97a0a857dbefe165bd"
 
 [[package]]
 name = "c-enum"
@@ -30,23 +21,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd17eb909a8c6a894926bfcc3400a4bb0e732f5a57d37b1f14e8b29e329bace8"
 
 [[package]]
-name = "foldhash"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
-
-[[package]]
 name = "itoa"
-version = "1.0.15"
+version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
+checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jsony"
 version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f9c02f2563a1e82063359e007c578d96116ef348b0ac360d34a8159feff92e6"
 dependencies = [
  "itoa",
- "jsony_macros",
  "zmij",
 ]
 
@@ -56,32 +42,27 @@ version = "0.1.0"
 dependencies = [
  "jsony",
  "jsony_macros",
+ "libc",
  "perf-event2",
 ]
 
 [[package]]
 name = "jsony_macros"
 version = "0.1.8"
-
-[[package]]
-name = "jsony_value"
-version = "0.0.1"
-dependencies = [
- "foldhash",
- "jsony",
-]
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4da8678b34d03a741a66990d2344e354cc95292992b981804dc6da059635e611"
 
 [[package]]
 name = "libc"
-version = "0.2.186"
+version = "0.2.172"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+checksum = "d750af042f7ef4f724306de029d18836c26c1765a54a6a3f094cbd23a7267ffa"
 
 [[package]]
 name = "memmap2"
-version = "0.9.10"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "714098028fe011992e1c3962653c96b2d578c4b4bce9036e15ff220319b1e0e3"
+checksum = "fd3f7eed9d3848f8b98834af67102b720745c4ec028fcd0aa0239277e7de374f"
 dependencies = [
  "libc",
 ]

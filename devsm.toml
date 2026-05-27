@@ -1,26 +1,24 @@
-
-
-[action.build-macros]
-pwd = "./macro_preprocessor/"
+[action.build-jsony-macros]
+pwd = "./crates/macro_preprocessor/"
 cmd = ["cargo", "run", "../jsony_macros_source", "../jsony_macros"]
 cache.key = [
-    { modified = "./macro_preprocessor/" },
-    { modified = "./jsony_macros_source/" },
+    { modified = "./crates/macro_preprocessor/" },
+    { modified = "./crates/jsony_macros_source/" },
 ]
 
-[test.jsony_unit_tests]
-pwd = "./jsony"
-cmd = ["cargo", "test"]
+[test.jsony-unit-tests]
+pwd = "."
+cmd = ["cargo", "test", "-p", "jsony"]
 require = ["build-jsony-macros"]
 
 [test.typos]
 cmd = ["typos"]
 
-[action.jsony_tester]
-pwd = "./jsony_tester"
+[action.jsony-tester]
+pwd = "./local/tester"
 cmd = ["cargo", "run"]
 require = ["build-jsony-macros"]
 
-[action.macro_tester]
-pwd = "./jsony_macros_source"
+[action.macro-tester]
+pwd = "./crates/jsony_macros_source"
 cmd = ["cargo", "run"]

@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 jsony = "0.1.9"
-jsony_bench = { path = "/home/user/Projects/git/jsony/jsony_bench" }
+jsony_bench = { path = "../../jsony_bench" }
 jsony_value = { path = "../" }
