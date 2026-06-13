@@ -297,6 +297,10 @@ pub struct EnumVariant<'a> {
     #[allow(dead_code)]
     pub attr: &'a FieldAttrs,
     pub rename_all: RenameRule,
+    /// Scratch buffer range used during parsing (into the tt buffer, then the
+    /// field buffer). Not meaningful after `parse_enum` populates `fields`.
+    buf_start: usize,
+    buf_end: usize,
 }
 
 #[cfg_attr(feature = "debug", derive(Debug))]
@@ -1010,6 +1014,19 @@ fn parse_attrs(toks: TokenStream, func: &mut dyn FnMut(TraitSet, Ident, &mut Vec
     }
 }
 
+/// Get the current attrs, allocating a default set on first use. A plain fn
+/// instead of `Option::get_or_insert_with(|| ..)` so the closure type isn't
+/// monomorphized separately at each of the three call sites.
+fn ensure_attr<'a, 'b>(
+    opt: &'b mut Option<&'a mut FieldAttrs>,
+    buf: &mut Allocator<'a, FieldAttrs>,
+) -> &'b mut &'a mut FieldAttrs {
+    if opt.is_none() {
+        *opt = Some(buf.alloc_default());
+    }
+    opt.as_mut().unwrap()
+}
+
 fn parse_field_attr<'a>(
     current: &mut Option<&'a mut FieldAttrs>,
     attr_buf: &mut Allocator<'a, FieldAttrs>,
@@ -1018,33 +1035,20 @@ fn parse_field_attr<'a>(
     let Some(attrs) = extract_jsony_attr(toks) else {
         return;
     };
-    let attr = current.get_or_insert_with(|| attr_buf.alloc_default());
+    let attr = ensure_attr(current, attr_buf);
     parse_attrs(attrs, &mut |set, ident, buf| {
         parse_single_field_attr(attr, set, ident, buf)
     })
 }
 
-struct VariantTemp<'a> {
-    name: &'a Ident,
-    start: usize,
-    end: usize,
-    attr: &'a FieldAttrs,
-    kind: EnumKind,
-    rename_all: RenameRule,
-}
-
 pub fn scan_fields<'a>(target: &mut DeriveTargetInner<'a>, fields: &mut Vec<Field<'a>>) {
-    let type_generic_names: Vec<_> = target
-        .generics
-        .iter()
-        .filter_map(|a| {
-            if !matches!(a.kind, GenericKind::Type) {
-                return None;
-            }
-            Some(a.ident.to_string())
-        })
-        .collect();
-    let min_len = type_generic_names.iter().map(|x| x.len()).max();
+    let mut has_type_generics = false;
+    for g in &target.generics {
+        if matches!(g.kind, GenericKind::Type) {
+            has_type_generics = true;
+            break;
+        }
+    }
 
     let mut max_version = target.min_version;
     for field in fields {
@@ -1060,16 +1064,20 @@ pub fn scan_fields<'a>(target: &mut DeriveTargetInner<'a>, fields: &mut Vec<Fiel
                 throw!("Expected a version number between 0-65534" @ version.span())
             }
         }
-        if let Some(min_length) = min_len {
+        if has_type_generics {
             for tt in field.ty {
                 let TokenTree::Ident(ident) = tt else {
                     continue;
                 };
                 let ident = ident.to_string();
-                if ident.len() < min_length {
-                    continue;
+                let mut is_generic = false;
+                for g in &target.generics {
+                    if matches!(g.kind, GenericKind::Type) && g.ident.to_string() == ident {
+                        is_generic = true;
+                        break;
+                    }
                 }
-                if type_generic_names.iter().any(|x| ident == *x) {
+                if is_generic {
                     field.flags |= Field::GENERIC;
                     target.generic_field_types.push(field.ty);
                     break;
@@ -1094,63 +1102,54 @@ pub fn parse_enum<'a>(
     field_buf: &'a mut Vec<Field<'a>>,
     attr_buf: &mut Allocator<'a, FieldAttrs>,
 ) -> Vec<EnumVariant<'a>> {
-    let mut temp = parse_inner_enum_variants(fields, tt_buf, attr_buf);
+    let mut variants = parse_inner_enum_variants(fields, tt_buf, attr_buf);
     match &target.tag {
         Tag::Inline(_) => target.enum_flags |= ENUM_HAS_INLINE_TAG,
         Tag::Untagged => target.enum_flags |= ENUM_HAS_NO_TAG,
         Tag::Default => target.enum_flags |= ENUM_HAS_EXTERNAL_TAG,
     }
-    {
-        for variant in &mut temp {
-            match variant.kind {
-                EnumKind::Tuple => {
-                    target.enum_flags |= ENUM_CONTAINS_TUPLE_VARIANT;
-                    let start = field_buf.len();
-                    parse_tuple_fields(
-                        variant.name,
-                        field_buf,
-                        &tt_buf[variant.start..variant.end],
-                        attr_buf,
-                    );
-                    variant.start = start;
-                    variant.end = field_buf.len();
-                }
-                EnumKind::Struct => {
-                    target.enum_flags |= ENUM_CONTAINS_STRUCT_VARIANT;
-                    let start = field_buf.len();
-                    parse_struct_fields(field_buf, &tt_buf[variant.start..variant.end], attr_buf);
-                    variant.start = start;
-                    variant.end = field_buf.len();
-                }
-                EnumKind::None => {
-                    target.enum_flags |= ENUM_CONTAINS_UNIT_VARIANT;
-                }
+    for variant in &mut variants {
+        match variant.kind {
+            EnumKind::Tuple => {
+                target.enum_flags |= ENUM_CONTAINS_TUPLE_VARIANT;
+                let start = field_buf.len();
+                parse_tuple_fields(
+                    variant.name,
+                    field_buf,
+                    &tt_buf[variant.buf_start..variant.buf_end],
+                    attr_buf,
+                );
+                variant.buf_start = start;
+                variant.buf_end = field_buf.len();
+            }
+            EnumKind::Struct => {
+                target.enum_flags |= ENUM_CONTAINS_STRUCT_VARIANT;
+                let start = field_buf.len();
+                parse_struct_fields(field_buf, &tt_buf[variant.buf_start..variant.buf_end], attr_buf);
+                variant.buf_start = start;
+                variant.buf_end = field_buf.len();
+            }
+            EnumKind::None => {
+                target.enum_flags |= ENUM_CONTAINS_UNIT_VARIANT;
             }
         }
     }
     scan_fields(target, field_buf);
-    temp.into_iter()
-        .map(|var| EnumVariant {
-            name: var.name,
-            fields: if matches!(var.kind, EnumKind::None) {
-                &[]
-            } else {
-                &field_buf[var.start..var.end]
-            },
-            kind: var.kind,
-            rename_all: var.rename_all,
-            attr: var.attr,
-        })
-        .collect()
+    for variant in &mut variants {
+        if !matches!(variant.kind, EnumKind::None) {
+            variant.fields = &field_buf[variant.buf_start..variant.buf_end];
+        }
+    }
+    variants
 }
 
 fn parse_inner_enum_variants<'a>(
     fields: &'a [TokenTree],
     tt_buffer: &mut Vec<TokenTree>,
     attr_buffer: &mut Allocator<'a, FieldAttrs>,
-) -> Vec<VariantTemp<'a>> {
+) -> Vec<EnumVariant<'a>> {
     let mut f = fields.iter().enumerate();
-    let mut enums: Vec<VariantTemp<'a>> = Vec::new();
+    let mut enums: Vec<EnumVariant<'a>> = Vec::new();
     let mut next_attr: Option<&'a mut FieldAttrs> = None;
     let mut next_rename_all = RenameRule::None;
     loop {
@@ -1172,7 +1171,7 @@ fn parse_inner_enum_variants<'a>(
                             next_rename_all = RenameRule::from_literal(&rename);
                             return;
                         }
-                        let attr = next_attr.get_or_insert_with(|| attr_buffer.alloc_default());
+                        let attr = ensure_attr(&mut next_attr, attr_buffer);
                         parse_single_field_attr(attr, set, ident, buf);
                     });
                 }
@@ -1251,10 +1250,9 @@ fn parse_inner_enum_variants<'a>(
             TokenTree::Ident(ident) => (ident, EnumKind::None),
             tok => throw!("Expected either an ident or group" @ tok.span()),
         };
-        enums.push(VariantTemp {
+        enums.push(EnumVariant {
             name,
-            start,
-            end: tt_buffer.len(),
+            fields: &[],
             attr: if let Some(attr) = next_attr.take() {
                 attr
             } else {
@@ -1262,6 +1260,8 @@ fn parse_inner_enum_variants<'a>(
             },
             kind,
             rename_all: std::mem::replace(&mut next_rename_all, RenameRule::None),
+            buf_start: start,
+            buf_end: tt_buffer.len(),
         });
         if f.len() == 0 {
             break;
@@ -1403,7 +1403,7 @@ pub fn parse_struct_fields<'a>(
         };
         if let [TokenTree::Ident(ident), TokenTree::Punct(punct), ..] = &fields[i + 1..end] {
             if punct.as_char() == '<' && ident_eq(ident, "Option") {
-                let attr = next_attr.get_or_insert_with(|| attr_buf.alloc_default());
+                let attr = ensure_attr(&mut next_attr, attr_buf);
                 let oo_mask = (FROM_JSON as u64) << (3u64 * TRAIT_COUNT);
                 if attr.flags & oo_mask == 0 {
                     attr.attrs.push(FieldAttr {

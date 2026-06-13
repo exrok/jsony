@@ -216,18 +216,6 @@ impl<'a> TTMergeBlocks<'a> {
         let mut last_end = 0;
         while iter.len() > 0 {
             if let Some((fnctl, range)) = munch_thing(&data, &mut iter) {
-                if data[last_end..range.start]
-                    .as_bytes()
-                    .iter()
-                    .any(|ch| !ch.is_ascii_whitespace())
-                    && data[last_end..range.start]
-                        .as_bytes()
-                        .iter()
-                        .all(|ch| ch.is_ascii_whitespace() || *ch == b';')
-                {
-                    println!("{:?} {:#?}", &data[last_end - 10..range.start + 10], fnctl);
-                }
-
                 if fnctl.buffer != current_buffer
                     || data[last_end..range.start]
                         .as_bytes()
@@ -308,7 +296,7 @@ fn export_merged_blocks(files: &[&[u8]]) -> (Vec<u8>, Vec<Vec<u8>>) {
             }
             puncts.push(stmt);
         }
-        puncts.sort_unstable_by_key(|(k, _, _)| *k as u32);
+        puncts.sort_by_key(|(k, kind, text)| (*k as u32, *kind, *text));
         let mut iter = puncts.iter_mut().rev();
         let minimizing = [b'\t' as u64, b'\n' as u64, b'\r' as u64];
         for idx in minimizing {
@@ -411,10 +399,6 @@ fn export_merged_blocks(files: &[&[u8]]) -> (Vec<u8>, Vec<Vec<u8>>) {
         outputs.push(output);
     }
     println!("Calls: {} -> {}", og_count, g_count);
-    println!("{}", stmt_slice_buffer.len());
-    println!("{}", stmt_slice_buffer.escape_ascii().to_string());
-    println!("{}", stmt_slice_buffer.escape_ascii().to_string().len());
-    println!("{}", [7, 8, 9, 10, 11, 12, 13].escape_ascii());
     let cache_template = stringify! {
         use proc_macro::{ Punct, Spacing };
         pub static BLIT_SRC: &[u8] = __PLACEHOLDER__;

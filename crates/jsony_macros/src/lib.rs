@@ -28,36 +28,41 @@ pub(crate) struct Error(InnerError);
 unsafe impl Send for Error {}
 impl Error {
     pub(crate) fn to_compiler_error(&self, wrap: bool) -> TokenStream {
+        // A single reused `Vec<TokenTree>` keeps `TokenStream::from_iter` monomorphized
+        // for `vec::Drain` only, rather than a distinct `[TokenTree; N]` array iterator
+        // per call (which bloated the proc-macro's LLVM line count).
+        let mut toks: Vec<TokenTree> = Vec::new();
+        toks.push(TokenTree::Literal(Literal::string(&self.0.message)));
         let mut group = TokenTree::Group(Group::new(
             Delimiter::Parenthesis,
-            TokenStream::from_iter([TokenTree::Literal(Literal::string(&self.0.message))]),
+            TokenStream::from_iter(toks.drain(..)),
         ));
         let mut punc = TokenTree::Punct(Punct::new('!', Spacing::Alone));
         punc.set_span(self.0.span);
         group.set_span(self.0.span);
 
         if wrap {
-            TokenStream::from_iter([TokenTree::Group(Group::new(
-                Delimiter::Brace,
-                TokenStream::from_iter([
-                    TokenTree::Ident(Ident::new("compile_error", self.0.span)),
-                    punc,
-                    group,
-                    TokenTree::Punct(Punct::new(';', Spacing::Alone)),
-                    TokenTree::Ident(Ident::new("String", self.0.span)),
-                    TokenTree::Punct(Punct::new(':', Spacing::Joint)),
-                    TokenTree::Punct(Punct::new(':', Spacing::Alone)),
-                    TokenTree::Ident(Ident::new("new", self.0.span)),
-                    TokenTree::Group(Group::new(Delimiter::Parenthesis, TokenStream::new())),
-                ]),
-            ))])
+            toks.push(TokenTree::Ident(Ident::new("compile_error", self.0.span)));
+            toks.push(punc);
+            toks.push(group);
+            toks.push(TokenTree::Punct(Punct::new(';', Spacing::Alone)));
+            toks.push(TokenTree::Ident(Ident::new("String", self.0.span)));
+            toks.push(TokenTree::Punct(Punct::new(':', Spacing::Joint)));
+            toks.push(TokenTree::Punct(Punct::new(':', Spacing::Alone)));
+            toks.push(TokenTree::Ident(Ident::new("new", self.0.span)));
+            toks.push(TokenTree::Group(Group::new(
+                Delimiter::Parenthesis,
+                TokenStream::new(),
+            )));
+            let inner = TokenStream::from_iter(toks.drain(..));
+            toks.push(TokenTree::Group(Group::new(Delimiter::Brace, inner)));
+            TokenStream::from_iter(toks.drain(..))
         } else {
-            TokenStream::from_iter([
-                TokenTree::Ident(Ident::new("compile_error", self.0.span)),
-                punc,
-                group,
-                TokenTree::Punct(Punct::new(';', Spacing::Alone)),
-            ])
+            toks.push(TokenTree::Ident(Ident::new("compile_error", self.0.span)));
+            toks.push(punc);
+            toks.push(group);
+            toks.push(TokenTree::Punct(Punct::new(';', Spacing::Alone)));
+            TokenStream::from_iter(toks.drain(..))
         }
     }
 

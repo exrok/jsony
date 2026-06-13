@@ -15,13 +15,8 @@ fn braced(ts: TokenStream) -> TokenTree {
     TokenTree::Group(Group::new(Delimiter::Brace, ts))
 }
 
-#[rustfmt::skip]
-macro_rules! throw {
-    ($literal: literal @ $span: expr, $($tt:tt)*) => { Error::span_msg_ctx($literal, &($($tt)*), $span) };
-    ($literal: literal, $($tt:tt)*) => { Error::msg_ctx($literal, &($($tt)*)) };
-    ($literal: literal @ $span: expr) => { Error::span_msg($literal, $span) };
-    ($literal: literal) => { Error::msg($literal) };
-}
+// `throw!`, `append_tok!`, `splat!` and `token_stream!` are shared from the
+// `codegen` module via `#[macro_use]` (see main.rs) rather than re-defined here.
 const BB: u8 = b'b'; // \x08
 const TT: u8 = b't'; // \x09
 const NN: u8 = b'n'; // \x0A
@@ -68,79 +63,6 @@ fn tt_append_blit(output: &mut Vec<TokenTree>, chr: &str) {
         )),
     }));
 }
-
-#[rustfmt::skip]
-macro_rules! append_tok {
-    ($ident:ident $d:tt) => {
-       $d.tt_ident(stringify!($ident))
-    };
-    ({} $d: tt) => {
-        $d.tt_group_empty(Delimiter::Brace)
-    };
-    (() $d: tt) => {
-        $d.tt_group_empty(Delimiter::Parenthesis)
-    };
-    ([] $d:tt) => {
-        $d.tt_group_empty(Delimiter::Bracket)
-    };
-    ({$($tt:tt)*} $d: tt) => {{
-        let at = $d.buf.len(); $(append_tok!($tt $d);)* $d.tt_group(Delimiter::Brace, at);
-    }};
-    (($($tt:tt)*) $d: tt) => {{
-        let at = $d.buf.len(); $(append_tok!($tt $d);)* $d.tt_group(Delimiter::Parenthesis, at);
-    }};
-    ([[$($tt:tt)*]] $d:tt) => {{
-        let at = $d.buf.len(); $(append_tok!($tt $d);)* $d.tt_group(Delimiter::Bracket, at);
-    }};
-    (_ $d:tt) => { $d.tt_ident("_") };
-    ([$ident:ident] $d:tt) => {
-        $d.buf.push($($tt)*)
-    };
-    ([?($($cond:tt)*) $($body:tt)*] $d:tt) => {
-        if $($cond)* { $(append_tok!($body $d);)* }
-    };
-    ([@$($tt:tt)*] $d:tt) => {
-        $d.buf.push($($tt)*)
-    };
-    ([try $($tt:tt)*] $d:tt) => {
-        if let Err(err) = $($tt)* { return Err(err); }
-    };
-    ([for ($($iter:tt)*) {$($body:tt)*}] $d:tt) => {
-        for $($iter)* { $(append_tok!($body $d);)* }
-    };
-    ([#$($tt:tt)*] $d:tt) => {
-        $d.buf.push(TokenTree::from($($tt)*.clone()))
-    };
-    ([~$($tt:tt)*] $d:tt) => {
-        $d.buf.extend_from_slice($($tt)*)
-    };
-    ([$($rust:tt)*] $d:tt) => {{
-         $($rust)*
-    }};
-    (# $d:tt) => { $d.tt_punct_joint('\'') };
-    (: $d:tt) => { $d.tt_punct_alone(':') };
-    (~ $d:tt) => { $d.tt_punct_joint('-') };
-    (< $d:tt) => { $d.tt_punct_alone('<') };
-    (% $d:tt) => { $d.tt_punct_joint(':') };
-    (:: $d:tt) => {$d.tt_punct_joint(':'); $d.tt_punct_alone(':') };
-    (-> $d:tt) => {$d.tt_punct_joint('-'); $d.tt_punct_alone('>') };
-    (=> $d:tt) => {$d.tt_punct_joint('='); $d.tt_punct_alone('>') };
-    (> $d:tt) => { $d.tt_punct_alone('>') };
-    (! $d:tt) => { $d.tt_punct_alone('!') };
-    (| $d:tt) => { $d.tt_punct_alone('|') };
-    (. $d:tt) => { $d.tt_punct_alone('.') };
-    (; $d:tt) => { $d.tt_punct_alone(';') };
-    (& $d:tt) => { $d.tt_punct_alone('&') };
-    (= $d:tt) => { $d.tt_punct_alone('=') };
-    (, $d:tt) => { $d.tt_punct_alone(',') };
-    (* $d:tt) => { $d.tt_punct_alone('*') };
-}
-
-macro_rules! splat { ($d:tt; $($tt:tt)*) => { { $(append_tok!($tt $d);)* } } }
-
-macro_rules! token_stream { ($d:tt; $($tt:tt)*) => {{
-    let len = $d.buf.len(); $(append_tok!($tt $d);)* $d.split_off_stream(len)
-}}}
 
 fn is_char(tt: &TokenTree, ch: char) -> bool {
     if let TokenTree::Punct(p) = tt {

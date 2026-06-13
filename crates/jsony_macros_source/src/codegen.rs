@@ -150,7 +150,9 @@ fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBound
         buffer.buf.push(generic.ident.clone().into());
         if fmt.bounds && !generic.bounds.is_empty() {
             append_tok!(: buffer);
-            buffer.buf.extend(generic.bounds.iter().cloned());
+            for tok in generic.bounds {
+                buffer.buf.push(tok.clone());
+            }
         }
     }
 }
@@ -1123,6 +1125,33 @@ fn variant_key_literal(ctx: &Ctx, variant: &EnumVariant) -> Literal {
     }
 }
 
+/// Emit the match-arm pattern (without the `=>`) for a variant: `Self::Variant`,
+/// `Self::Variant(t0, t1, ..)`, or `Self::Variant { f0: t0, .. }`. Shared by the
+/// to_json and to_binary emitters. `rename_to_temp` binds struct fields to the
+/// scratch temp idents (to_json) instead of by name (to_binary).
+fn emit_variant_pattern(out: &mut RustWriter, ctx: &Ctx, variant: &EnumVariant, rename_to_temp: bool) {
+    splat! { out; [#: &ctx.target.name]::[#: variant.name] }
+    match variant.kind {
+        EnumKind::Tuple => {
+            splat! { out; (
+                [for (i, _) in variant.fields.iter().enumerate() { splat!(out; [#: &ctx.temp[i]],) }]
+            ) }
+        }
+        EnumKind::Struct => {
+            splat! { out; {
+                [for (i, field) in variant.fields.iter().enumerate() {
+                    if rename_to_temp {
+                        splat!(out; [#: field.name]: [#: &ctx.temp[i]],)
+                    } else {
+                        splat!(out; [#: field.name],)
+                    }
+                }]
+            } }
+        }
+        EnumKind::None => {}
+    }
+}
+
 fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     let mut text = String::with_capacity(64);
     let start = out.buf.len();
@@ -1141,32 +1170,12 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     splat!(
         out;
         match self {[
-            for (_, variant) in variants.iter().enumerate() {
-                splat!{out; [#: &ctx.target.name]::[#: variant.name]}
-                match variant.kind {
-                    EnumKind::Tuple => {
-                        splat!{out; (
-                            [for (i, _) in variant.fields.iter().enumerate() { splat!(out; [#: &ctx.temp[i]],) }]
-                        ) => [
-                            text.clear();
-                            enum_variant_to_json(out, ctx, variant, &mut text, all_objects);
-                        ]}
-                    },
-                    EnumKind::Struct => {
-                        splat!{out; {
-                            [for (i, field) in variant.fields.iter().enumerate() { splat!(out; [#: field.name]: [#: &ctx.temp[i]],) }]
-                        } => [
-                            text.clear();
-                            enum_variant_to_json(out, ctx, variant, &mut text, all_objects);
-                        ]}
-                    },
-                    EnumKind::None => {
-                        splat!{out; => [
-                                text.clear();
-                                enum_variant_to_json(out, ctx, variant, &mut text, all_objects);
-                        ]}
-                    },
-                }
+            for variant in variants {
+                emit_variant_pattern(out, ctx, variant, true);
+                splat!{out; => [
+                    text.clear();
+                    enum_variant_to_json(out, ctx, variant, &mut text, all_objects);
+                ]}
             }
         ]}
     );
@@ -1355,97 +1364,69 @@ fn enum_variant_from_json_struct(
             flattening = Some(field);
         }
     }
-    if let Some(flatten_field) = flattening {
-        splat! {
-            out;
-            // Note a type alias with an un-used generic is not an error
-            type __TEMP[?(ctx.target.has_lifetime())<#[#: &ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
-            let schema = ::jsony::__internal::ObjectSchema{
-                inner: const { &[struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())), field_rename)]},
-                phantom: ::std::marker::PhantomData,
-            };
-            let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
-            let mut temp_flatten = ::std::mem::MaybeUninit::<[~flatten_field.ty]>::uninit();
-            // todo should handle unneed mut
-            let mut flatten_visitor =
-                <[~flatten_field.ty] as ::jsony::json::FromJsonFieldVisitor>::new_field_visitor(
-                    ::std::ptr::NonNull::new_unchecked(temp_flatten.as_mut_ptr().cast()),
-                    parser,
-                );
-            if let Err(_err) = schema.[
-                if let Tag::Inline(_) = &ctx.target.tag {
-                    splat!(out; decode_with_alias)
-                } else {
-                    splat!(out; decode)
-                }
-            ](
-                ::std::ptr::NonNull::new_unchecked(temp.as_mut_ptr().cast()),
-                parser,
-                Some(&mut flatten_visitor),
-                [if let Tag::Inline(tag) = &ctx.target.tag {
-                    splat!(out; &[[([@Literal::usize_unsuffixed(1000).into()], [@Literal::string(tag).into()])]])
-                }]
-            ) {
-                [?(!untagged) return Err(_err);]
-            } else {
-                let temp2 = temp.assume_init();
-                dst.cast::<[ctx.target_type(out)]>().write([#: &ctx.target.name]::[#: variant.name] {
-                    [for ((i, field) in ordered_fields.iter().enumerate()) {
-                        [#: field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
-                    }]
-                    [#: flatten_field.name]: temp_flatten.assume_init(),
-                    [for field in variant.fields {
-                        if field.flags & Field::WITH_FROM_JSON_SKIP == 0 {
-                            continue;
-                        }
-                        splat!(out; [#: field.name]: [field_from_default(out, field, FROM_JSON)],)
-                    }]
-                });
-                [?(untagged || ctx.target.ignore_tag_adjacent_fields) break #success]
+    // The flatten and non-flatten cases differ only in three spots (the
+    // `temp_flatten`/`flatten_visitor` setup, the visitor argument, and one
+    // writeback field), so emit a single block and gate those pieces — this
+    // keeps the large schema/decode token sequence from being generated twice.
+    splat! {
+        out;
+        // Note a type alias with an un-used generic is not an error
+        type __TEMP[?(ctx.target.has_lifetime())<#[#: &ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
+        let schema = ::jsony::__internal::ObjectSchema{
+            inner: const { &[struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())), field_rename)]},
+            phantom: ::std::marker::PhantomData,
+        };
+        let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
+        [if let Some(flatten_field) = flattening {
+            splat! {
+                out;
+                let mut temp_flatten = ::std::mem::MaybeUninit::<[~flatten_field.ty]>::uninit();
+                // todo should handle unneed mut
+                let mut flatten_visitor =
+                    <[~flatten_field.ty] as ::jsony::json::FromJsonFieldVisitor>::new_field_visitor(
+                        ::std::ptr::NonNull::new_unchecked(temp_flatten.as_mut_ptr().cast()),
+                        parser,
+                    );
             }
-        }
-    } else {
-        splat! {
-            out;
-            // Note a type alias with an un-used generic is not an error
-            type __TEMP[?(ctx.target.has_lifetime())<#[#: &ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
-            let schema = ::jsony::__internal::ObjectSchema{
-                inner: const { &[struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())), field_rename)]},
-                phantom: ::std::marker::PhantomData,
-            };
-            let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
-            if let Err(_err) = schema.[
-                if let Tag::Inline(_) = &ctx.target.tag {
-                    splat!(out; decode_with_alias)
-                } else {
-                    splat!(out; decode)
-                }
-            ](
-                ::std::ptr::NonNull::new_unchecked(temp.as_mut_ptr().cast()),
-                parser,
-                None,
-                [if let Tag::Inline(tag) = &ctx.target.tag {
-                    splat!(out; &[[([@Literal::usize_unsuffixed(1000).into()], [@Literal::string(tag).into()])]])
-                }]
-            ) {
-                [?(!untagged) return Err(_err);]
+        }]
+        if let Err(_err) = schema.[
+            if let Tag::Inline(_) = &ctx.target.tag {
+                splat!(out; decode_with_alias)
             } else {
-                let temp2 = temp.assume_init();
-                dst.cast::<[ctx.target_type(out)]>().write([#: &ctx.target.name]::[#: variant.name] {
-                    [for ((i, field) in ordered_fields.iter().enumerate()) {
-                        [#: field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
-                    }]
-                    [for field in variant.fields {
-                        if field.flags & Field::WITH_FROM_JSON_SKIP == 0 {
-                            continue;
-                        }
-                        splat!(out; [#: field.name]: [field_from_default(out, field, FROM_JSON)],)
-                    }]
-                });
-                [?(untagged || ctx.target.ignore_tag_adjacent_fields) break #success]
+                splat!(out; decode)
             }
+        ](
+            ::std::ptr::NonNull::new_unchecked(temp.as_mut_ptr().cast()),
+            parser,
+            [if flattening.is_some() {
+                splat!(out; Some(&mut flatten_visitor))
+            } else {
+                splat!(out; None)
+            }],
+            [if let Tag::Inline(tag) = &ctx.target.tag {
+                splat!(out; &[[([@Literal::usize_unsuffixed(1000).into()], [@Literal::string(tag).into()])]])
+            }]
+        ) {
+            [?(!untagged) return Err(_err);]
+        } else {
+            let temp2 = temp.assume_init();
+            dst.cast::<[ctx.target_type(out)]>().write([#: &ctx.target.name]::[#: variant.name] {
+                [for ((i, field) in ordered_fields.iter().enumerate()) {
+                    [#: field.name]: temp2.[@Literal::usize_unsuffixed(i).into()],
+                }]
+                [if let Some(flatten_field) = flattening {
+                    splat!(out; [#: flatten_field.name]: temp_flatten.assume_init(),)
+                }]
+                [for field in variant.fields {
+                    if field.flags & Field::WITH_FROM_JSON_SKIP == 0 {
+                        continue;
+                    }
+                    splat!(out; [#: field.name]: [field_from_default(out, field, FROM_JSON)],)
+                }]
+            });
+            [?(untagged || ctx.target.ignore_tag_adjacent_fields) break #success]
         }
-    };
+    }
 }
 
 fn other_variant_key(out: &mut RustWriter, field: &Field) {
@@ -1539,7 +1520,7 @@ fn enum_variant_from_json(out: &mut RustWriter, ctx: &Ctx, variant: &EnumVariant
     out.tt_group(Delimiter::Brace, start);
 }
 
-fn stringly_enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
+fn find_other_variant<'a, 'b>(variants: &'b [EnumVariant<'a>]) -> Option<&'b EnumVariant<'a>> {
     let mut other: Option<&EnumVariant> = None;
     for variant in variants {
         if variant.attr.has_other() {
@@ -1549,6 +1530,11 @@ fn stringly_enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVari
             other = Some(variant);
         }
     }
+    other
+}
+
+fn stringly_enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
+    let other = find_other_variant(variants);
     let body = token_stream! {
         out;
         match parser.take_string() {
@@ -1694,15 +1680,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
             None
         }
     };
-    let mut other: Option<&EnumVariant> = None;
-    for variant in variants {
-        if variant.attr.has_other() {
-            if other.is_some() {
-                throw!("Only one other variant is currently supported." @ variant.name.span())
-            }
-            other = Some(variant);
-        }
-    }
+    let other = find_other_variant(variants);
     let body_start = out.buf.len();
     if let Some(tag) = inline_tag {
         splat!(
@@ -2139,12 +2117,10 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
         [?(let Some(version) = ctx.target.version) encoder.push([out.buf.push(TokenTree::Literal(Literal::u16_unsuffixed(version)))]);]
         match self {[
             for (i, variant) in variants.iter().enumerate() {
-                splat!{out; [#: &ctx.target.name]::[#: variant.name]}
+                emit_variant_pattern(out, ctx, variant, false);
                 match variant.kind {
                     EnumKind::Tuple => {
-                        splat!{out; (
-                            [for (i, _) in variant.fields.iter().enumerate() { splat!(out; [#: &ctx.temp[i]],) }]
-                        ) => {
+                        splat!{out; => {
                             encoder.push([@TokenTree::Literal(Literal::u8_unsuffixed(i as u8))]);
                             [for (i, field) in variant.fields.iter().enumerate() {
                                 encode_binary_field(out, ctx, field, &|out| splat!{out; [#: &ctx.temp[i]]})
@@ -2152,9 +2128,7 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
                         }}
                     },
                     EnumKind::Struct => {
-                        splat!{out; {
-                            [for field in variant.fields { splat!(out; [#: field.name],) }]
-                        } => {
+                        splat!{out; => {
                             encoder.push([@TokenTree::Literal(Literal::u8_unsuffixed(i as u8))]);
                             [for field in variant.fields {
                                 encode_binary_field(out, ctx, field, &|out| splat!{out; [#: field.name]})
@@ -2174,10 +2148,13 @@ fn enum_to_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
 }
 
 fn enum_from_binary(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
-    let fallback = variants
-        .iter()
-        .find(|variant| matches!(variant.kind, EnumKind::None))
-        .unwrap_or(&variants[0]);
+    let mut fallback = &variants[0];
+    for variant in variants {
+        if matches!(variant.kind, EnumKind::None) {
+            fallback = variant;
+            break;
+        }
+    }
     let body = token_stream! { out;
         // TODO ENUM SHOUlD support per variant versions.
         [decode_binary_version(out, ctx)]
@@ -2232,7 +2209,10 @@ fn handle_enum(output: &mut RustWriter, target: &DeriveTargetInner, variants: &[
             max_tuples = max_tuples.max(var.fields.len());
         }
     }
-    ctx.temp = (0..max_tuples).map(var).collect::<Vec<_>>();
+    ctx.temp.clear();
+    for n in 0..max_tuples {
+        ctx.temp.push(var(n));
+    }
     if target.from_str {
         enum_from_str(output, &ctx, variants);
     }
