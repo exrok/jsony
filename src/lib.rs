@@ -399,6 +399,7 @@ impl JsonError {
     pub fn decoding_error(&self) -> &'static DecodeError {
         self.inner.error
     }
+
     #[cold]
     fn trailing() -> JsonError {
         JsonError {
@@ -521,10 +522,10 @@ impl Default for JsonParserConfig {
     fn default() -> Self {
         Self {
             recursion_limit: 128,
-            allow_trailing_commas: Default::default(),
-            allow_comments: Default::default(),
-            allow_unquoted_field_keys: Default::default(),
-            allow_trailing_data: Default::default(),
+            allow_trailing_commas: false,
+            allow_comments: false,
+            allow_unquoted_field_keys: false,
+            allow_trailing_data: false,
         }
     }
 }

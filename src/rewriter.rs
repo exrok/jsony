@@ -26,6 +26,17 @@ use crate::{JsonError, JsonParserConfig};
 /// exceed this. This bounds the work of a single inline attempt and doubles as
 /// a sizing knob. The default imposes no limit.
 ///
+/// `max_inline_object_entries` and `max_inline_array_entries` bound inlining by
+/// container size: an object with more keys (or an array with more elements)
+/// than its cap is always expanded, even when its compact form fits the width.
+/// `0` keeps only the corresponding empty container inline. Both default to no
+/// limit.
+///
+/// `inline_bracket_padding` inserts a space just inside the brackets of an
+/// inlined container, rendering `{ "a": 1 }` and `[ 1, 2 ]` instead of
+/// `{"a": 1}` and `[1, 2]`. Empty containers stay tight and expanded output is
+/// unaffected. The default is `false`.
+///
 /// Comments (when allowed) are dropped from the output. Unquoted field keys
 /// are not supported by the prettifier and will return an error even if
 /// `allow_unquoted_field_keys` is set on the parser config.
@@ -37,8 +48,35 @@ pub struct PrettifyConfig<'a> {
     pub max_line_width: usize,
     /// Maximum container nesting permitted on a single inlined line.
     pub max_inline_depth: usize,
+    /// Maximum object key count permitted on a single inlined line. `0` keeps
+    /// only empty objects inline.
+    pub max_inline_object_entries: usize,
+    /// Maximum array element count permitted on a single inlined line. `0` keeps
+    /// only empty arrays inline.
+    pub max_inline_array_entries: usize,
+    /// Pad the insides of inlined container brackets with a space. Empty
+    /// containers are unaffected.
+    pub inline_bracket_padding: bool,
     /// Parser configuration controlling leniency and recursion limits.
     pub parser: JsonParserConfig,
+}
+
+impl<'a> PrettifyConfig<'a> {
+    pub const SMART: PrettifyConfig<'static> = PrettifyConfig {
+        indent: "  ",
+        max_line_width: 90,
+        max_inline_depth: 2,
+        max_inline_object_entries: 1,
+        max_inline_array_entries: 8,
+        inline_bracket_padding: false,
+        parser: JsonParserConfig {
+            recursion_limit: 128,
+            allow_trailing_commas: false,
+            allow_comments: false,
+            allow_unquoted_field_keys: false,
+            allow_trailing_data: false,
+        },
+    };
 }
 
 impl Default for PrettifyConfig<'_> {
@@ -47,6 +85,9 @@ impl Default for PrettifyConfig<'_> {
             indent: "  ",
             max_line_width: 0,
             max_inline_depth: usize::MAX,
+            max_inline_object_entries: usize::MAX,
+            max_inline_array_entries: usize::MAX,
+            inline_bracket_padding: false,
             parser: JsonParserConfig::default(),
         }
     }
@@ -77,14 +118,7 @@ static TRAILING_CHARACTERS: DecodeError = DecodeError {
 pub fn prettify(json: &str, config: &PrettifyConfig<'_>) -> Result<String, JsonError> {
     let mut parser = Parser::new(json, config.parser);
     let mut out = String::with_capacity(json.len() + json.len() / 8);
-    match walk(
-        &mut parser,
-        json,
-        &mut out,
-        config.indent,
-        config.max_line_width,
-        config.max_inline_depth,
-    ) {
+    match walk(&mut parser, json, &mut out, config) {
         Ok(()) => {
             if config.parser.allow_trailing_data || parser.at.eat_whitespace().is_none() {
                 Ok(out)
@@ -160,18 +194,27 @@ fn flat_scalar(p: &mut InnerParser<'_>, json: &str, out: &mut String, limit: usi
 /// Separators are `", "` between elements and `": "` after keys, with no
 /// newlines or indentation. Returns `false` the moment the output would exceed
 /// `limit` (the maximum permitted `out.len()`), the container nesting would
-/// exceed `depth` levels, or the input is malformed. On `false` the caller must
-/// truncate `out` and restore the parser. `depth` is the number of container
-/// levels still permitted (the current container consumes one); it also caps
-/// recursion, bounding the work of a single inline attempt.
+/// exceed `depth` levels, a container exceeds its `max_inline_*_entries` cap, or
+/// the input is malformed. On `false` the caller must truncate `out` and restore
+/// the parser. `depth` is the number of container levels still permitted (the
+/// current container consumes one); it also caps recursion, bounding the work of
+/// a single inline attempt.
 fn flat_value(
     p: &mut InnerParser<'_>,
     json: &str,
     out: &mut String,
     limit: usize,
     depth: usize,
+    config: &PrettifyConfig<'_>,
     peek: Peek,
 ) -> bool {
+    let max_obj = config.max_inline_object_entries;
+    let max_arr = config.max_inline_array_entries;
+    let pad = if config.inline_bracket_padding {
+        " "
+    } else {
+        ""
+    };
     match peek {
         Peek::Array => {
             if depth == 0 {
@@ -179,25 +222,37 @@ fn flat_value(
             }
             out.push('[');
             match p.enter_seen_array() {
-                Ok(Some(mut elem)) => loop {
-                    if !flat_value(p, json, out, limit, depth - 1, elem) {
+                Ok(Some(mut elem)) => {
+                    if max_arr == 0 {
                         return false;
                     }
-                    match p.array_step() {
-                        Ok(Some(next)) => {
-                            out.push_str(", ");
-                            if out.len() > limit {
-                                return false;
+                    out.push_str(pad);
+                    let mut elems = 1;
+                    loop {
+                        if !flat_value(p, json, out, limit, depth - 1, config, elem) {
+                            return false;
+                        }
+                        match p.array_step() {
+                            Ok(Some(next)) => {
+                                elems += 1;
+                                if elems > max_arr {
+                                    return false;
+                                }
+                                out.push_str(", ");
+                                if out.len() > limit {
+                                    return false;
+                                }
+                                elem = next;
                             }
-                            elem = next;
+                            Ok(None) => {
+                                out.push_str(pad);
+                                out.push(']');
+                                return out.len() <= limit;
+                            }
+                            Err(_) => return false,
                         }
-                        Ok(None) => {
-                            out.push(']');
-                            return out.len() <= limit;
-                        }
-                        Err(_) => return false,
                     }
-                },
+                }
                 Ok(None) => {
                     out.push(']');
                     out.len() <= limit
@@ -211,38 +266,50 @@ fn flat_value(
             }
             out.push('{');
             match p.enter_seen_object_at_first_key() {
-                Ok(Some(())) => loop {
-                    if !flat_scalar(p, json, out, limit) {
+                Ok(Some(())) => {
+                    if max_obj == 0 {
                         return false;
                     }
-                    if p.discard_colon().is_err() {
-                        return false;
-                    }
-                    out.push_str(": ");
-                    if out.len() > limit {
-                        return false;
-                    }
-                    let value = match p.peek() {
-                        Ok(value) => value,
-                        Err(_) => return false,
-                    };
-                    if !flat_value(p, json, out, limit, depth - 1, value) {
-                        return false;
-                    }
-                    match p.object_step_at_key() {
-                        Ok(Some(())) => {
-                            out.push_str(", ");
-                            if out.len() > limit {
-                                return false;
+                    out.push_str(pad);
+                    let mut keys = 1;
+                    loop {
+                        if !flat_scalar(p, json, out, limit) {
+                            return false;
+                        }
+                        if p.discard_colon().is_err() {
+                            return false;
+                        }
+                        out.push_str(": ");
+                        if out.len() > limit {
+                            return false;
+                        }
+                        let value = match p.peek() {
+                            Ok(value) => value,
+                            Err(_) => return false,
+                        };
+                        if !flat_value(p, json, out, limit, depth - 1, config, value) {
+                            return false;
+                        }
+                        match p.object_step_at_key() {
+                            Ok(Some(())) => {
+                                keys += 1;
+                                if keys > max_obj {
+                                    return false;
+                                }
+                                out.push_str(", ");
+                                if out.len() > limit {
+                                    return false;
+                                }
                             }
+                            Ok(None) => {
+                                out.push_str(pad);
+                                out.push('}');
+                                return out.len() <= limit;
+                            }
+                            Err(_) => return false,
                         }
-                        Ok(None) => {
-                            out.push('}');
-                            return out.len() <= limit;
-                        }
-                        Err(_) => return false,
                     }
-                },
+                }
                 Ok(None) => {
                     out.push('}');
                     out.len() <= limit
@@ -269,10 +336,11 @@ fn walk(
     parser: &mut Parser<'_>,
     json: &str,
     out: &mut String,
-    indent: &str,
-    max_line_width: usize,
-    max_inline_depth: usize,
+    config: &PrettifyConfig<'_>,
 ) -> Result<(), &'static DecodeError> {
+    let indent = config.indent;
+    let max_line_width = config.max_line_width;
+    let max_inline_depth = config.max_inline_depth;
     let mut stack: Vec<Frame> = Vec::with_capacity(16);
 
     let mut peek = match parser.at.peek() {
@@ -297,6 +365,7 @@ fn walk(
                     out,
                     start + budget,
                     max_inline_depth,
+                    config,
                     peek,
                 ) {
                     true
@@ -460,6 +529,9 @@ mod tests {
             indent: "\t",
             max_line_width: 0,
             max_inline_depth: usize::MAX,
+            max_inline_object_entries: usize::MAX,
+            max_inline_array_entries: usize::MAX,
+            inline_bracket_padding: false,
             parser: JsonParserConfig::default(),
         };
         let out = prettify(r#"{"a":1}"#, &cfg).unwrap();
@@ -489,6 +561,9 @@ mod tests {
             indent: "  ",
             max_line_width: 0,
             max_inline_depth: usize::MAX,
+            max_inline_object_entries: usize::MAX,
+            max_inline_array_entries: usize::MAX,
+            inline_bracket_padding: false,
             parser: JsonParserConfig {
                 allow_trailing_data: true,
                 ..JsonParserConfig::default()
@@ -503,6 +578,9 @@ mod tests {
             indent: "  ",
             max_line_width: 0,
             max_inline_depth: usize::MAX,
+            max_inline_object_entries: usize::MAX,
+            max_inline_array_entries: usize::MAX,
+            inline_bracket_padding: false,
             parser: JsonParserConfig {
                 allow_trailing_commas: true,
                 ..JsonParserConfig::default()
@@ -530,6 +608,9 @@ mod tests {
             indent: "  ",
             max_line_width: 0,
             max_inline_depth: usize::MAX,
+            max_inline_object_entries: usize::MAX,
+            max_inline_array_entries: usize::MAX,
+            inline_bracket_padding: false,
             parser: JsonParserConfig {
                 allow_unquoted_field_keys: true,
                 ..JsonParserConfig::default()
@@ -542,11 +623,126 @@ mod tests {
         pretty_full(json, max_line_width, usize::MAX)
     }
 
+    fn pretty_caps(
+        json: &str,
+        max_inline_object_entries: usize,
+        max_inline_array_entries: usize,
+    ) -> String {
+        let cfg = PrettifyConfig {
+            indent: "  ",
+            max_line_width: 80,
+            max_inline_depth: usize::MAX,
+            max_inline_object_entries,
+            max_inline_array_entries,
+            inline_bracket_padding: false,
+            parser: JsonParserConfig::default(),
+        };
+        prettify(json, &cfg).unwrap()
+    }
+
+    fn pretty_pad(json: &str) -> String {
+        let cfg = PrettifyConfig {
+            indent: "  ",
+            max_line_width: 80,
+            max_inline_depth: usize::MAX,
+            max_inline_object_entries: usize::MAX,
+            max_inline_array_entries: usize::MAX,
+            inline_bracket_padding: true,
+            parser: JsonParserConfig::default(),
+        };
+        prettify(json, &cfg).unwrap()
+    }
+
+    fn pretty_obj(json: &str, max_inline_object_entries: usize) -> String {
+        pretty_caps(json, max_inline_object_entries, usize::MAX)
+    }
+
+    fn pretty_arr(json: &str, max_inline_array_entries: usize) -> String {
+        pretty_caps(json, usize::MAX, max_inline_array_entries)
+    }
+
+    #[test]
+    fn inline_object_entries_cap() {
+        // A two-key object inlines only when the cap admits both keys.
+        let input = r#"{"a":1,"b":2}"#;
+        assert_eq!(pretty_obj(input, 2), r#"{"a": 1, "b": 2}"#);
+        assert_eq!(pretty_obj(input, 1), "{\n  \"a\": 1,\n  \"b\": 2\n}");
+
+        // Zero keeps only empty objects inline.
+        assert_eq!(pretty_obj(r#"{"a":1}"#, 0), "{\n  \"a\": 1\n}");
+        assert_eq!(pretty_obj("{}", 0), "{}");
+    }
+
+    #[test]
+    fn inline_object_entries_cap_propagates() {
+        // An oversized object blocks its enclosing array from inlining, while a
+        // sibling within the key budget still collapses on its own line.
+        let input = r#"[{"a":1,"b":2},{"c":3}]"#;
+        assert_eq!(
+            pretty_obj(input, 1),
+            "[\n  {\n    \"a\": 1,\n    \"b\": 2\n  },\n  {\"c\": 3}\n]"
+        );
+    }
+
+    #[test]
+    fn inline_array_entries_cap() {
+        // A three-element array inlines only when the cap admits all elements.
+        let input = r#"[1,2,3]"#;
+        assert_eq!(pretty_arr(input, 3), "[1, 2, 3]");
+        assert_eq!(pretty_arr(input, 2), "[\n  1,\n  2,\n  3\n]");
+
+        // Zero keeps only empty arrays inline.
+        assert_eq!(pretty_arr(r#"[1]"#, 0), "[\n  1\n]");
+        assert_eq!(pretty_arr("[]", 0), "[]");
+    }
+
+    #[test]
+    fn inline_array_entries_cap_propagates() {
+        // An oversized array blocks its enclosing object from inlining, while a
+        // sibling within the element budget still collapses on its own line.
+        let input = r#"{"a":[1,2,3],"b":[9]}"#;
+        assert_eq!(
+            pretty_arr(input, 2),
+            "{\n  \"a\": [\n    1,\n    2,\n    3\n  ],\n  \"b\": [9]\n}"
+        );
+    }
+
+    #[test]
+    fn inline_caps_are_independent() {
+        // Capping objects to 0 still lets a nested array inline.
+        assert_eq!(
+            pretty_caps(r#"{"a":[1,2,3]}"#, 0, usize::MAX),
+            "{\n  \"a\": [1, 2, 3]\n}"
+        );
+        // Capping arrays to 0 still lets nested objects inline.
+        assert_eq!(
+            pretty_caps(r#"[{"a":1},{"b":2}]"#, usize::MAX, 0),
+            "[\n  {\"a\": 1},\n  {\"b\": 2}\n]"
+        );
+    }
+
+    #[test]
+    fn inline_bracket_padding_pads_non_empty() {
+        // Every inlined bracket gains an inner space.
+        assert_eq!(pretty_pad(r#"{"a":[1,2]}"#), r#"{ "a": [ 1, 2 ] }"#);
+    }
+
+    #[test]
+    fn inline_bracket_padding_skips_empty() {
+        // Empty containers stay tight even with padding enabled.
+        assert_eq!(pretty_pad(r#"[{},[]]"#), "[ {}, [] ]");
+        assert_eq!(pretty_pad("{}"), "{}");
+        assert_eq!(pretty_pad("[]"), "[]");
+    }
+
     fn pretty_full(json: &str, max_line_width: usize, max_inline_depth: usize) -> String {
         let cfg = PrettifyConfig {
             indent: "  ",
             max_line_width,
             max_inline_depth,
+            max_inline_object_entries: usize::MAX,
+            max_inline_array_entries: usize::MAX,
+            inline_bracket_padding: false,
             parser: JsonParserConfig::default(),
         };
         prettify(json, &cfg).unwrap()
@@ -630,6 +826,9 @@ mod tests {
             indent: "  ",
             max_line_width: 80,
             max_inline_depth: usize::MAX,
+            max_inline_object_entries: usize::MAX,
+            max_inline_array_entries: usize::MAX,
+            inline_bracket_padding: false,
             parser: JsonParserConfig::default(),
         };
         assert!(prettify("[1,2,]", &cfg).is_err());

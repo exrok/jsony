@@ -1,6 +1,6 @@
 use crate::error::*;
 use std::borrow::Cow;
-use std::fmt;
+use std::fmt::{self};
 use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::ptr::NonNull;
@@ -29,18 +29,27 @@ impl Peek {
 
 impl fmt::Debug for Peek {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            b'n' => write!(f, "Null"),
-            b't' => write!(f, "True"),
-            b'f' => write!(f, "False"),
-            b'-' => write!(f, "Minus"),
-            b'I' => write!(f, "Infinity"),
-            b'N' => write!(f, "NaN"),
-            b'"' => write!(f, "String"),
-            b'[' => write!(f, "Array"),
-            b'{' => write!(f, "Object"),
-            _ => write!(f, "Peek({:?})", self.0 as char),
-        }
+        let text = match self.0 {
+            b'n' => "Null",
+            b't' => "True",
+            b'f' => "False",
+            b'-' => "Minus",
+            b'I' => "Infinity",
+            b'N' => "NaN",
+            b'"' => "String",
+            b'[' => "Array",
+            b'{' => "Object",
+            _ => {
+                if let Err(err) = f.write_str("Peak(") {
+                    return Err(err);
+                };
+                if let Err(err) = self.0.fmt(f) {
+                    return Err(err);
+                };
+                return f.write_str(")");
+            }
+        };
+        f.write_str(text)
     }
 }
 
