@@ -196,7 +196,7 @@ impl MaybeJson {
     }
 
     pub fn null() -> &'static MaybeJson {
-        MaybeJson::new("")
+        MaybeJson::new("null")
     }
 
     pub fn new(raw: &str) -> &MaybeJson {

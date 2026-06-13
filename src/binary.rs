@@ -201,13 +201,12 @@ impl<'a> Decoder<'a> {
     /// Returns a reference to the read array, or a zero-filled array if EOF is reached.
     pub fn byte_array<const N: usize>(&mut self) -> &'a [u8; N] {
         unsafe {
-            let nstart = self.start.as_ptr().wrapping_add(N);
-            if nstart > self.end.as_ptr() {
+            if N > self.remaining_size() {
                 self.eof = true;
                 return &[0; N];
             }
             let ptr = self.start.as_ptr() as *const [u8; N];
-            self.start = NonNull::new_unchecked(nstart);
+            self.start = self.start.add(N);
             &*ptr
         }
     }
@@ -241,7 +240,20 @@ impl<'a> Decoder<'a> {
             if value != 255 {
                 value as usize
             } else {
-                <u64 as FromBinary>::decode_binary(self) as usize
+                let value = <u64 as FromBinary>::decode_binary(self);
+                #[cfg(target_pointer_width = "64")]
+                {
+                    value as usize
+                }
+                #[cfg(not(target_pointer_width = "64"))]
+                {
+                    if value > usize::MAX as u64 {
+                        self.report_static_error("Invalid length, overflowed");
+                        0
+                    } else {
+                        value as usize
+                    }
+                }
             }
         }
     }
@@ -306,13 +318,12 @@ macro_rules! impl_bincode_for_numeric_primitive {
                 const POD: bool = true;
                 fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
                     unsafe {
-                        let nstart = decoder.start.add($sz);
-                        if nstart.as_ptr() > decoder.end.as_ptr() {
+                        if decoder.remaining_size() < $sz {
                             decoder.eof = true;
                             return 0;
                         }
                         let ptr = decoder.start.as_ptr() as *const [u8; $sz];
-                        decoder.start = nstart;
+                        decoder.start = decoder.start.add($sz);
                         <$ty>::from_le_bytes(*ptr)
                     }
                 }
@@ -440,13 +451,21 @@ where
         if const { T::POD && (cfg!(target_endian = "little") || size_of::<T>() == 1) } {
             // todo: could get perf improvement through a bit specializing but opt builds probably fine
             // already.
-            let (alloc, ptr, length) = decoder.try_borrow_or_copy_untyped_slice(Layout::new::<T>());
-            if alloc {
-                Cow::Owned(unsafe {
-                    Vec::from_raw_parts(ptr as *const T as *mut T, length, length)
+            if const { size_of::<T>() == 0 } {
+                let length = decoder.read_length();
+                Cow::Borrowed(unsafe {
+                    std::slice::from_raw_parts(NonNull::<T>::dangling().as_ptr(), length)
                 })
             } else {
-                Cow::Borrowed(unsafe { std::slice::from_raw_parts(ptr as *const T, length) })
+                let (alloc, ptr, length) =
+                    decoder.try_borrow_or_copy_untyped_slice(Layout::new::<T>());
+                if alloc {
+                    Cow::Owned(unsafe {
+                        Vec::from_raw_parts(ptr as *const T as *mut T, length, length)
+                    })
+                } else {
+                    Cow::Borrowed(unsafe { std::slice::from_raw_parts(ptr as *const T, length) })
+                }
             }
         } else {
             Cow::Owned(Vec::<T>::decode_binary(decoder))
@@ -462,6 +481,12 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for &'a [T] {
         const { assert!(T::POD && (cfg!(target_endian = "little") || size_of::<T>() == 1)) }
         // todo: could get perf improvement through a bit specializing but opt builds probably fine
         // already.
+        if const { size_of::<T>() == 0 } {
+            let length = decoder.read_length();
+            return unsafe {
+                std::slice::from_raw_parts(NonNull::<T>::dangling().as_ptr(), length)
+            };
+        }
         let (ptr, length) = decoder.try_borrow_untyped_slice(Layout::new::<T>());
         unsafe { std::slice::from_raw_parts(ptr as *const T, length) }
     }
@@ -502,7 +527,7 @@ unsafe impl<'a, T: FromBinary<'a>, const N: usize> FromBinary<'a> for [T; N] {
 
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         if T::POD {
-            let byte_size = N * std::mem::size_of::<T>();
+            let byte_size = std::mem::size_of::<[T; N]>();
             let bytes = decoder.byte_slice(byte_size);
             if bytes.len() >= byte_size {
                 let array = unsafe { std::ptr::read_unaligned::<[T; N]>(bytes.as_ptr().cast()) };
@@ -547,7 +572,10 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Vec<T> {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         let len = decoder.read_length();
         if T::POD {
-            let byte_size = len * std::mem::size_of::<T>();
+            let Some(byte_size) = len.checked_mul(std::mem::size_of::<T>()) else {
+                decoder.report_static_error("Invalid length, overflowed");
+                return Vec::new();
+            };
             let bytes = decoder.byte_slice(byte_size);
             if bytes.len() >= byte_size {
                 let mut vec: Vec<T> = Vec::with_capacity(len);
@@ -616,6 +644,9 @@ unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, V: FromBinary<'a>, S: BuildHasher
         for _ in 0..len {
             let k = K::decode_binary(decoder);
             let v = V::decode_binary(decoder);
+            if decoder.eof {
+                break;
+            }
             map.insert(k, v);
         }
         map
@@ -638,7 +669,11 @@ unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, S: BuildHasher + Default> FromBin
         let len = decoder.read_length();
         let mut map: Self = HashSet::with_capacity_and_hasher(len.min(4096), Default::default());
         for _ in 0..len {
-            map.insert(K::decode_binary(decoder));
+            let k = K::decode_binary(decoder);
+            if decoder.eof {
+                break;
+            }
+            map.insert(k);
         }
         map
     }

@@ -427,7 +427,12 @@ unsafe fn type_erased_decode_vec<'de>(
             unsafe {
                 if len == capacity {
                     if capacity == 0 {
-                        capacity = if layout.size() > 4096 { 1 } else { 4 };
+                        if max_cap == 0 {
+                            break 'failure Err(&DecodeError {
+                                message: "Array too large",
+                            });
+                        }
+                        capacity = (if layout.size() > 4096 { 1 } else { 4 }).min(max_cap);
                         ptr = std::alloc::alloc(Layout::from_size_align_unchecked(
                             layout.size() * capacity,
                             layout.align(),
@@ -438,7 +443,7 @@ unsafe fn type_erased_decode_vec<'de>(
                                 message: "Array too large",
                             });
                         }
-                        let new_capacity = capacity * 2;
+                        let new_capacity = capacity.saturating_mul(2).min(max_cap);
 
                         ptr = std::alloc::realloc(
                             ptr,
@@ -589,22 +594,14 @@ unsafe impl<'a, T: FromJson<'a>> FromJson<'a> for Option<T> {
                 Ok(())
             }
             Ok(_) => {
-                // not sure if this is legal or not or not??
-                // Currently enums can't use padding to store discrements
-                // Thus, the discriminant must store in niche
-                if const { size_of::<Option<T>>() == size_of::<T>() } {
-                    T::emplace_from_json(dest, parser)
-                } else {
-                    let mut value = std::mem::MaybeUninit::<T>::uninit();
-                    if let Err(err) = T::emplace_from_json(
-                        NonNull::new_unchecked(value.as_mut_ptr()).cast(),
-                        parser,
-                    ) {
-                        return Err(err);
-                    };
-                    dest.cast::<Option<T>>().write(Some(value.assume_init()));
-                    Ok(())
-                }
+                let mut value = std::mem::MaybeUninit::<T>::uninit();
+                if let Err(err) =
+                    T::emplace_from_json(NonNull::new_unchecked(value.as_mut_ptr()).cast(), parser)
+                {
+                    return Err(err);
+                };
+                dest.cast::<Option<T>>().write(Some(value.assume_init()));
+                Ok(())
             }
             Err(err) => Err(err),
         }
@@ -668,13 +665,14 @@ unsafe fn decode_into_array<'de>(
     drop_func: Option<impl Fn(NonNull<()>)>,
 ) -> Result<(), &'static DecodeError> {
     parser.at.enter_array()?;
-    let mut current = dest;
+    let mut initialized = 0;
     let err = 'error: {
         for i in 0..n {
+            let current = dest.byte_add(i * size);
             if let Err(err) = decode(current, parser) {
                 break 'error Err(err);
             }
-            current = current.byte_add(size);
+            initialized += 1;
             match parser.at.array_step() {
                 Ok(None) => {
                     if i + 1 == n {
@@ -694,10 +692,8 @@ unsafe fn decode_into_array<'de>(
         })
     };
     if let Some(drop_func) = drop_func {
-        let mut ptr = dest;
-        while ptr < current {
-            drop_func(ptr);
-            ptr = ptr.byte_add(size);
+        for i in 0..initialized {
+            drop_func(dest.byte_add(i * size));
         }
     }
     err
@@ -785,7 +781,11 @@ unsafe impl<'de, T0: FromJson<'de>> FromJson<'de> for (T0,) {
             Ok(Some(_)) => &ARRAY_LENGTH_MISMATCH,
             Err(err) => err,
         };
-        std::ptr::drop_in_place(dest.cast::<T0>().as_ptr());
+        std::ptr::drop_in_place(
+            dest.byte_add(std::mem::offset_of!(Self, 0))
+                .cast::<T0>()
+                .as_ptr(),
+        );
         Err(error)
     }
 }
@@ -825,9 +825,17 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>> FromJson<'de> for (T0, T1
                     Ok(Some(_)) => error = &ARRAY_LENGTH_MISMATCH,
                     Err(err) => error = err,
                 }
-                std::ptr::drop_in_place(dest.cast::<T1>().as_ptr());
+                std::ptr::drop_in_place(
+                    dest.byte_add(std::mem::offset_of!(Self, 1))
+                        .cast::<T1>()
+                        .as_ptr(),
+                );
             }
-            std::ptr::drop_in_place(dest.cast::<T0>().as_ptr());
+            std::ptr::drop_in_place(
+                dest.byte_add(std::mem::offset_of!(Self, 0))
+                    .cast::<T0>()
+                    .as_ptr(),
+            );
         }
         Err(error)
     }
@@ -881,11 +889,23 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>, T2: FromJson<'de>> FromJs
                         Ok(Some(_)) => error = &ARRAY_LENGTH_MISMATCH,
                         Err(err) => error = err,
                     }
-                    std::ptr::drop_in_place(dest.cast::<T2>().as_ptr());
+                    std::ptr::drop_in_place(
+                        dest.byte_add(std::mem::offset_of!(Self, 2))
+                            .cast::<T2>()
+                            .as_ptr(),
+                    );
                 }
-                std::ptr::drop_in_place(dest.cast::<T1>().as_ptr());
+                std::ptr::drop_in_place(
+                    dest.byte_add(std::mem::offset_of!(Self, 1))
+                        .cast::<T1>()
+                        .as_ptr(),
+                );
             }
-            std::ptr::drop_in_place(dest.cast::<T0>().as_ptr());
+            std::ptr::drop_in_place(
+                dest.byte_add(std::mem::offset_of!(Self, 0))
+                    .cast::<T0>()
+                    .as_ptr(),
+            );
         }
         Err(error)
     }
@@ -908,14 +928,14 @@ unsafe fn dyn_tuple_decode<'a>(
             return Err(&ARRAY_LENGTH_MISMATCH);
         }
     }
-    let mut fields = fields.iter();
+    let mut field_iter = fields.iter();
     let mut complete = 0;
     let error = 'with_error: {
-        if let Some((offset, decode_fn)) = fields.next() {
+        if let Some((offset, decode_fn)) = field_iter.next() {
             decode_fn(dest.byte_add(*offset), parser)?;
             complete += 1;
-            for (offset, decode_fn) in fields {
-                if let Err(err) = parser.at.array_step() {
+            for (offset, decode_fn) in field_iter {
+                if let Err(err) = parser.at.array_step_expecting_more() {
                     break 'with_error err;
                 }
                 if let Err(err) = decode_fn(dest.byte_add(*offset), parser) {
@@ -930,8 +950,8 @@ unsafe fn dyn_tuple_decode<'a>(
             Err(err) => err,
         }
     };
-    for drop_fn in drops.iter().take(complete) {
-        drop_fn(dest);
+    for ((offset, _), drop_fn) in fields.iter().zip(drops).take(complete) {
+        drop_fn(dest.byte_add(*offset));
     }
     Err(error)
 }

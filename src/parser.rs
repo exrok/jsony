@@ -157,6 +157,10 @@ static EXPECTED_SOME_IDENT: DecodeError = DecodeError {
     message: "Expected some ident",
 };
 
+static INVALID_UNQUOTED_KEY: DecodeError = DecodeError {
+    message: "Invalid unquoted key",
+};
+
 static EXPECTED_NUMERIC_KEY_TO_ONLY_CONTAIN_A_NUMBER: DecodeError = DecodeError {
     message: "Expected number key to only contain a number",
 };
@@ -369,17 +373,16 @@ impl<'j> InnerParser<'j> {
 
     pub fn read_seen_unquoted_object_key(&mut self) -> JsonResult<&'j str> {
         let start = self.index;
+        match self.ctx.input.get(self.index) {
+            Some(b'a'..=b'z' | b'A'..=b'Z' | b'_') => self.index += 1,
+            _ => return Err(&INVALID_UNQUOTED_KEY),
+        }
         while let Some(ch) = self.ctx.input.get(self.index) {
             if matches!(*ch, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') {
                 self.index += 1;
                 continue;
             }
             break;
-        }
-        if self.index == start {
-            return Err(&DecodeError {
-                message: "Invalid unquoted key",
-            });
         }
         let end = self.index;
         if let Some(next) = self.eat_whitespace() {
