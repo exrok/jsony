@@ -66,9 +66,11 @@ pub mod helper;
 pub mod json;
 mod lazy_parser;
 pub mod parser;
+mod rewriter;
 mod strings;
 pub mod text;
 mod text_writer;
+pub use rewriter::{prettify, PrettifyConfig};
 
 mod third_party;
 

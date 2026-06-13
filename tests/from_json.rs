@@ -401,8 +401,8 @@ fn to_from_str() {
 #[test]
 fn tag_content_enum_with_attribute_whitespace() {
     mod parsed_string {
-        use std::{fmt::Display, str::FromStr};
         use jsony::json::DecodeError;
+        use std::{fmt::Display, str::FromStr};
         pub fn decode_json<T: FromStr>(
             parser: &mut jsony::parser::Parser<'_>,
         ) -> Result<T, &'static DecodeError>
@@ -429,18 +429,12 @@ fn tag_content_enum_with_attribute_whitespace() {
 
     // No whitespace
     let no_ws = r#"{"type":"integer","value":"42"}"#;
-    assert_eq!(
-        from_json::<Scalar>(no_ws).unwrap(),
-        Scalar::Integer(42)
-    );
+    assert_eq!(from_json::<Scalar>(no_ws).unwrap(), Scalar::Integer(42));
 
     // Whitespace after colons (the bug: parser didn't skip whitespace before
     // reading tag value string in tag/content enums)
     let with_ws = r#"{"type": "integer", "value": "42"}"#;
-    assert_eq!(
-        from_json::<Scalar>(with_ws).unwrap(),
-        Scalar::Integer(42)
-    );
+    assert_eq!(from_json::<Scalar>(with_ws).unwrap(), Scalar::Integer(42));
 
     // Content before tag (different code path in tag_query_at_content_next_object)
     let content_first = r#"{"value": "42", "type": "integer"}"#;

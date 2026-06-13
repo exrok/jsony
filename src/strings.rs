@@ -286,14 +286,16 @@ fn push_wtf8_codepoint(n: u32, scratch: &mut [MaybeUninit<u8>; 4]) -> usize {
             }
             0x800..=0xFFFF => {
                 ptr.write(((n >> 12) & 0b0000_1111) as u8 | 0b1110_0000);
-                ptr.add(1).write(((n >> 6) & 0b0011_1111) as u8 | 0b1000_0000);
+                ptr.add(1)
+                    .write(((n >> 6) & 0b0011_1111) as u8 | 0b1000_0000);
                 3
             }
             0x1_0000..=0x10_FFFF => {
                 ptr.write(((n >> 18) & 0b0000_0111) as u8 | 0b1111_0000);
                 ptr.add(1)
                     .write(((n >> 12) & 0b0011_1111) as u8 | 0b1000_0000);
-                ptr.add(2).write(((n >> 6) & 0b0011_1111) as u8 | 0b1000_0000);
+                ptr.add(2)
+                    .write(((n >> 6) & 0b0011_1111) as u8 | 0b1000_0000);
                 4
             }
             0x11_0000.. => unreachable!(),

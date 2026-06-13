@@ -1309,10 +1309,7 @@ fn enum_rename_all() {
     #[derive(Jsony, Debug, PartialEq)]
     #[jsony(Json, rename_all = "camelCase")]
     enum MyEnum<'a> {
-        VariantOne {
-            my_field: &'a str,
-            other_field: u32,
-        },
+        VariantOne { my_field: &'a str, other_field: u32 },
         VariantTwo(&'a str),
         UnitVariant,
     }
