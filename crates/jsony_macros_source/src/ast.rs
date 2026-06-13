@@ -1125,7 +1125,11 @@ pub fn parse_enum<'a>(
             EnumKind::Struct => {
                 target.enum_flags |= ENUM_CONTAINS_STRUCT_VARIANT;
                 let start = field_buf.len();
-                parse_struct_fields(field_buf, &tt_buf[variant.buf_start..variant.buf_end], attr_buf);
+                parse_struct_fields(
+                    field_buf,
+                    &tt_buf[variant.buf_start..variant.buf_end],
+                    attr_buf,
+                );
                 variant.buf_start = start;
                 variant.buf_end = field_buf.len();
             }

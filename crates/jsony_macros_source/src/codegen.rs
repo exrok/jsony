@@ -186,11 +186,11 @@ fn bodyless_impl_from(
     splat! {
         output;
         impl <#[#: lifetime] [?(!generics.is_empty()), [fmt_generics(output, generics, DEF)]] >
-         [~&crate_path]::[?(let Some(sub) = sub) [#: &sub]::][#: &trait_name]<#[#: lifetime]> for [#: &target.name][?(any_generics) <
+         [~&crate_path]::[?(let Some(sub) = &sub) [#: sub]::][#: &trait_name]<#[#: lifetime]> for [#: &target.name][?(any_generics) <
             [fmt_generics(output, &target.generics, USE)]
         >]  [?(!target.where_clauses.is_empty() || !target.generic_field_types.is_empty())
              where [for (ty in &target.generic_field_types) {
-                [~ty]: [#: &trait_name]<#[#: lifetime]>,
+                [~ty]: [~&crate_path]::[?(let Some(sub) = &sub) [#: sub]::][#: &trait_name]<#[#: lifetime]>,
             }] [~&target.where_clauses] ]
     };
 }
@@ -274,7 +274,7 @@ fn impl_to_binary(
         >]  [?(!target.where_clauses.is_empty() || !target.generic_field_types.is_empty())
              where [
                 for ty in &target.generic_field_types {
-                    splat!(out; [~ty]: ToBinary,)
+                    splat!(out; [~ty]: [~&crate_path]::ToBinary,)
                 }
              ]] {
             [if target.pod {
@@ -982,7 +982,7 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
             [?(!ctx.target.where_clauses.is_empty() || !ctx.target.generic_field_types.is_empty())
             where [
             for (ty in &ctx.target.generic_field_types) {
-                [~ty]: FromJson<#[#: &ctx.lifetime]>
+                [~ty]: ::jsony::FromJson<#[#: &ctx.lifetime]>
             }
             ]]
             {
@@ -1129,7 +1129,12 @@ fn variant_key_literal(ctx: &Ctx, variant: &EnumVariant) -> Literal {
 /// `Self::Variant(t0, t1, ..)`, or `Self::Variant { f0: t0, .. }`. Shared by the
 /// to_json and to_binary emitters. `rename_to_temp` binds struct fields to the
 /// scratch temp idents (to_json) instead of by name (to_binary).
-fn emit_variant_pattern(out: &mut RustWriter, ctx: &Ctx, variant: &EnumVariant, rename_to_temp: bool) {
+fn emit_variant_pattern(
+    out: &mut RustWriter,
+    ctx: &Ctx,
+    variant: &EnumVariant,
+    rename_to_temp: bool,
+) {
     splat! { out; [#: &ctx.target.name]::[#: variant.name] }
     match variant.kind {
         EnumKind::Tuple => {
