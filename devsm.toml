@@ -62,3 +62,13 @@ require = ["build-jsony-macros"]
 pwd = "."
 cmd = ["cargo", "+nightly", "miri", "test", "--test", "soundness"]
 require = ["build-jsony-macros"]
+
+# Diagnostics tier: deliberately-broken derive cases compiled with
+# --error-format=json, asserting each error's message and span. This is trybuild
+# in spirit but compiles every case in parallel against the shared pre-built
+# deps. It exits nonzero while known diagnostic gaps remain (see the Diagnostics
+# tier section in docs/derive-tester.md); fixing a gap flips its case to pass.
+[action.derive-tester-diag]
+pwd = "."
+cmd = ["cargo", "run", "-p", "derive_tester", "--release", "--", "diag", "500"]
+require = ["build-jsony-macros"]

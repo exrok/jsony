@@ -895,13 +895,13 @@ mod test {
         let boxed: Box<u32> = Box::new(value);
         boxed.encode_binary(&mut output);
         assert_eq!(output.buffer_slice(), bare.buffer_slice());
-        assert_eq!(from_binary::<Box<u32>>(output.buffer_slice()).unwrap(), boxed);
+        assert_eq!(
+            from_binary::<Box<u32>>(output.buffer_slice()).unwrap(),
+            boxed
+        );
 
         let mut tester = Tester::default();
-        tester.assert_roundtrip_all(&[
-            Box::new(String::from("hello")),
-            Box::new(String::new()),
-        ]);
+        tester.assert_roundtrip_all(&[Box::new(String::from("hello")), Box::new(String::new())]);
         tester.assert_roundtrip(&Box::new(vec![1u32, 2, 3]));
     }
 

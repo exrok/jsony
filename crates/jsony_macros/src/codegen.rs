@@ -62,7 +62,7 @@ fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBound
             }
             GenericKind::Type => (),
             GenericKind::Const => {
-                buffer.blit_ident(179);
+                buffer.blit_ident(180);
             }
         }
         buffer.buf.push(generic.ident.clone().into());
@@ -3047,7 +3047,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
                     out.blit_ident(163);
                     {
                         let at = out.buf.len();
-                        out.blit_ident(181);
+                        out.blit_ident(182);
                         out.tt_group(Delimiter::Parenthesis, at);
                     };
                     out.tt_group(Delimiter::Parenthesis, at);
@@ -3169,7 +3169,7 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
                 out.blit(1002, 2);
                 {
                     let at = out.buf.len();
-                    out.blit_ident(181);
+                    out.blit_ident(182);
                     out.tt_group(Delimiter::Parenthesis, at);
                 };
                 out.blit(731, 2);

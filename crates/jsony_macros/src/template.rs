@@ -13,6 +13,14 @@ fn parend(ts: TokenStream) -> TokenTree {
 fn braced(ts: TokenStream) -> TokenTree {
     TokenTree::Group(Group::new(Delimiter::Brace, ts))
 }
+/// The `encode_json__jsony` method-call ident, spanned at the value (or key) it
+/// encodes. Method resolution is by name, so the span only steers diagnostics:
+/// when the value's type lacks `ToJson`, the `no method named encode_json__jsony`
+/// error then points at the value rather than at the whole `object!`/`array!`
+/// invocation.
+fn encode_method(span: Span) -> TokenTree {
+    TokenTree::Ident(Ident::new("encode_json__jsony", span))
+}
 const BB: u8 = b'b';
 const TT: u8 = b't';
 const NN: u8 = b'n';
@@ -790,12 +798,13 @@ impl Codegen {
             (self.out).blit(734, 4);
         };
     }
-    fn dyn_key(&mut self, _span: Span, expr: TokenStream) {
+    fn dyn_key(&mut self, span: Span, expr: TokenStream) {
         self.flush_text();
         {
             (self.out).blit(523, 13);
             (self.out).buf.push(parend(expr));
-            (self.out).blit(537, 2);
+            (self.out).blit_punct(0);
+            (self.out).buf.push(encode_method(span));
             {
                 let at = (self.out).buf.len();
                 (self.out).buf.push(TokenTree::from(self.builder.clone()));
@@ -816,13 +825,14 @@ impl Codegen {
     fn raw_escape_inline_value(&mut self, raw: &str) {
         raw_escape(raw, &mut self.text);
     }
-    fn value_from_expression(&mut self, _span: Span, expr: TokenTree) {
+    fn value_from_expression(&mut self, span: Span, expr: TokenTree) {
         self.initial_capacity += 2;
         self.flush_text();
         match self.flatten {
             Flatten::None => {
                 (self.out).buf.push(expr);
-                (self.out).blit(537, 2);
+                (self.out).blit_punct(0);
+                (self.out).buf.push(encode_method(span));
                 {
                     let at = (self.out).buf.len();
                     (self.out).buf.push(TokenTree::from(self.builder.clone()));
@@ -834,7 +844,8 @@ impl Codegen {
                 (self.out).buf.push(TokenTree::from(self.builder.clone()));
                 (self.out).blit(549, 17);
                 (self.out).buf.push(expr);
-                (self.out).blit(537, 2);
+                (self.out).blit_punct(0);
+                (self.out).buf.push(encode_method(span));
                 {
                     let at = (self.out).buf.len();
                     (self.out).buf.push(TokenTree::from(self.builder.clone()));
@@ -848,7 +859,8 @@ impl Codegen {
                 (self.out).buf.push(TokenTree::from(self.builder.clone()));
                 (self.out).blit(1408, 17);
                 (self.out).buf.push(expr);
-                (self.out).blit(537, 2);
+                (self.out).blit_punct(0);
+                (self.out).buf.push(encode_method(span));
                 {
                     let at = (self.out).buf.len();
                     (self.out).buf.push(TokenTree::from(self.builder.clone()));

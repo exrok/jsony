@@ -149,7 +149,10 @@ fn emit_arm(out: &mut String, case: &Case) {
     let _ = writeln!(out, "        {name:?} => {{");
     // Live-byte baseline. Every path below restores it before the leak check,
     // unless it early-returns on a correctness failure.
-    let _ = writeln!(out, "            let before = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(
+        out,
+        "            let before = LIVE.load(Ordering::Relaxed);"
+    );
     let _ = writeln!(out, "            match kind {{");
 
     if can_decode {
@@ -202,7 +205,10 @@ fn emit_arm(out: &mut String, case: &Case) {
             );
         }
         if bin {
-            let _ = writeln!(out, "                    let bytes = jsony::to_binary(&v1);");
+            let _ = writeln!(
+                out,
+                "                    let bytes = jsony::to_binary(&v1);"
+            );
             let _ = writeln!(
                 out,
                 "                    let v3: {name} = match jsony::from_binary(&bytes) {{ Ok(v) => v, Err(_) => return Err(format!(\"from_binary failed (json={{input}})\")) }};"

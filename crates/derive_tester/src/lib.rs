@@ -119,6 +119,7 @@ mod token;
 // --- Test-mode layers built on top ---
 mod casing;
 mod compile;
+pub mod diag;
 mod emit;
 mod gen;
 pub mod run;

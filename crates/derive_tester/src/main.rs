@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use derive_tester::run::{self, Report};
+use derive_tester::run::{self, DiagReport, Report};
 
 fn report(r: &Report) {
     println!(
@@ -25,6 +25,31 @@ fn report(r: &Report) {
     }
 }
 
+fn diag_report(r: &DiagReport) {
+    println!(
+        "derive_tester diag: {}/{} pass, {} deferred (known gaps), {} real failure(s)",
+        r.passed,
+        r.total,
+        r.deferred.len(),
+        r.failures.len()
+    );
+    for d in &r.deferred {
+        println!("  deferred gap — {d}");
+    }
+    for name in &r.fixed {
+        println!("  known gap now passes, remove its marker: {name}");
+    }
+    if r.failures.is_empty() {
+        println!("ALL PASS (deferred gaps excluded)");
+        return;
+    }
+    for f in &r.failures {
+        eprint!("{f}");
+    }
+    eprintln!("{} real diagnostic failure(s)", r.failures.len());
+    std::process::exit(1);
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(String::as_str).unwrap_or("quick");
@@ -37,14 +62,32 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `diag [gen_count]` runs the diagnostics tier (deliberately broken cases
+    // with span + message assertions) and reports on its own path.
+    if mode == "diag" {
+        let gen_count: u64 = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(200);
+        let seed: Option<u64> = std::env::var("DT_SEED")
+            .ok()
+            .map(|s| s.parse())
+            .transpose()?;
+        let r = run::diag(gen_count, seed)?;
+        diag_report(&r);
+        return Ok(());
+    }
+
     // <count> [samples] [batch_size] argument triple shared by run/sound/asan.
-    let count = || -> Result<u64> { Ok(args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(1000)) };
-    let samples = || -> Result<u32> { Ok(args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(20)) };
+    let count =
+        || -> Result<u64> { Ok(args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(1000)) };
+    let samples =
+        || -> Result<u32> { Ok(args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(20)) };
     let batch = || -> Result<u64> { Ok(args.get(4).map(|s| s.parse()).transpose()?.unwrap_or(50)) };
     // `DT_SEED=<u64>` pins the id band so a prior run reproduces exactly. Unset
     // (the default) draws a fresh random band each run, so re-running explores
     // new cases rather than re-testing the same ids.
-    let seed: Option<u64> = std::env::var("DT_SEED").ok().map(|s| s.parse()).transpose()?;
+    let seed: Option<u64> = std::env::var("DT_SEED")
+        .ok()
+        .map(|s| s.parse())
+        .transpose()?;
 
     let r = match mode {
         "quick" => run::quick()?,
@@ -61,7 +104,7 @@ fn main() -> Result<()> {
             seed,
         )?,
         other => {
-            bail!("unknown mode: {other} (expected `quick`, `run`/`sound`/`asan <count> [samples] [batch]`, or `case <id>`)")
+            bail!("unknown mode: {other} (expected `quick`, `run`/`sound`/`asan <count> [samples] [batch]`, `diag [gen_count]`, or `case <id>`)")
         }
     };
     report(&r);

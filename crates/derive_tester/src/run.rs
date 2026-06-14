@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 
 use crate::compile::{Toolchain, ToolchainSpec, ASAN, THROUGHPUT};
+use crate::diag::{self, check_case};
 use crate::emit::{emit_batch, FIELD_SEP, KIND_BAD, KIND_EQ, KIND_OK};
 use crate::gen::{case_from_id, sample, sample_json, Case};
 
@@ -302,6 +303,72 @@ pub fn sweep(count: u64, samples: u32, batch: u64, bad: bool, seed: Option<u64>)
 /// waves since sanitized batches compile and run slower. `seed` pins the id band.
 pub fn asan(count: u64, samples: u32, batch: u64, seed: Option<u64>) -> Result<Report> {
     run(band(seed, count), batch, samples, 8, true, ASAN)
+}
+
+// --- Diagnostics tier ---
+
+/// Cap on rendered failure reports kept in a diagnostics run (all are counted).
+const MAX_DIAG_REPORTS: usize = 200;
+
+#[derive(Default)]
+pub struct DiagReport {
+    pub total: usize,
+    pub passed: usize,
+    /// Rendered reports for genuinely failing cases (capped at
+    /// [`MAX_DIAG_REPORTS`]). Only these make the run exit nonzero.
+    pub failures: Vec<String>,
+    /// One-line notes for known-gap cases that still fail (expected, deferred).
+    pub deferred: Vec<String>,
+    /// Names of known-gap cases that now pass, so their marker can be removed.
+    pub fixed: Vec<String>,
+}
+
+/// Diagnostics tier: compile the curated catalog plus `gen_count` generated
+/// missing-impl cases, each with `--error-format=json`, and assert every error's
+/// message and span. Cases compile independently and in parallel against the
+/// shared pre-built dependency set. `seed` pins the generated id band the way
+/// [`band`] does for the sweep.
+pub fn diag(gen_count: u64, seed: Option<u64>) -> Result<DiagReport> {
+    let work = PathBuf::from("/tmp/derive_tester_work");
+    std::fs::create_dir_all(&work)?;
+    let tc = Toolchain::prepare(&jsony_root()?, work, THROUGHPUT).context("preparing toolchain")?;
+
+    let gen_start = match seed {
+        Some(s) => s,
+        None => rand::random::<u64>() % (u64::MAX - gen_count.max(1)),
+    };
+    if gen_count > 0 {
+        eprintln!(
+            "derive_tester diag band: generated ids {gen_start}..{} ({gen_count} cases). \
+             Reproduce with DT_SEED={gen_start}.",
+            gen_start + gen_count
+        );
+    }
+    let cases = diag::all_cases(gen_start, gen_count);
+
+    let outcomes: Vec<crate::diag::Outcome> = cases
+        .par_iter()
+        .enumerate()
+        .map(|(i, c)| check_case(&tc, &format!("d{i}"), c))
+        .collect();
+
+    let mut report = DiagReport {
+        total: outcomes.len(),
+        ..Default::default()
+    };
+    for (c, o) in cases.iter().zip(&outcomes) {
+        match (o.passed(), c.known_gap) {
+            (true, None) => report.passed += 1,
+            (true, Some(_)) => report.fixed.push(c.name.clone()),
+            (false, Some(reason)) => report.deferred.push(format!("{}: {reason}", c.name)),
+            (false, None) => {
+                if report.failures.len() < MAX_DIAG_REPORTS {
+                    report.failures.push(o.render());
+                }
+            }
+        }
+    }
+    Ok(report)
 }
 
 /// Emit the standalone source for a single case id, plus its sampled inputs as a

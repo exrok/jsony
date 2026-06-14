@@ -429,7 +429,10 @@ fn parse_container_attr(
                 Tag::Default => (),
             }
             let [TokenTree::Literal(tag_name), rest @ ..] = value else {
-                throw!("Expected a tag" @ attr.span())
+                match value.first() {
+                    Some(tt) => throw!("Expected a string literal" @ tt.span()),
+                    None => throw!("Expected a tag" @ attr.span()),
+                }
             };
             value = rest;
             match crate::lit::literal_inline(tag_name.to_string()) {

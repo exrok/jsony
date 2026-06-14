@@ -206,6 +206,34 @@ jsony_macros = {{ path = "{jsony_root}/crates/jsony_macros" }}
         Ok(bin)
     }
 
+    /// Type-check `source` without codegen, capturing the compiler's structured
+    /// diagnostics. Emits metadata only (no link) and `--error-format=json`, so
+    /// errors and their spans come back as one JSON object per stderr line. The
+    /// diagnostics tier parses these to assert error message and span. The exit
+    /// status is ignored: a "broken" case is expected to fail, and the verdict
+    /// comes from the parsed diagnostics, not the status.
+    pub fn check_json(&self, tag: &str, source: &str) -> Result<String, String> {
+        let src = self.work_dir.join(format!("{tag}.rs"));
+        let meta = self.work_dir.join(format!("{tag}.rmeta"));
+        std::fs::write(&src, source).map_err(|e| format!("write {tag}.rs: {e}"))?;
+        let cmd = self
+            .base
+            .replacen("src/main.rs", &src.to_string_lossy(), 1)
+            .replacen("--emit=link", "--emit=metadata", 1);
+        let full = format!(
+            "{} {} --error-format=json -o {}",
+            self.envs,
+            cmd,
+            meta.display()
+        );
+        let out = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&full)
+            .output()
+            .map_err(|e| format!("spawn rustc: {e}"))?;
+        Ok(String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+
     /// Run a compiled batch binary with the input file path as its argument,
     /// returning its captured output. Applies the spec's run environment (e.g.
     /// `ASAN_OPTIONS`).

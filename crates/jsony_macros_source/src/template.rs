@@ -15,6 +15,15 @@ fn braced(ts: TokenStream) -> TokenTree {
     TokenTree::Group(Group::new(Delimiter::Brace, ts))
 }
 
+/// The `encode_json__jsony` method-call ident, spanned at the value (or key) it
+/// encodes. Method resolution is by name, so the span only steers diagnostics:
+/// when the value's type lacks `ToJson`, the `no method named encode_json__jsony`
+/// error then points at the value rather than at the whole `object!`/`array!`
+/// invocation.
+fn encode_method(span: Span) -> TokenTree {
+    TokenTree::Ident(Ident::new("encode_json__jsony", span))
+}
+
 // `throw!`, `append_tok!`, `splat!` and `token_stream!` are shared from the
 // `codegen` module via `#[macro_use]` (see main.rs) rather than re-defined here.
 const BB: u8 = b'b'; // \x08
@@ -752,11 +761,11 @@ impl Codegen {
         self.flush_text();
         splat!((self.out); [#self.builder].end_json_object(););
     }
-    fn dyn_key(&mut self, _span: Span, expr: TokenStream) {
+    fn dyn_key(&mut self, span: Span, expr: TokenStream) {
         self.flush_text();
         splat! {(self.out);
             let _: ::jsony::json::AlwaysString =
-                [@parend(expr)].encode_json__jsony([#self.builder]);
+                [@parend(expr)].[@encode_method(span)]([#self.builder]);
         };
         self.text.push_str(":");
     }
@@ -772,19 +781,19 @@ impl Codegen {
         raw_escape(raw, &mut self.text);
     }
 
-    fn value_from_expression(&mut self, _span: Span, expr: TokenTree) {
+    fn value_from_expression(&mut self, span: Span, expr: TokenTree) {
         self.initial_capacity += 2;
         self.flush_text();
         match self.flatten {
             Flatten::None => {
                 splat! {(self.out);
-                    [@expr].encode_json__jsony([#self.builder]);
+                    [@expr].[@encode_method(span)]([#self.builder]);
                 }
             }
             Flatten::Object => {
                 splat! {(self.out);
                     [#self.builder].join_parent_json_value_with_next();
-                    let _: ::jsony::json::AlwaysObject = [@expr].encode_json__jsony(
+                    let _: ::jsony::json::AlwaysObject = [@expr].[@encode_method(span)](
                         [#self.builder]
                     );
                     [#self.builder].join_object_with_next_value();
@@ -793,7 +802,7 @@ impl Codegen {
             Flatten::Array => {
                 splat! {(self.out);
                     [#self.builder].join_parent_json_value_with_next();
-                    let _: ::jsony::json::AlwaysArray = [@expr].encode_json__jsony(
+                    let _: ::jsony::json::AlwaysArray = [@expr].[@encode_method(span)](
                         [#self.builder]
                     );
                     [#self.builder].join_array_with_next_value();

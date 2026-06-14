@@ -524,7 +524,10 @@ fn build_enum(case: &Case, repr: EnumRepr, variants: &[VariantSpec], rand: &mut 
         EnumRepr::Adjacent => {
             let mut members = vec![(TAG.to_string(), Node::Raw(json_string(&name)))];
             if v.kind != VarKind::Unit {
-                members.push((CONTENT.to_string(), build_variant_content(v, field_rule, rand)));
+                members.push((
+                    CONTENT.to_string(),
+                    build_variant_content(v, field_rule, rand),
+                ));
             }
             Node::Object(members)
         }
