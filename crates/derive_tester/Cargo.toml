@@ -1,0 +1,24 @@
+[package]
+name = "derive_tester"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "derive_tester"
+path = "src/lib.rs"
+
+[[bin]]
+name = "derive_tester"
+path = "src/main.rs"
+
+[dependencies]
+# Vendored proc-macro2 fork (provides Ident::new_static / owned / Static used by the codegen macros).
+proc-macro2 = { path = "./proc-macro2" }
+# jsony "0.1" resolves to the local crate via the workspace [patch.crates-io].
+jsony = "0.1"
+bumpalo = "3.16.0"
+rand = { version = "0.8.5", features = ["small_rng"] }
+itoa = "1.0"
+anyhow = "1.0"
+rayon = "1.10"

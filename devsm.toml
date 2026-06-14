@@ -22,3 +22,12 @@ require = ["build-jsony-macros"]
 [action.macro-tester]
 pwd = "./crates/jsony_macros_source"
 cmd = ["cargo", "run"]
+
+# Near-exhaustive derive-macro test harness (see crates/derive_tester).
+# Generates derive cases, compiles batches via direct rustc across all cores,
+# and round-trips many runtime JSON inputs per type. Requires freshly generated
+# macros so it exercises the current jsony_macros source.
+[action.derive-tester]
+pwd = "."
+cmd = ["cargo", "run", "-p", "derive_tester", "--release", "--", "quick"]
+require = ["build-jsony-macros"]
