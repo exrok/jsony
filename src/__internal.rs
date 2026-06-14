@@ -195,6 +195,18 @@ impl<'a> ObjectSchema<'a> {
     }
 }
 
+/// Alias-table index meaning "match this key, then discard it" rather than
+/// decode it into a field.
+///
+/// Entries in the `alias` slice passed to [`ObjectSchema::decode_with_alias`]
+/// map a key to a field index. An entry using this index resolves to no field,
+/// so the matched key is skipped without being forwarded to the unused-field
+/// visitor. Derived code uses it to swallow an internal tag key that shares the
+/// variant object with the real fields. The value is unreachable as a real
+/// index: a schema holds at most 64 fields (the seen/required bitset is a
+/// `u64`), and no slice can be `usize::MAX` long.
+pub const SKIP_FIELD_ALIAS_INDEX: usize = usize::MAX;
+
 impl<'a> ObjectSchema<'a> {
     pub unsafe fn decode_with_alias(
         &self,
@@ -225,6 +237,9 @@ impl<'a> ObjectSchema<'a> {
                                             if *alias_name != key {
                                                 continue;
                                             }
+                                            // An out-of-bounds index (i.e.
+                                            // `SKIP_FIELD_ALIAS_INDEX`) means
+                                            // skip the matched key.
                                             if let Some(field) = fields.get(*index) {
                                                 break 'found (*index, field);
                                             } else {

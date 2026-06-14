@@ -848,6 +848,76 @@ fn struct_field_alias() {
 }
 
 #[test]
+fn enum_variant_field_alias() {
+    // A field `alias` is honored on an enum variant's struct fields, the same as
+    // on a top-level struct, across every tag encoding.
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    enum External {
+        Variant {
+            #[jsony(alias = "james")]
+            alpha: u32,
+            #[jsony(alias = "alan", rename = "greg")]
+            beta: bool,
+        },
+    }
+
+    assert_decode_json_eq_typed! {
+        External,
+        { "Variant": { "alpha": 42, "greg": true } },
+        External::Variant { alpha: 42, beta: true }
+    }
+    assert_decode_json_eq_typed! {
+        External,
+        { "Variant": { "james": 42, "alan": true } },
+        External::Variant { alpha: 42, beta: true }
+    }
+
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    #[jsony(tag = "kind")]
+    enum Internal {
+        Variant {
+            #[jsony(alias = "james")]
+            alpha: u32,
+            #[jsony(alias = "alan", rename = "greg")]
+            beta: bool,
+        },
+    }
+
+    assert_decode_json_eq_typed! {
+        Internal,
+        { "kind": "Variant", "alpha": 42, "greg": true },
+        Internal::Variant { alpha: 42, beta: true }
+    }
+    assert_decode_json_eq_typed! {
+        Internal,
+        { "kind": "Variant", "james": 42, "alan": true },
+        Internal::Variant { alpha: 42, beta: true }
+    }
+
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    #[jsony(tag = "kind", content = "data")]
+    enum Adjacent {
+        Variant {
+            #[jsony(alias = "james")]
+            alpha: u32,
+            #[jsony(alias = "alan", rename = "greg")]
+            beta: bool,
+        },
+    }
+
+    assert_decode_json_eq_typed! {
+        Adjacent,
+        { "kind": "Variant", "data": { "alpha": 42, "greg": true } },
+        Adjacent::Variant { alpha: 42, beta: true }
+    }
+    assert_decode_json_eq_typed! {
+        Adjacent,
+        { "kind": "Variant", "data": { "james": 42, "alan": true } },
+        Adjacent::Variant { alpha: 42, beta: true }
+    }
+}
+
+#[test]
 fn with_owned_cow_helper() {
     use jsony::helper::owned_cow;
 

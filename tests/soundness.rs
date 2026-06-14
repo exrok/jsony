@@ -4,7 +4,8 @@ use std::{
 };
 
 use jsony::{
-    binary::Decoder, json::DecodeError, parser::Parser, BytesWriter, FromBinary, FromJson, ToBinary,
+    binary::Decoder, json::DecodeError, parser::Parser, BytesWriter, FromBinary, FromJson, Jsony,
+    ToBinary,
 };
 
 #[repr(align(16))]
@@ -97,6 +98,80 @@ fn array_error_drops_initialized_zst_elements() {
     assert!(jsony::from_json::<[ZstDrop; 3]>("[0, 0]").is_err());
 
     assert_eq!(LIVE_ZSTS.load(Ordering::SeqCst), 0);
+}
+
+static LIVE_BOXED: AtomicUsize = AtomicUsize::new(0);
+
+/// A heap-owning field whose live instances are counted. A value the decoder
+/// fails to drop on an error path is observable two ways: `LIVE_BOXED` stays
+/// non-zero, and the owned box leaks under miri/ASAN.
+struct BoxedField(#[allow(dead_code)] Box<u32>);
+
+unsafe impl<'a> FromJson<'a> for BoxedField {
+    unsafe fn emplace_from_json(
+        dest: NonNull<()>,
+        parser: &mut Parser<'a>,
+    ) -> Result<(), &'static DecodeError> {
+        let value = u32::decode_json(parser)?;
+        LIVE_BOXED.fetch_add(1, Ordering::SeqCst);
+        dest.cast::<BoxedField>().write(BoxedField(Box::new(value)));
+        Ok(())
+    }
+}
+
+impl Drop for BoxedField {
+    fn drop(&mut self) {
+        LIVE_BOXED.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// When a container fails to parse after a heap-owning field is initialized, the
+/// partially built value must be dropped. This covers every container shape: a
+/// plain struct and the external, internal, and adjacent enum tag encodings.
+/// Each input fully parses the inner field, then leaves the enclosing object
+/// unterminated so the parse fails with the field already live.
+#[test]
+fn truncated_container_drops_partially_built_value() {
+    #[derive(Jsony)]
+    struct Plain {
+        #[allow(dead_code)]
+        a: BoxedField,
+        #[allow(dead_code)]
+        b: u32,
+    }
+
+    #[derive(Jsony)]
+    #[allow(dead_code)]
+    enum External {
+        V0(BoxedField),
+    }
+
+    #[derive(Jsony)]
+    #[jsony(tag = "kind")]
+    enum Internal {
+        V0 {
+            #[allow(dead_code)]
+            a: BoxedField,
+        },
+    }
+
+    #[derive(Jsony)]
+    #[jsony(tag = "kind", content = "data")]
+    #[allow(dead_code)]
+    enum Adjacent {
+        V0(BoxedField),
+    }
+
+    LIVE_BOXED.store(0, Ordering::SeqCst);
+    assert!(jsony::from_json::<Plain>(r#"{"a":1,"b":7"#).is_err());
+    assert!(jsony::from_json::<External>(r#"{"V0":1"#).is_err());
+    assert!(jsony::from_json::<Internal>(r#"{"kind":"V0","a":1"#).is_err());
+    assert!(jsony::from_json::<Adjacent>(r#"{"kind":"V0","data":1"#).is_err());
+    assert_eq!(
+        LIVE_BOXED.load(Ordering::SeqCst),
+        0,
+        "decoder leaked a partially built value"
+    );
 }
 
 #[test]

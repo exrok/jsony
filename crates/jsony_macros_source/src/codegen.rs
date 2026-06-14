@@ -1394,7 +1394,9 @@ fn enum_variant_from_json_struct(
     let field_rename = variant_field_rename_rule(ctx, variant);
     let ordered_fields = schema_ordered_fields(variant.fields);
     let mut flattening: Option<&Field> = None;
+    let mut any_field_flag = 0;
     for field in variant.fields {
+        any_field_flag |= field.flags;
         if field.flatten(FROM_JSON) {
             if flattening.is_some() {
                 Error::span_msg(
@@ -1405,6 +1407,13 @@ fn enum_variant_from_json_struct(
             flattening = Some(field);
         }
     }
+    // An inline tag is skipped inside the variant object via a sentinel alias
+    // entry (`SKIP_FIELD_ALIAS_INDEX`), and per-field aliases are matched the
+    // same way the top-level struct decode does. Either case needs
+    // `decode_with_alias`.
+    let is_inline_tag = matches!(ctx.target.tag, Tag::Inline(_));
+    let has_field_alias = any_field_flag & Field::WITH_FROM_JSON_ALIAS != 0;
+    let use_alias = is_inline_tag || has_field_alias;
     // The flatten and non-flatten cases differ only in three spots (the
     // `temp_flatten`/`flatten_visitor` setup, the visitor argument, and one
     // writeback field), so emit a single block and gate those pieces — this
@@ -1431,7 +1440,7 @@ fn enum_variant_from_json_struct(
             }
         }]
         if let Err(_err) = schema.[
-            if let Tag::Inline(_) = &ctx.target.tag {
+            if use_alias {
                 splat!(out; decode_with_alias)
             } else {
                 splat!(out; decode)
@@ -1444,9 +1453,19 @@ fn enum_variant_from_json_struct(
             } else {
                 splat!(out; None)
             }],
-            [if let Tag::Inline(tag) = &ctx.target.tag {
-                splat!(out; &[[([@Literal::usize_unsuffixed(1000).into()], [@Literal::string(tag).into()])]])
-            }]
+            [?(use_alias) &[[
+                [if let Tag::Inline(tag) = &ctx.target.tag {
+                    splat!(out; (::jsony::__internal::SKIP_FIELD_ALIAS_INDEX, [@Literal::string(tag).into()]),)
+                }]
+                [for (i, field) in ordered_fields.iter().enumerate() {
+                    if let Some(alias) = field.attr.alias(FROM_JSON) {
+                        splat!(out; (
+                            [@TokenTree::Literal(Literal::usize_unsuffixed(i))],
+                            [@TokenTree::Literal(alias.clone())]
+                        ),)
+                    }
+                }]
+            ]]]
         ) {
             [?(!untagged) return Err(_err);]
         } else {
@@ -1791,8 +1810,23 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
 
     if let Some(_) = inline_tag {
         if ctx.target.content.is_some() {
-            //todo this leaks?
-            splat!(out; if at_content {parser.discard_remaining_object_fields()} else {Ok(())})
+            // Every path that reaches here with `at_content` true has already
+            // written the decoded variant (content field included) into `dst`.
+            // If discarding the rest of the object fails (e.g. a missing closing
+            // brace) the value must be dropped, otherwise the content field leaks.
+            splat!(out;
+                if at_content {
+                    match parser.discard_remaining_object_fields() {
+                        Ok(()) => Ok(()),
+                        err => {
+                            std::ptr::drop_in_place::<[ctx.target_type(out)]>(dst.cast().as_mut());
+                            err
+                        }
+                    }
+                } else {
+                    Ok(())
+                }
+            )
         } else {
             splat!(out; Ok(()))
         }
