@@ -240,6 +240,16 @@ impl<'b> Type<'b> {
                     "null"
                 }
             }
+            Type::Array(inner, n) => {
+                // jsony's `[T; N]` decode requires exactly N elements.
+                out.start_json_array();
+                for _ in 0..*n {
+                    inner.json_encode(rand, out);
+                    out.push_comma();
+                }
+                out.end_json_array();
+                return;
+            }
             Type::Struct(record) => {
                 record.random_json(rand, out);
                 return;
@@ -321,6 +331,16 @@ impl<'b> Type<'b> {
                 } else {
                     "null"
                 }
+            }
+            Type::Array(inner, n) => {
+                // jsony's `[T; N]` decode requires exactly N elements.
+                out.start_json_array();
+                for _ in 0..*n {
+                    inner.json_encode(rand, out);
+                    out.push_comma();
+                }
+                out.end_json_array();
+                return;
             }
             Type::Struct(record) => {
                 record.random_adv_json(rand, out);

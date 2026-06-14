@@ -62,6 +62,10 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
                     record(&mut content, &case.name, KIND_BAD, cut);
                     count += 1;
                 }
+                for bad in malformations(&json) {
+                    record(&mut content, &case.name, KIND_BAD, &bad);
+                    count += 1;
+                }
             }
         }
     }
@@ -89,6 +93,58 @@ fn truncations(json: &str) -> Vec<&str> {
     cuts.sort_unstable();
     cuts.dedup();
     cuts
+}
+
+/// Deterministic malformed variants of a well-formed JSON string, used as `b`
+/// inputs: each must fail (or parse) without panicking or leaking. Unlike a
+/// prefix, these keep a complete-looking head so earlier heap fields are live
+/// when the parse diverges, exercising the partial-init drop paths from a
+/// different angle than truncation. Covers the doc's mutation classes:
+/// type-mismatch, structural break, trailing garbage, and deep nesting. None of
+/// the transforms introduce a tab or newline, so each stays a single record.
+fn malformations(json: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    // Trailing garbage after a complete value, and a spurious extra closer.
+    out.push(format!("{json} trailing_garbage"));
+    out.push(format!("{json}]"));
+
+    // Type-mismatch: turn a late digit into a letter so a numeric field fails to
+    // parse after the fields before it are already initialized.
+    if let Some(i) = late_index(json, |c| c.is_ascii_digit()) {
+        let mut s = json.to_string();
+        s.replace_range(i..i + 1, "x");
+        out.push(s);
+    }
+    // Structural break: flip a late ':' to ',' (or ',' to ':'), corrupting the
+    // object shape past the leading, already-decoded fields.
+    if let Some(i) = late_index(json, |c| c == ':' || c == ',') {
+        let mut s = json.to_string();
+        let repl = if &json[i..i + 1] == ":" { "," } else { ":" };
+        s.replace_range(i..i + 1, repl);
+        out.push(s);
+    }
+    // A deeply nested prefix: the decoder enters the array then fails a few
+    // levels in (the generated types are not deeply recursive), checking the
+    // array-entry path stays panic-free on unexpected nesting.
+    out.push(format!("{}{}", "[".repeat(300), json));
+
+    out.retain(|s| !s.is_empty());
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Byte index of the last ASCII char in the back three-quarters of `json`
+/// matching `pred`. Restricting to the tail keeps leading fields decoded before
+/// the corruption point. ASCII-only, so the index is always a char boundary.
+fn late_index(json: &str, pred: impl Fn(char) -> bool) -> Option<usize> {
+    let start = json.len() / 4;
+    json.bytes()
+        .enumerate()
+        .skip(start)
+        .rev()
+        .find(|(_, b)| b.is_ascii() && pred(*b as char))
+        .map(|(i, _)| i)
 }
 
 /// Compile and run one batch (given its source + input file content). `slot` is

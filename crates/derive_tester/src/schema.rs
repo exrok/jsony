@@ -1,7 +1,7 @@
 use std::cell::Cell;
 
 use bumpalo::Bump;
-use proc_macro2::{Ident, TokenTree};
+use proc_macro2::{Ident, Literal, TokenTree};
 
 pub type FLAGS = u32;
 pub const BUILT_IN: FLAGS = 1 << 0;
@@ -46,6 +46,8 @@ pub enum Type<'b> {
     Box(&'b Type<'b>),
     Cow(&'b Type<'b>),
     Option(&'b Type<'b>),
+    /// `[T; N]`, a fixed-length array.
+    Array(&'b Type<'b>, usize),
     Struct(&'b Struct<'b>),
     Enum(&'b Enum<'b>),
     Generic(char),
@@ -202,7 +204,11 @@ impl<'b> Type<'b> {
                     current = inner;
                     continue;
                 }
-                Type::Slice(t) | Type::Vec(t) | Type::Box(t) | Type::Option(t) => {
+                Type::Slice(t)
+                | Type::Vec(t)
+                | Type::Box(t)
+                | Type::Option(t)
+                | Type::Array(t, _) => {
                     current = t;
                     continue;
                 }
@@ -250,6 +256,10 @@ impl<'b> Type<'b> {
             }
             Type::Box(inner) => {
                 splat!(out; Box < [inner.gen(out)] >);
+                return;
+            }
+            Type::Array(inner, n) => {
+                splat!(out; [[ [inner.gen(out)] ; [#Literal::usize_unsuffixed(*n)] ]]);
                 return;
             }
             Type::Struct(record) => {

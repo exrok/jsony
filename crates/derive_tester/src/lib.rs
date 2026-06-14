@@ -3,8 +3,8 @@
 //! The schema model, token codegen, data generator, and the direct-`rustc`
 //! compile pipeline are copied verbatim from the jsony build-time benchmark
 //! (`schema`, `token`, `datagen`, `features`, `library`, `bench`, `task`). The
-//! test-mode layers (`case`, `enumerate`, `emit`, `compile`, `codegen_filter`)
-//! are built on top.
+//! test-mode layers (`gen`, `casing`, `emit`, `compile`, `run`) are built on
+//! top.
 #![allow(dead_code)]
 
 use proc_macro2::{Delimiter, Group, Ident, Punct, Spacing, TokenStream, TokenTree};
@@ -117,6 +117,7 @@ mod task;
 mod token;
 
 // --- Test-mode layers built on top ---
+mod casing;
 mod compile;
 mod emit;
 mod gen;

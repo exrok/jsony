@@ -39,8 +39,8 @@ cmd = ["cargo", "run", "-p", "derive_tester", "--release", "--", "run", "10000"]
 require = ["build-jsony-macros"]
 
 # Soundness tier: adds truncated/malformed inputs and the counting-allocator
-# leak check, driving the partial-initialization drop paths. Currently surfaces
-# open leak bugs in tagged-enum decode (see docs/derive-tester.md).
+# leak check, driving the partial-initialization drop paths (see
+# docs/derive-tester.md).
 [action.derive-tester-sound]
 pwd = "."
 cmd = ["cargo", "run", "-p", "derive_tester", "--release", "--", "sound", "1000"]
@@ -56,9 +56,9 @@ cmd = ["cargo", "run", "-p", "derive_tester", "--release", "--", "asan", "200"]
 require = ["build-jsony-macros"]
 
 # Curated miri subset: independent leak/UB verdict on the distilled reproductions
-# (tests/derive_tester_repro.rs), catching strict-provenance and alignment UB the
-# native sanitizers miss.
+# (tests/soundness.rs), catching strict-provenance and alignment UB the native
+# sanitizers miss.
 [action.derive-tester-miri]
 pwd = "."
-cmd = ["cargo", "+nightly", "miri", "test", "--test", "derive_tester_repro"]
+cmd = ["cargo", "+nightly", "miri", "test", "--test", "soundness"]
 require = ["build-jsony-macros"]

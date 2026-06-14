@@ -8,6 +8,7 @@
 use jsony::{TextWriter, ToJson};
 use rand::prelude::*;
 
+use crate::casing::RenameRule;
 use crate::datagen::Rand;
 use crate::schema::Type;
 
@@ -66,19 +67,25 @@ pub struct FieldSpec {
 }
 
 impl FieldSpec {
-    /// The canonical JSON key for this field (rename overrides the declared name).
-    fn key(&self) -> &str {
-        self.rename.as_deref().unwrap_or(&self.name)
+    /// The canonical JSON key for this field. An explicit `rename` wins
+    /// outright, otherwise the active `rename_all`/`rename_all_fields` rule
+    /// recases the declared name. This mirrors jsony's `field_name_literal`.
+    fn key(&self, rule: RenameRule) -> String {
+        match &self.rename {
+            Some(r) => r.clone(),
+            None => rule.apply_to_field(&self.name),
+        }
     }
 
     /// Pick a key to write into a sampled input: the canonical key, or, when the
     /// field has an alias, the alias half the time (exercising the alias parse
     /// path). The write side always emits the canonical key, so round-trip
-    /// identity holds either way.
-    fn input_key(&self, rand: &mut Rand) -> &str {
+    /// identity holds either way. `alias` is a literal key unaffected by
+    /// `rename_all`.
+    fn input_key(&self, rule: RenameRule, rand: &mut Rand) -> String {
         match &self.alias {
-            Some(a) if rand.rng.gen_bool(0.5) => a,
-            _ => self.key(),
+            Some(a) if rand.rng.gen_bool(0.5) => a.clone(),
+            _ => self.key(rule),
         }
     }
 }
@@ -114,6 +121,14 @@ pub struct Case {
     /// `#[jsony(transparent)]` — a single-field struct serialized as its inner
     /// value rather than as an object/array.
     pub transparent: bool,
+    /// `#[jsony(rename_all = "...")]`. On a struct it recases field keys; on an
+    /// enum it recases variant names and (as the fallback rule) struct-variant
+    /// field keys.
+    pub rename_all: RenameRule,
+    /// `#[jsony(rename_all_fields = "...")]`, enum-only. Recases struct-variant
+    /// field keys, overriding `rename_all` for fields while leaving variant
+    /// names on `rename_all`.
+    pub rename_all_fields: RenameRule,
 }
 
 impl Case {
@@ -132,7 +147,28 @@ impl Case {
                 }
             }
         }
+        if let Some(v) = self.rename_all.attr_value() {
+            s.push_str(&format!(", rename_all = {v:?}"));
+        }
+        if let Some(v) = self.rename_all_fields.attr_value() {
+            s.push_str(&format!(", rename_all_fields = {v:?}"));
+        }
         s
+    }
+
+    /// Rename rule applied to top-level struct field keys.
+    fn struct_field_rule(&self) -> RenameRule {
+        self.rename_all
+    }
+
+    /// Rename rule applied to enum struct-variant field keys: `rename_all_fields`
+    /// when set, otherwise the container `rename_all` (jsony falls back to it).
+    fn variant_field_rule(&self) -> RenameRule {
+        if self.rename_all_fields != RenameRule::None {
+            self.rename_all_fields
+        } else {
+            self.rename_all
+        }
     }
 }
 
@@ -165,6 +201,32 @@ fn type_choices(binary: bool) -> Vec<Type<'static>> {
         Vec(&Bool),
         Vec(&I64),
         Vec(&F64),
+        // Nested containers: the inner type drives a second layer of the
+        // generated decode/encode, and each combination still owns its data,
+        // impls Default, and impls every jsony trait.
+        Vec(&Option(&U32)),
+        Vec(&Option(&String)),
+        Option(&Vec(&I64)),
+        Option(&Vec(&String)),
+        Vec(&Vec(&U32)),
+        Box(&Vec(&String)),
+        Vec(&Box(&U32)),
+        Option(&Box(&String)),
+        // Fixed-length arrays, including the empty (ZST) case. jsony decodes
+        // `[T; N]` element-by-element and requires exactly N. Lengths stay <= 32
+        // so `[T; N]: Default` holds (needed when a field draws default/skip).
+        Array(&U8, 4),
+        Array(&U32, 3),
+        Array(&I64, 2),
+        Array(&String, 2),
+        Array(&Bool, 0),
+        Array(&F64, 5),
+        // Wide-aligned element (16-byte) stresses the array stride/offset math.
+        Array(&U128, 2),
+        // Array of `Option` carries `null` holes and a drop-on-error path per
+        // element when an inner allocation is live.
+        Array(&Option(&U32), 3),
+        Array(&Option(&String), 2),
     ];
     let _ = binary;
     v.push(Box(&U32));
@@ -245,10 +307,10 @@ fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> Va
         VarKind::Tuple => gen_fields(rng, 1, false, binary, false),
         VarKind::Struct => {
             let n = rng.gen_range(1..4);
-            // alias on enum-variant struct fields is not honored by jsony (the
-            // parser only matches the canonical/renamed key), so it is excluded
-            // here to keep the round-trip oracle sound. Tracked as a finding.
-            gen_fields(rng, n, true, binary, false)
+            // alias on enum-variant struct fields is now honored by jsony, so the
+            // sampler exercises the alias parse path here too (see the resolved
+            // finding in docs/derive-tester.md).
+            gen_fields(rng, n, true, binary, true)
         }
     };
     VariantSpec { name, kind, fields }
@@ -297,12 +359,34 @@ pub fn case_from_id(id: u64) -> Case {
             Body::Enum { repr, variants }
         }
     };
+    // `rename_all` recases keys, so it only matters for shapes that emit keys.
+    // Transparent structs serialize as their inner value (no keys), tuple/unit
+    // structs are positional, so it is restricted to named structs and enums.
+    let (mut rename_all, mut rename_all_fields) = (RenameRule::None, RenameRule::None);
+    match &body {
+        Body::Named(_) if !transparent => {
+            if rng.gen_bool(0.35) {
+                rename_all = RenameRule::random(&mut rng);
+            }
+        }
+        Body::Enum { .. } => {
+            if rng.gen_bool(0.35) {
+                rename_all = RenameRule::random(&mut rng);
+            }
+            if rng.gen_bool(0.35) {
+                rename_all_fields = RenameRule::random(&mut rng);
+            }
+        }
+        _ => {}
+    }
     Case {
         name: format!("T{id}"),
         id,
         traits,
         body,
         transparent,
+        rename_all,
+        rename_all_fields,
     }
 }
 
@@ -314,7 +398,8 @@ fn write_value(ty: Type, rand: &mut Rand, out: &mut TextWriter) {
 
 /// Write a JSON object for a set of named fields, honouring rename / default /
 /// skip. `default` fields may be omitted; `skip` fields are always omitted.
-fn write_named_object(fields: &[FieldSpec], rand: &mut Rand, out: &mut TextWriter) {
+/// `rule` recases each field key (the active `rename_all`/`rename_all_fields`).
+fn write_named_object(fields: &[FieldSpec], rule: RenameRule, rand: &mut Rand, out: &mut TextWriter) {
     out.start_json_object();
     for field in fields {
         if field.skip {
@@ -323,7 +408,7 @@ fn write_named_object(fields: &[FieldSpec], rand: &mut Rand, out: &mut TextWrite
         if field.default && rand.rng.gen_bool(0.5) {
             continue;
         }
-        let key = field.input_key(rand).to_string();
+        let key = field.input_key(rule, rand);
         key.encode_json__jsony(out);
         out.push_colon();
         write_value(field.ty, rand, out);
@@ -341,7 +426,7 @@ fn write_struct_body(case: &Case, rand: &mut Rand, out: &mut TextWriter) {
         }
     }
     match &case.body {
-        Body::Named(fields) => write_named_object(fields, rand, out),
+        Body::Named(fields) => write_named_object(fields, case.struct_field_rule(), rand, out),
         Body::Tuple(fields) => {
             if fields.len() == 1 {
                 // Newtype: serializes transparently as the inner value.
@@ -363,8 +448,8 @@ fn write_struct_body(case: &Case, rand: &mut Rand, out: &mut TextWriter) {
 }
 
 /// Write the inline fields of a struct variant directly into the current object
-/// (used by internal tagging).
-fn write_inline_fields(fields: &[FieldSpec], rand: &mut Rand, out: &mut TextWriter) {
+/// (used by internal tagging). `rule` recases each field key.
+fn write_inline_fields(fields: &[FieldSpec], rule: RenameRule, rand: &mut Rand, out: &mut TextWriter) {
     for field in fields {
         if field.skip {
             continue;
@@ -372,7 +457,7 @@ fn write_inline_fields(fields: &[FieldSpec], rand: &mut Rand, out: &mut TextWrit
         if field.default && rand.rng.gen_bool(0.5) {
             continue;
         }
-        let key = field.input_key(rand).to_string();
+        let key = field.input_key(rule, rand);
         key.encode_json__jsony(out);
         out.push_colon();
         write_value(field.ty, rand, out);
@@ -380,26 +465,30 @@ fn write_inline_fields(fields: &[FieldSpec], rand: &mut Rand, out: &mut TextWrit
     }
 }
 
-fn write_variant_content(v: &VariantSpec, rand: &mut Rand, out: &mut TextWriter) {
+fn write_variant_content(v: &VariantSpec, rule: RenameRule, rand: &mut Rand, out: &mut TextWriter) {
     match v.kind {
         VarKind::Unit => out.push_str("null"),
         VarKind::Tuple => write_value(v.fields[0].ty, rand, out),
-        VarKind::Struct => write_named_object(&v.fields, rand, out),
+        VarKind::Struct => write_named_object(&v.fields, rule, rand, out),
     }
 }
 
-fn write_enum(repr: EnumRepr, variants: &[VariantSpec], rand: &mut Rand, out: &mut TextWriter) {
+fn write_enum(case: &Case, repr: EnumRepr, variants: &[VariantSpec], rand: &mut Rand, out: &mut TextWriter) {
     let v = &variants[rand.rng.gen_range(0..variants.len())];
+    // Variant names follow `rename_all`; struct-variant field keys follow
+    // `rename_all_fields` (falling back to `rename_all`).
+    let name = case.rename_all.apply_to_variant(&v.name);
+    let field_rule = case.variant_field_rule();
     match repr {
         EnumRepr::External => match v.kind {
             VarKind::Unit => {
-                v.name.as_str().encode_json__jsony(out);
+                name.as_str().encode_json__jsony(out);
             }
             VarKind::Tuple | VarKind::Struct => {
                 out.start_json_object();
-                v.name.as_str().encode_json__jsony(out);
+                name.as_str().encode_json__jsony(out);
                 out.push_colon();
-                write_variant_content(v, rand, out);
+                write_variant_content(v, field_rule, rand, out);
                 out.push_comma();
                 out.end_json_object();
             }
@@ -408,10 +497,10 @@ fn write_enum(repr: EnumRepr, variants: &[VariantSpec], rand: &mut Rand, out: &m
             out.start_json_object();
             TAG.encode_json__jsony(out);
             out.push_colon();
-            v.name.as_str().encode_json__jsony(out);
+            name.as_str().encode_json__jsony(out);
             out.push_comma();
             if v.kind == VarKind::Struct {
-                write_inline_fields(&v.fields, rand, out);
+                write_inline_fields(&v.fields, field_rule, rand, out);
             }
             out.end_json_object();
         }
@@ -419,12 +508,12 @@ fn write_enum(repr: EnumRepr, variants: &[VariantSpec], rand: &mut Rand, out: &m
             out.start_json_object();
             TAG.encode_json__jsony(out);
             out.push_colon();
-            v.name.as_str().encode_json__jsony(out);
+            name.as_str().encode_json__jsony(out);
             out.push_comma();
             if v.kind != VarKind::Unit {
                 CONTENT.encode_json__jsony(out);
                 out.push_colon();
-                write_variant_content(v, rand, out);
+                write_variant_content(v, field_rule, rand, out);
                 out.push_comma();
             }
             out.end_json_object();
@@ -440,7 +529,7 @@ pub fn sample_json(case: &Case, sample_seed: u64) -> String {
         steam: 95,
     };
     match &case.body {
-        Body::Enum { repr, variants } => write_enum(*repr, variants, &mut rand, &mut out),
+        Body::Enum { repr, variants } => write_enum(case, *repr, variants, &mut rand, &mut out),
         _ => write_struct_body(case, &mut rand, &mut out),
     }
     out.into_string()
