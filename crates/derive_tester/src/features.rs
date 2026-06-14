@@ -41,7 +41,7 @@ impl FeatureSelect {
 #[derive(Clone, Copy, Debug)]
 #[repr(u8)]
 pub enum FieldFeature {
-    TrivalDefault,
+    TrivialDefault,
     Default,
     Rename,
     Skip,
@@ -51,13 +51,13 @@ impl FieldFeature {
     pub const fn features_when_enabled(&self) -> FeatureSelect {
         use FieldFeature as F;
         match self {
-            F::TrivalDefault => FeatureSelect {
+            F::TrivialDefault => FeatureSelect {
                 enabled: 0,
-                restricted: F::bitset(&[F::Default, F::TrivalDefault]),
+                restricted: F::bitset(&[F::Default, F::TrivialDefault]),
             },
             F::Default => FeatureSelect {
                 enabled: 0,
-                restricted: F::bitset(&[F::Default, F::TrivalDefault]),
+                restricted: F::bitset(&[F::Default, F::TrivialDefault]),
             },
             F::Rename => FeatureSelect {
                 enabled: 0,
@@ -86,7 +86,7 @@ fn nth_set(set: u64, n: u32) -> u64 {
 
 pub enum FieldFeatureDecl {
     Default { seed: u64 },
-    TrivalDefault,
+    TrivialDefault,
     Rename(String),
     Skip,
 }
@@ -105,7 +105,7 @@ impl<'b, 'a> FieldFeatureGenerator<'b, 'a> {
         self.remaining -= 1;
         let (feature, value_seed) = self.features.next(&mut self.parent.rng)?;
         match feature {
-            FieldFeature::TrivalDefault => Some(FieldFeatureDecl::TrivalDefault),
+            FieldFeature::TrivialDefault => Some(FieldFeatureDecl::TrivialDefault),
             FieldFeature::Default => Some(FieldFeatureDecl::Default { seed: value_seed }),
             FieldFeature::Rename => {
                 let mut rand = crate::datagen::Rand {
@@ -179,7 +179,7 @@ impl<'b> Type<'b> {
             | Type::Bool
             | Type::Str
             | Type::String => select! {
-                enable: [Default, TrivalDefault, Skip],
+                enable: [Default, TrivialDefault, Skip],
                 restricted: []
             },
             _ => FeatureSelect {

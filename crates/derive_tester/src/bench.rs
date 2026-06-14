@@ -7,7 +7,7 @@ use anyhow::{bail, Context};
 use jsony::Jsony;
 use proc_macro2::TokenTree;
 
-use crate::library::Libary;
+use crate::library::Library;
 use crate::token;
 
 mod maybe_from_str {
@@ -111,7 +111,7 @@ pub struct Perf {
 #[jsony(Json)]
 pub struct LibResult {
     pub name: String,
-    pub lib: Libary,
+    pub lib: Library,
     #[jsony(default)]
     pub version: String,
     pub versions: Vec<(String, String)>,

@@ -7,7 +7,7 @@ use rand::prelude::*;
 
 use crate::bench::{Benchy, BuildProfile, Perf, Scenario};
 use crate::datagen::Rand;
-use crate::library::Libary;
+use crate::library::Library;
 use crate::schema::{Field, ItemKind, Struct, Type, Types, IMPL_JSON};
 
 pub enum CodeLayout {
@@ -62,7 +62,7 @@ impl<'a> LotsOfStructs<'a> {
         }
     }
 
-    pub fn codegen_models(&self, lib: &Libary) -> Vec<u8> {
+    pub fn codegen_models(&self, lib: &Library) -> Vec<u8> {
         let mut out: Vec<TokenTree> = Vec::new();
         lib.gen_prelude(&mut out);
         for a_struct in &self.structs {
@@ -71,7 +71,7 @@ impl<'a> LotsOfStructs<'a> {
         crate::token::to_rust(out.into_iter().collect())
     }
 
-    pub fn codegen(&self, lib: Libary) -> Vec<TokenTree> {
+    pub fn codegen(&self, lib: Library) -> Vec<TokenTree> {
         let mut rust_code: Vec<TokenTree> = Vec::new();
         lib.gen_prelude(&mut rust_code);
         for a_struct in &self.structs {
@@ -112,7 +112,7 @@ impl<'a> LotsOfStructs<'a> {
         rust_code
     }
 
-    pub fn codegen_adv(&self, lib: Libary) -> Vec<TokenTree> {
+    pub fn codegen_adv(&self, lib: Library) -> Vec<TokenTree> {
         let mut rust_code: Vec<TokenTree> = Vec::new();
         lib.gen_prelude(&mut rust_code);
         for a_struct in &self.structs {
@@ -153,7 +153,7 @@ impl<'a> LotsOfStructs<'a> {
         rust_code
     }
 
-    pub fn setup_bench(&self, name: &str, lib: Libary) -> anyhow::Result<Benchy> {
+    pub fn setup_bench(&self, name: &str, lib: Library) -> anyhow::Result<Benchy> {
         let b = Benchy::open(name, &lib.dependencies())?;
         b.write("main.rs", self.codegen(lib))?;
         Ok(b)
@@ -162,7 +162,7 @@ impl<'a> LotsOfStructs<'a> {
     pub fn bench(
         &self,
         name: &str,
-        lib: Libary,
+        lib: Library,
         scenarios: &[Scenario],
         samples: u32,
     ) -> anyhow::Result<(Vec<(String, String)>, Vec<(Scenario, Perf)>)> {
@@ -170,7 +170,7 @@ impl<'a> LotsOfStructs<'a> {
         let mut result = Vec::new();
         for scenario in scenarios {
             let perf = if let Scenario::RuntimeBenchmark { profile } = scenario {
-                if let Libary::Merde = lib {
+                if let Library::Merde = lib {
                     if let BuildProfile::Debug = profile {
                         continue;
                     }

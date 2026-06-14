@@ -53,7 +53,7 @@ fn toml_spanner_path() -> Option<&'static str> {
 
 #[derive(Clone, Debug, Jsony)]
 #[jsony(Json)]
-pub enum Libary {
+pub enum Library {
     Jsony { path: Option<String> },
     Merde,
     Sonic,
@@ -71,152 +71,152 @@ pub enum Libary {
     TomlSpan,
 }
 
-impl Libary {
-    pub fn from_name(name: &str) -> Libary {
+impl Library {
+    pub fn from_name(name: &str) -> Library {
         match name {
-            "jsony" => Libary::Jsony { path: None },
-            "jsony(local)" => Libary::Jsony { path: None },
-            "merde" => Libary::Merde,
-            "sonic-rs" => Libary::Sonic,
-            "nanoserde" => Libary::Nanoserde,
-            "musli" => Libary::Musli,
-            "serde" => Libary::Serde,
-            "miniserde" => Libary::Miniserde,
-            "midiserde" => Libary::Midiserde,
-            "baseline" => Libary::Baseline,
-            "facet" => Libary::Facet,
-            "toml" => Libary::Toml,
-            "toml-spanner" => Libary::TomlSpanner,
-            "toml_edit" | "toml-edit" => Libary::TomlEdit,
-            "toml-span" => Libary::TomlSpan,
-            _ => Libary::Baseline,
+            "jsony" => Library::Jsony { path: None },
+            "jsony(local)" => Library::Jsony { path: None },
+            "merde" => Library::Merde,
+            "sonic-rs" => Library::Sonic,
+            "nanoserde" => Library::Nanoserde,
+            "musli" => Library::Musli,
+            "serde" => Library::Serde,
+            "miniserde" => Library::Miniserde,
+            "midiserde" => Library::Midiserde,
+            "baseline" => Library::Baseline,
+            "facet" => Library::Facet,
+            "toml" => Library::Toml,
+            "toml-spanner" => Library::TomlSpanner,
+            "toml_edit" | "toml-edit" => Library::TomlEdit,
+            "toml-span" => Library::TomlSpan,
+            _ => Library::Baseline,
         }
     }
 
-    pub fn default() -> Vec<Libary> {
+    pub fn default() -> Vec<Library> {
         vec![
-            Libary::Jsony { path: None },
-            Libary::Miniserde,
-            Libary::Nanoserde,
-            Libary::Serde,
+            Library::Jsony { path: None },
+            Library::Miniserde,
+            Library::Nanoserde,
+            Library::Serde,
         ]
     }
 
-    pub fn all() -> Vec<Libary> {
+    pub fn all() -> Vec<Library> {
         vec![
-            Libary::Jsony { path: None },
-            Libary::Miniserde,
-            Libary::Nanoserde,
-            Libary::Serde,
-            Libary::Merde,
-            Libary::Musli,
+            Library::Jsony { path: None },
+            Library::Miniserde,
+            Library::Nanoserde,
+            Library::Serde,
+            Library::Merde,
+            Library::Musli,
         ]
     }
 
     pub fn name(&self) -> &'static str {
         match self {
-            Libary::Jsony { path: Some(..) } => "jsony(local)",
-            Libary::Jsony { .. } => "jsony",
-            Libary::Merde => "merde",
-            Libary::Facet => "facet",
-            Libary::Sonic => "sonic-rs",
-            Libary::Nanoserde => "nanoserde",
-            Libary::Musli => "musli",
-            Libary::Serde => "serde",
-            Libary::Miniserde => "miniserde",
-            Libary::Midiserde => "midiserde",
-            Libary::Baseline => "baseline",
-            Libary::Toml => "toml",
-            Libary::TomlSpanner => "toml-spanner",
-            Libary::TomlSpannerMacros => "toml-spanner",
-            Libary::TomlEdit => "toml_edit",
-            Libary::TomlSpan => "toml-span",
+            Library::Jsony { path: Some(..) } => "jsony(local)",
+            Library::Jsony { .. } => "jsony",
+            Library::Merde => "merde",
+            Library::Facet => "facet",
+            Library::Sonic => "sonic-rs",
+            Library::Nanoserde => "nanoserde",
+            Library::Musli => "musli",
+            Library::Serde => "serde",
+            Library::Miniserde => "miniserde",
+            Library::Midiserde => "midiserde",
+            Library::Baseline => "baseline",
+            Library::Toml => "toml",
+            Library::TomlSpanner => "toml-spanner",
+            Library::TomlSpannerMacros => "toml-spanner",
+            Library::TomlEdit => "toml_edit",
+            Library::TomlSpan => "toml-span",
         }
     }
 
     /// The primary crate name as it appears in Cargo.lock, used for version lookup.
     pub fn version_crate_name(&self) -> &'static str {
         match self {
-            Libary::Jsony { .. } => "jsony",
-            Libary::Merde => "merde",
-            Libary::Facet => "facet",
-            Libary::Sonic => "sonic-rs",
-            Libary::Nanoserde => "nanoserde",
-            Libary::Musli => "musli",
-            Libary::Serde => "serde",
-            Libary::Miniserde => "miniserde",
-            Libary::Midiserde => "midiserde",
-            Libary::Baseline => "baseline",
-            Libary::Toml => "toml",
-            Libary::TomlSpanner => "toml-spanner",
-            Libary::TomlSpannerMacros => "toml-spanner",
-            Libary::TomlEdit => "toml_edit",
-            Libary::TomlSpan => "toml-span",
+            Library::Jsony { .. } => "jsony",
+            Library::Merde => "merde",
+            Library::Facet => "facet",
+            Library::Sonic => "sonic-rs",
+            Library::Nanoserde => "nanoserde",
+            Library::Musli => "musli",
+            Library::Serde => "serde",
+            Library::Miniserde => "miniserde",
+            Library::Midiserde => "midiserde",
+            Library::Baseline => "baseline",
+            Library::Toml => "toml",
+            Library::TomlSpanner => "toml-spanner",
+            Library::TomlSpannerMacros => "toml-spanner",
+            Library::TomlEdit => "toml_edit",
+            Library::TomlSpan => "toml-span",
         }
     }
 
     pub fn crate_prefix(&self) -> &'static str {
         match self {
-            Libary::Jsony { path: Some(_) } => "jsony_local",
-            Libary::Jsony { .. } => "jsony",
-            Libary::Merde => "merde",
-            Libary::Facet => "facet",
-            Libary::Sonic => "sonic",
-            Libary::Nanoserde => "nanoserde",
-            Libary::Musli => "musli",
-            Libary::Serde => "serde",
-            Libary::Miniserde => "miniserde",
-            Libary::Midiserde => "midiserde",
-            Libary::Baseline => "baseline",
-            Libary::Toml => "toml",
-            Libary::TomlSpanner => "toml_spanner",
-            Libary::TomlSpannerMacros => "toml_spanner_macros",
-            Libary::TomlEdit => "toml_edit",
-            Libary::TomlSpan => "toml_span",
+            Library::Jsony { path: Some(_) } => "jsony_local",
+            Library::Jsony { .. } => "jsony",
+            Library::Merde => "merde",
+            Library::Facet => "facet",
+            Library::Sonic => "sonic",
+            Library::Nanoserde => "nanoserde",
+            Library::Musli => "musli",
+            Library::Serde => "serde",
+            Library::Miniserde => "miniserde",
+            Library::Midiserde => "midiserde",
+            Library::Baseline => "baseline",
+            Library::Toml => "toml",
+            Library::TomlSpanner => "toml_spanner",
+            Library::TomlSpannerMacros => "toml_spanner_macros",
+            Library::TomlEdit => "toml_edit",
+            Library::TomlSpan => "toml_span",
         }
     }
 
     pub fn capabilities(&self) -> Capability {
         match self {
-            Libary::Jsony { .. } | Libary::Nanoserde | Libary::Serde | Libary::Musli => {
+            Library::Jsony { .. } | Library::Nanoserde | Library::Serde | Library::Musli => {
                 CAP_JSON | CAP_BINARY | CAP_ENUM_VARIANTS
             }
-            Libary::Sonic => CAP_JSON | CAP_ENUM_VARIANTS,
-            Libary::Facet => CAP_JSON | CAP_TOML | CAP_ENUM_VARIANTS,
-            Libary::Miniserde | Libary::Midiserde | Libary::Merde => CAP_JSON,
-            Libary::Baseline => 0,
-            Libary::Toml => CAP_TOML | CAP_ENUM_VARIANTS,
-            Libary::TomlSpanner => CAP_TOML,
-            Libary::TomlSpannerMacros => CAP_TOML,
-            Libary::TomlEdit => CAP_TOML | CAP_ENUM_VARIANTS,
-            Libary::TomlSpan => CAP_FROM_TOML,
+            Library::Sonic => CAP_JSON | CAP_ENUM_VARIANTS,
+            Library::Facet => CAP_JSON | CAP_TOML | CAP_ENUM_VARIANTS,
+            Library::Miniserde | Library::Midiserde | Library::Merde => CAP_JSON,
+            Library::Baseline => 0,
+            Library::Toml => CAP_TOML | CAP_ENUM_VARIANTS,
+            Library::TomlSpanner => CAP_TOML,
+            Library::TomlSpannerMacros => CAP_TOML,
+            Library::TomlEdit => CAP_TOML | CAP_ENUM_VARIANTS,
+            Library::TomlSpan => CAP_FROM_TOML,
         }
     }
 
     pub fn is_derive_toml(&self) -> bool {
         matches!(
             self,
-            Libary::Toml | Libary::TomlSpannerMacros | Libary::TomlEdit | Libary::Facet
+            Library::Toml | Library::TomlSpannerMacros | Library::TomlEdit | Library::Facet
         )
     }
 
-    pub fn all_sets() -> Vec<Libary> {
-        let mut sets = Libary::all();
-        sets.push(Libary::Sonic);
-        sets.push(Libary::Midiserde);
-        sets.push(Libary::Facet);
-        sets.push(Libary::Baseline);
-        sets.push(Libary::Toml);
-        sets.push(Libary::TomlSpanner);
-        sets.push(Libary::TomlSpannerMacros);
-        sets.push(Libary::TomlEdit);
-        sets.push(Libary::TomlSpan);
+    pub fn all_sets() -> Vec<Library> {
+        let mut sets = Library::all();
+        sets.push(Library::Sonic);
+        sets.push(Library::Midiserde);
+        sets.push(Library::Facet);
+        sets.push(Library::Baseline);
+        sets.push(Library::Toml);
+        sets.push(Library::TomlSpanner);
+        sets.push(Library::TomlSpannerMacros);
+        sets.push(Library::TomlEdit);
+        sets.push(Library::TomlSpan);
         sets
     }
 
     pub fn dependencies(&self) -> Cow<'static, str> {
         Cow::Borrowed(match self {
-            Libary::Jsony { path: Some(path) } => {
+            Library::Jsony { path: Some(path) } => {
                 return Cow::Owned(format!(
                     r#"
                 jsony = {{path = "{path}/jsony", default-features = false}}
@@ -229,35 +229,35 @@ impl Libary {
                 "#
                 ))
             }
-            Libary::Baseline => "",
-            Libary::Facet => {
+            Library::Baseline => "",
+            Library::Facet => {
                 r#"
 facet = "0.44"
 facet-json = "0.44"
             "#
             }
-            Libary::Jsony { .. } => {
+            Library::Jsony { .. } => {
                 r#"
                 jsony = {version = "=0.1.9", default-features = false}
                 jsony_macros = {version = "=0.1.8", default-features = false}
             "#
             }
-            Libary::Merde => {
+            Library::Merde => {
                 r#"merde = { version = "10", features = ["core", "json", "deserialize"] }"#
             }
-            Libary::Nanoserde => "nanoserde = \"0.2\"",
-            Libary::Musli => "musli = { version = \"0.0.149\", features = [\"json\"]}",
-            Libary::Serde => {
+            Library::Nanoserde => "nanoserde = \"0.2\"",
+            Library::Musli => "musli = { version = \"0.0.149\", features = [\"json\"]}",
+            Library::Serde => {
                 r#"
             serde_derive = "1"
             serde = "1"
             serde_json = "1"
             "#
             }
-            Libary::Sonic => "sonic-rs = \"0.3.14\"\nserde = \"1\"",
-            Libary::Miniserde => "miniserde = \"0.1\"",
-            Libary::Midiserde => "midiserde = \"0.1\"\nminiserde = \"0.1\"",
-            Libary::Toml => {
+            Library::Sonic => "sonic-rs = \"0.3.14\"\nserde = \"1\"",
+            Library::Miniserde => "miniserde = \"0.1\"",
+            Library::Midiserde => "midiserde = \"0.1\"\nminiserde = \"0.1\"",
+            Library::Toml => {
                 r#"
             serde_derive = "1"
             serde = "1"
@@ -265,7 +265,7 @@ facet-json = "0.44"
             toml_parser = { version = "1", features = ["unsafe"] }
             "#
             }
-            Libary::TomlSpanner => {
+            Library::TomlSpanner => {
                 if let Some(path) = toml_spanner_path() {
                     return Cow::Owned(format!(
                         r#"toml-spanner = {{ path = "{path}", default-features = false, features = ["from-toml", "to-toml"] }}
@@ -277,7 +277,7 @@ incremental = false
                 r#"toml-spanner = { version = "1", default-features = false, features = ["from-toml", "to-toml"] }
 "#
             }
-            Libary::TomlSpannerMacros => {
+            Library::TomlSpannerMacros => {
                 if let Some(path) = toml_spanner_path() {
                     return Cow::Owned(format!(
                         r#"toml-spanner = {{ path = "{path}", default-features = false, features = ["from-toml", "to-toml"] }}
@@ -293,7 +293,7 @@ incremental = false
 toml-spanner-macros = "1"
 "#
             }
-            Libary::TomlEdit => {
+            Library::TomlEdit => {
                 r#"
             serde_derive = "1"
             serde = "1"
@@ -301,7 +301,7 @@ toml-spanner-macros = "1"
             toml_parser = { version = "1", features = ["unsafe"] }
             "#
             }
-            Libary::TomlSpan => r#"toml-span = "0.7""#,
+            Library::TomlSpan => r#"toml-span = "0.7""#,
         })
     }
 
@@ -321,7 +321,7 @@ toml-spanner-macros = "1"
 
     fn dependencies_toml(&self) -> Cow<'static, str> {
         match self {
-            Libary::Facet => Cow::Borrowed(
+            Library::Facet => Cow::Borrowed(
                 r#"
 facet = "0.44"
 facet-toml = { version = "0.44.1", features = ["serialize", "fast"] }
@@ -333,7 +333,7 @@ facet-toml = { version = "0.44.1", features = ["serialize", "fast"] }
 
     fn dependencies_toml_deser(&self) -> Cow<'static, str> {
         Cow::Borrowed(match self {
-            Libary::Toml => {
+            Library::Toml => {
                 r#"
             serde_derive = "1"
             serde = "1"
@@ -341,7 +341,7 @@ facet-toml = { version = "0.44.1", features = ["serialize", "fast"] }
             toml_parser = { version = "1", default-features = false, features = ["unsafe"] }
             "#
             }
-            Libary::TomlSpanner => {
+            Library::TomlSpanner => {
                 if let Some(path) = toml_spanner_path() {
                     return Cow::Owned(format!(
                         r#"toml-spanner = {{ path = "{path}", default-features = false, features = ["from-toml"] }}
@@ -351,7 +351,7 @@ incremental = false"#
                 }
                 r#"toml-spanner = { version = "1", default-features = false, features = ["from-toml"] }"#
             }
-            Libary::TomlSpannerMacros => {
+            Library::TomlSpannerMacros => {
                 if let Some(path) = toml_spanner_path() {
                     return Cow::Owned(format!(
                         r#"toml-spanner = {{ path = "{path}", default-features = false, features = ["from-toml"] }}
@@ -363,7 +363,7 @@ incremental = false"#
                 r#"toml-spanner = { version = "1", default-features = false, features = ["from-toml"] }
 toml-spanner-macros = "1""#
             }
-            Libary::TomlEdit => {
+            Library::TomlEdit => {
                 r#"
             serde_derive = "1"
             serde = "1"
@@ -371,8 +371,8 @@ toml-spanner-macros = "1""#
             toml_parser = { version = "1", default-features = false, features = ["unsafe"] }
             "#
             }
-            Libary::TomlSpan => r#"toml-span = "0.7""#,
-            Libary::Facet => {
+            Library::TomlSpan => r#"toml-span = "0.7""#,
+            Library::Facet => {
                 r#"
 facet = "0.44"
 facet-toml = { version = "0.44.1", features = ["fast"] }
@@ -384,7 +384,7 @@ facet-toml = { version = "0.44.1", features = ["fast"] }
 
     fn dependencies_multi(&self) -> Cow<'static, str> {
         match self {
-            Libary::Serde => Cow::Borrowed(
+            Library::Serde => Cow::Borrowed(
                 r#"
             serde_derive = "1"
             serde = "1"
@@ -392,7 +392,7 @@ facet-toml = { version = "0.44.1", features = ["fast"] }
             bincode = "1"
             "#,
             ),
-            Libary::Musli => {
+            Library::Musli => {
                 Cow::Borrowed(r#"musli = { version = "0.0.149", features = ["json", "storage"]}"#)
             }
             _ => self.dependencies(), // includes Toml
@@ -401,21 +401,21 @@ facet-toml = { version = "0.44.1", features = ["fast"] }
 
     pub fn gen_to_json_string(&self, out: &mut Vec<TokenTree>, func: &dyn Fn(&mut Vec<TokenTree>)) {
         match self {
-            Libary::Jsony { .. } => splat!(out; jsony::to_json([func(out)])),
-            Libary::Nanoserde => splat!(out; ([func(out)]).serialize_json()),
-            Libary::Serde => splat!(out; serde_json::to_string([func(out)]).unwrap()),
-            Libary::Sonic => splat!(out; sonic_rs::to_string([func(out)]).unwrap()),
-            Libary::Miniserde => splat!(out; miniserde::json::to_string([func(out)])),
-            Libary::Midiserde => splat!(out; midiserde::json::to_string([func(out)])),
-            Libary::Merde => splat!(out; merde::json::to_string([func(out)]).unwrap()),
-            Libary::Musli => splat!(out; musli::json::to_string([func(out)]).unwrap()),
-            Libary::Baseline => splat!(out; {let _ = [func(out)]; String::new()}),
-            Libary::Facet => splat!(out; facet_json::to_string([func(out)]).unwrap()),
-            Libary::Toml
-            | Libary::TomlSpanner
-            | Libary::TomlSpannerMacros
-            | Libary::TomlEdit
-            | Libary::TomlSpan => {
+            Library::Jsony { .. } => splat!(out; jsony::to_json([func(out)])),
+            Library::Nanoserde => splat!(out; ([func(out)]).serialize_json()),
+            Library::Serde => splat!(out; serde_json::to_string([func(out)]).unwrap()),
+            Library::Sonic => splat!(out; sonic_rs::to_string([func(out)]).unwrap()),
+            Library::Miniserde => splat!(out; miniserde::json::to_string([func(out)])),
+            Library::Midiserde => splat!(out; midiserde::json::to_string([func(out)])),
+            Library::Merde => splat!(out; merde::json::to_string([func(out)]).unwrap()),
+            Library::Musli => splat!(out; musli::json::to_string([func(out)]).unwrap()),
+            Library::Baseline => splat!(out; {let _ = [func(out)]; String::new()}),
+            Library::Facet => splat!(out; facet_json::to_string([func(out)]).unwrap()),
+            Library::Toml
+            | Library::TomlSpanner
+            | Library::TomlSpannerMacros
+            | Library::TomlEdit
+            | Library::TomlSpan => {
                 panic!("gen_to_json_string not supported for {}", self.name())
             }
         }
@@ -428,25 +428,25 @@ facet-toml = { version = "0.44.1", features = ["fast"] }
         func: &dyn Fn(&mut Vec<TokenTree>),
     ) {
         match self {
-            Libary::Jsony { .. } => splat!(out; jsony::from_json::<[#ty]>([func(out)])),
-            Libary::Nanoserde => splat!(out; [#ty]::deserialize_json([func(out)])),
-            Libary::Serde => splat!(out; serde_json::from_str::<[#ty]>([func(out)])),
-            Libary::Sonic => splat!(out; sonic_rs::from_str::<[#ty]>([func(out)])),
-            Libary::Miniserde => {
+            Library::Jsony { .. } => splat!(out; jsony::from_json::<[#ty]>([func(out)])),
+            Library::Nanoserde => splat!(out; [#ty]::deserialize_json([func(out)])),
+            Library::Serde => splat!(out; serde_json::from_str::<[#ty]>([func(out)])),
+            Library::Sonic => splat!(out; sonic_rs::from_str::<[#ty]>([func(out)])),
+            Library::Miniserde => {
                 splat!(out; miniserde::json::from_str::<[#ty]>([func(out)]))
             }
-            Libary::Midiserde => {
+            Library::Midiserde => {
                 splat!(out; midiserde::json::from_str::<[#ty]>([func(out)]))
             }
-            Libary::Merde => splat!(out; merde::json::from_str::<[#ty]>([func(out)])),
-            Libary::Musli => splat!(out; musli::json::from_str::<[#ty]>([func(out)])),
-            Libary::Baseline => splat!(out; Err::<[#ty], &str>([func(out)])),
-            Libary::Facet => splat!(out; facet_json::from_str::<[#ty]>([func(out)])),
-            Libary::Toml
-            | Libary::TomlSpanner
-            | Libary::TomlSpannerMacros
-            | Libary::TomlEdit
-            | Libary::TomlSpan => {
+            Library::Merde => splat!(out; merde::json::from_str::<[#ty]>([func(out)])),
+            Library::Musli => splat!(out; musli::json::from_str::<[#ty]>([func(out)])),
+            Library::Baseline => splat!(out; Err::<[#ty], &str>([func(out)])),
+            Library::Facet => splat!(out; facet_json::from_str::<[#ty]>([func(out)])),
+            Library::Toml
+            | Library::TomlSpanner
+            | Library::TomlSpannerMacros
+            | Library::TomlEdit
+            | Library::TomlSpan => {
                 panic!("gen_from_json_str not supported for {}", self.name())
             }
         }
@@ -469,89 +469,89 @@ facet-toml = { version = "0.44.1", features = ["fast"] }
 
     fn gen_imports_toml_deser(&self, out: &mut Vec<TokenTree>) {
         match self {
-            Libary::Toml | Libary::TomlEdit => {
+            Library::Toml | Library::TomlEdit => {
                 splat!(out; use serde_derive::Deserialize;)
             }
-            Libary::Baseline | Libary::TomlSpanner | Libary::TomlSpan => (),
-            Libary::TomlSpannerMacros => splat!(out; use toml_spanner_macros::Toml;),
-            Libary::Facet => splat!(out; use facet::Facet;),
+            Library::Baseline | Library::TomlSpanner | Library::TomlSpan => (),
+            Library::TomlSpannerMacros => splat!(out; use toml_spanner_macros::Toml;),
+            Library::Facet => splat!(out; use facet::Facet;),
             other => panic!("gen_imports_toml_deser not supported for {}", other.name()),
         }
     }
 
     fn gen_imports_multi(&self, out: &mut Vec<TokenTree>) {
         match self {
-            Libary::Jsony { .. } => splat!(out; use jsony_macros::Jsony;),
-            Libary::Nanoserde => splat!(out; use nanoserde::{DeBin, SerBin, DeJson, SerJson};),
-            Libary::Serde => splat!(out; use serde_derive::{Deserialize, Serialize};),
-            Libary::Musli => splat!(out; use musli::{Encode, Decode};),
-            Libary::Baseline => (),
+            Library::Jsony { .. } => splat!(out; use jsony_macros::Jsony;),
+            Library::Nanoserde => splat!(out; use nanoserde::{DeBin, SerBin, DeJson, SerJson};),
+            Library::Serde => splat!(out; use serde_derive::{Deserialize, Serialize};),
+            Library::Musli => splat!(out; use musli::{Encode, Decode};),
+            Library::Baseline => (),
             other => panic!("gen_imports_multi not supported for {}", other.name()),
         }
     }
 
     fn gen_imports(&self, out: &mut Vec<TokenTree>) {
         match self {
-            Libary::Jsony { .. } => splat!(out; use jsony_macros::Jsony;),
-            Libary::Merde => splat!(out; ),
-            Libary::Nanoserde => splat!(out; use nanoserde::{DeJson, SerJson};),
-            Libary::Musli => splat!(out; use musli::{Encode, Decode};),
-            Libary::Serde | Libary::Toml | Libary::TomlEdit => {
+            Library::Jsony { .. } => splat!(out; use jsony_macros::Jsony;),
+            Library::Merde => splat!(out; ),
+            Library::Nanoserde => splat!(out; use nanoserde::{DeJson, SerJson};),
+            Library::Musli => splat!(out; use musli::{Encode, Decode};),
+            Library::Serde | Library::Toml | Library::TomlEdit => {
                 splat!(out; use serde_derive::{Deserialize, Serialize};)
             }
-            Libary::Sonic => splat!(out; use sonic_rs::{Deserialize, Serialize};),
-            Libary::Miniserde => splat!(out; use miniserde::{Serialize, Deserialize};),
-            Libary::Midiserde => splat!(out; use midiserde::{Serialize, Deserialize};),
-            Libary::Facet => splat!(out; use facet::Facet;),
-            Libary::Baseline | Libary::TomlSpanner | Libary::TomlSpan => (),
-            Libary::TomlSpannerMacros => splat!(out; use toml_spanner_macros::Toml;),
+            Library::Sonic => splat!(out; use sonic_rs::{Deserialize, Serialize};),
+            Library::Miniserde => splat!(out; use miniserde::{Serialize, Deserialize};),
+            Library::Midiserde => splat!(out; use midiserde::{Serialize, Deserialize};),
+            Library::Facet => splat!(out; use facet::Facet;),
+            Library::Baseline | Library::TomlSpanner | Library::TomlSpan => (),
+            Library::TomlSpannerMacros => splat!(out; use toml_spanner_macros::Toml;),
         }
     }
 
     pub fn gen_compat_json(&self, out: &mut Vec<TokenTree>) {
         match self {
-            Libary::Jsony { .. } => splat! { out;
+            Library::Jsony { .. } => splat! { out;
                 pub fn to_json(value: &impl jsony::ToJson) -> String { jsony::to_json(value) }
                 pub fn from_json<T: for<~a> jsony::FromJson<~a> >(s: &str) -> T { jsony::from_json::<T>(s).unwrap() }
             },
-            Libary::Serde => splat! { out;
+            Library::Serde => splat! { out;
                 pub fn to_json(value: &impl serde::Serialize) -> String { serde_json::to_string(value).unwrap() }
                 pub fn from_json<~a, T: serde::de::DeserializeOwned>(s: &str) -> T { serde_json::from_str::<T>(s).unwrap() }
             },
-            Libary::Sonic => splat! { out;
+            Library::Sonic => splat! { out;
                 pub fn to_json(value: &impl serde::Serialize) -> String { sonic_rs::to_string(value).unwrap() }
                 pub fn from_json<T: serde::de::DeserializeOwned>(s: &str) -> T { sonic_rs::from_str::<T>(s).unwrap() }
             },
-            Libary::Nanoserde => splat! { out;
+            Library::Nanoserde => splat! { out;
                 pub fn to_json(value: &impl nanoserde::SerJson) -> String { value.serialize_json() }
                 pub fn from_json<T: nanoserde::DeJson>(s: &str) -> T { T::deserialize_json(s).unwrap() }
             },
-            Libary::Musli => splat! { out;
+            Library::Musli => splat! { out;
                 pub fn to_json<T: musli::en::Encode<musli::mode::Text> >(value: &T) -> String { musli::json::to_string(value).unwrap() }
                 pub fn from_json<T: for<~a> musli::de::Decode<~a, musli::mode::Text, musli::alloc::Global> >(s: &str) -> T { musli::json::from_str::<T>(s).unwrap() }
             },
-            Libary::Miniserde => splat! { out;
+            Library::Miniserde => splat! { out;
                 pub fn to_json(value: &impl miniserde::Serialize) -> String { miniserde::json::to_string(value) }
                 pub fn from_json<T: miniserde::Deserialize>(s: &str) -> T { miniserde::json::from_str::<T>(s).unwrap() }
             },
-            Libary::Midiserde => splat! { out;
+            Library::Midiserde => splat! { out;
                 pub fn to_json(value: &impl midiserde::Serialize) -> String { midiserde::json::to_string(value) }
                 pub fn from_json<T: midiserde::Deserialize>(s: &str) -> T { midiserde::json::from_str::<T>(s).unwrap() }
             },
-            Libary::Baseline => splat! { out;
+            Library::Baseline => splat! { out;
                 pub fn to_json<T>(_value: &T) -> String { String::new() }
                 pub fn from_json<T>(_s: &str) -> T { unimplemented!("baseline does not support deserialization") }
             },
-            Libary::Facet => splat! { out;
+            Library::Facet => splat! { out;
                 pub fn to_json<~a>(value: &(impl facet::Facet<~a> + ~a)) -> String { facet_json::to_string(value).unwrap() }
                 pub fn from_json<T: for<~a> facet::Facet<~a> >(s: &str) -> T { facet_json::from_str::<T>(s).unwrap() }
             },
-            Libary::Merde
-            | Libary::Toml
-            | Libary::TomlSpanner
-            | Libary::TomlSpannerMacros
-            | Libary::TomlEdit
-            | Libary::TomlSpan => {
+            Library::Merde
+            | Library::Toml
+            | Library::TomlSpanner
+            | Library::TomlSpannerMacros
+            | Library::TomlEdit
+            | Library::TomlSpan => {
                 panic!("gen_compat_json not supported for {:?}", self.name())
             }
         }
@@ -559,23 +559,23 @@ facet-toml = { version = "0.44.1", features = ["fast"] }
 
     pub fn gen_compat_binary(&self, out: &mut Vec<TokenTree>) {
         match self {
-            Libary::Jsony { .. } => splat! { out;
+            Library::Jsony { .. } => splat! { out;
                 pub fn to_binary(value: &impl jsony::ToBinary) -> Vec<u8> { jsony::to_binary(value) }
                 pub fn from_binary<T: for<~a> jsony::FromBinary<~a> >(bytes: &[[u8]]) -> T { jsony::from_binary::<T>(bytes).unwrap() }
             },
-            Libary::Nanoserde => splat! { out;
+            Library::Nanoserde => splat! { out;
                 pub fn to_binary(value: &impl nanoserde::SerBin) -> Vec<u8> { nanoserde::SerBin::serialize_bin(value) }
                 pub fn from_binary<T: nanoserde::DeBin>(bytes: &[[u8]]) -> T { T::deserialize_bin(bytes).unwrap() }
             },
-            Libary::Serde => splat! { out;
+            Library::Serde => splat! { out;
                 pub fn to_binary(value: &impl serde::Serialize) -> Vec<u8> { bincode::serialize(value).unwrap() }
                 pub fn from_binary<T: serde::de::DeserializeOwned>(bytes: &[[u8]]) -> T { bincode::deserialize(bytes).unwrap() }
             },
-            Libary::Musli => splat! { out;
+            Library::Musli => splat! { out;
                 pub fn to_binary<T: musli::en::Encode<musli::mode::Binary> >(value: &T) -> Vec<u8> { musli::storage::to_vec(value).unwrap() }
                 pub fn from_binary<T: for<~a> musli::de::Decode<~a, musli::mode::Binary, musli::alloc::Global> >(bytes: &[[u8]]) -> T { musli::storage::from_slice(bytes).unwrap() }
             },
-            Libary::Baseline => splat! { out;
+            Library::Baseline => splat! { out;
                 pub fn to_binary<T>(_value: &T) -> Vec<u8> { Vec::new() }
                 pub fn from_binary<T>(_bytes: &[[u8]]) -> T { unimplemented!("baseline does not support deserialization") }
             },
@@ -609,28 +609,28 @@ facet-toml = { version = "0.44.1", features = ["fast"] }
                 for _ in [#Literal::u64_unsuffixed(0)]..repeat {
                     std::hint::black_box(&mut input);
                     [match self {
-                        Libary::Toml => splat!(out;
+                        Library::Toml => splat!(out;
                             let parsed: models::CargoToml = toml::from_str(&input).unwrap();
                             last_len = std::mem::size_of_val(&parsed);
                         ),
-                        Libary::TomlEdit => splat!(out;
+                        Library::TomlEdit => splat!(out;
                             let parsed: models::CargoToml = toml_edit::de::from_str(&input).unwrap();
                             last_len = std::mem::size_of_val(&parsed);
                         ),
-                        Libary::TomlSpanner | Libary::TomlSpannerMacros => splat!(out;
+                        Library::TomlSpanner | Library::TomlSpannerMacros => splat!(out;
                             let parsed: models::CargoToml = toml_spanner::from_str(&input).unwrap();
                             last_len = std::mem::size_of_val(&parsed);
                         ),
-                        Libary::TomlSpan => splat!(out;
+                        Library::TomlSpan => splat!(out;
                             let mut value = toml_span::parse(&input).unwrap();
                             let parsed: models::CargoToml = toml_span::Deserialize::deserialize(&mut value).unwrap();
                             last_len = std::mem::size_of_val(&parsed);
                         ),
-                        Libary::Facet => splat!(out;
+                        Library::Facet => splat!(out;
                             let parsed: models::CargoToml = facet_toml::from_str(&input).unwrap();
                             last_len = std::mem::size_of_val(&parsed);
                         ),
-                        Libary::Baseline => splat!(out;
+                        Library::Baseline => splat!(out;
                             last_len = input.len();
                         ),
                         other => panic!("gen_toml_deser_main not supported for {}", other.name()),
@@ -657,23 +657,23 @@ facet-toml = { version = "0.44.1", features = ["fast"] }
                 for _ in [#Literal::u64_unsuffixed(0)]..repeat {
                     std::hint::black_box(&mut input);
                     [match self {
-                        Libary::Toml => splat!(out;
+                        Library::Toml => splat!(out;
                             let parsed: models::CargoToml = toml::from_str(&input).unwrap();
                             last_len = toml::to_string(&parsed).unwrap().len();
                         ),
-                        Libary::TomlEdit => splat!(out;
+                        Library::TomlEdit => splat!(out;
                             let parsed: models::CargoToml = toml_edit::de::from_str(&input).unwrap();
                             last_len = toml_edit::ser::to_string(&parsed).unwrap().len();
                         ),
-                        Libary::TomlSpanner | Libary::TomlSpannerMacros => splat!(out;
+                        Library::TomlSpanner | Library::TomlSpannerMacros => splat!(out;
                             let parsed: models::CargoToml = toml_spanner::from_str(&input).unwrap();
                             last_len = toml_spanner::to_string(&parsed).unwrap().len();
                         ),
-                        Libary::Facet => splat!(out;
+                        Library::Facet => splat!(out;
                             let parsed: models::CargoToml = facet_toml::from_str(&input).unwrap();
                             last_len = facet_toml::to_string(&parsed).unwrap().len();
                         ),
-                        Libary::Baseline => splat!(out;
+                        Library::Baseline => splat!(out;
                             last_len = input.len();
                         ),
                         other => panic!("gen_toml_main not supported for {}", other.name()),
@@ -790,18 +790,18 @@ fn emit_musli_derive(out: &mut Vec<TokenTree>, flags: FLAGS) {
 }
 
 impl<'a> Struct<'a> {
-    pub fn generate_def(&self, out: &mut Vec<TokenTree>, lib: &Libary) {
+    pub fn generate_def(&self, out: &mut Vec<TokenTree>, lib: &Library) {
         self.generate_def_flagged(out, lib, false, self.flags)
     }
 
-    pub fn generate_def_public(&self, out: &mut Vec<TokenTree>, lib: &Libary) {
+    pub fn generate_def_public(&self, out: &mut Vec<TokenTree>, lib: &Library) {
         self.generate_def_flagged(out, lib, true, self.flags)
     }
 
     pub fn generate_def_with_flags(
         &self,
         out: &mut Vec<TokenTree>,
-        lib: &Libary,
+        lib: &Library,
         public: bool,
         flags: FLAGS,
     ) {
@@ -811,26 +811,26 @@ impl<'a> Struct<'a> {
     fn generate_def_flagged(
         &self,
         out: &mut Vec<TokenTree>,
-        lib: &Libary,
+        lib: &Library,
         public: bool,
         flags: FLAGS,
     ) {
         match lib {
-            Libary::Jsony { .. } => self.generate_def_jsony(out, public, flags),
-            Libary::Merde => self.generate_def_merde(out),
-            Libary::Nanoserde => self.generate_def_nanoserde(out, public, flags),
-            Libary::Musli => self.generate_def_musli(out, public, flags),
-            Libary::Serde
-            | Libary::Sonic
-            | Libary::Miniserde
-            | Libary::Midiserde
-            | Libary::Toml
-            | Libary::TomlEdit => self.generate_def_serde(out, public, flags),
-            Libary::Facet => self.generate_def_facet(out, public, flags),
-            Libary::Baseline | Libary::TomlSpanner | Libary::TomlSpan => {
+            Library::Jsony { .. } => self.generate_def_jsony(out, public, flags),
+            Library::Merde => self.generate_def_merde(out),
+            Library::Nanoserde => self.generate_def_nanoserde(out, public, flags),
+            Library::Musli => self.generate_def_musli(out, public, flags),
+            Library::Serde
+            | Library::Sonic
+            | Library::Miniserde
+            | Library::Midiserde
+            | Library::Toml
+            | Library::TomlEdit => self.generate_def_serde(out, public, flags),
+            Library::Facet => self.generate_def_facet(out, public, flags),
+            Library::Baseline | Library::TomlSpanner | Library::TomlSpan => {
                 self.generate_def_baseline(out, public)
             }
-            Libary::TomlSpannerMacros => self.generate_def_toml_spanner_macros(out, public, flags),
+            Library::TomlSpannerMacros => self.generate_def_toml_spanner_macros(out, public, flags),
         }
     }
 
@@ -1019,7 +1019,7 @@ impl<'a> Struct<'a> {
                         }
                         match feature {
                             FieldFeatureDecl::Skip => splat!(out; skip),
-                            FieldFeatureDecl::TrivalDefault => splat!(out; default),
+                            FieldFeatureDecl::TrivialDefault => splat!(out; default),
                             FieldFeatureDecl::Default{seed} => {
                                 splat!(out; default = [field.ty().generate_random_default(out, seed)])
                             },
@@ -1141,18 +1141,18 @@ impl<'a> Struct<'a> {
 }
 
 impl<'a> Enum<'a> {
-    pub fn generate_def(&self, out: &mut Vec<TokenTree>, lib: &Libary) {
+    pub fn generate_def(&self, out: &mut Vec<TokenTree>, lib: &Library) {
         self.generate_def_flagged(out, lib, false, self.flags)
     }
 
-    pub fn generate_def_public(&self, out: &mut Vec<TokenTree>, lib: &Libary) {
+    pub fn generate_def_public(&self, out: &mut Vec<TokenTree>, lib: &Library) {
         self.generate_def_flagged(out, lib, true, self.flags)
     }
 
     pub fn generate_def_with_flags(
         &self,
         out: &mut Vec<TokenTree>,
-        lib: &Libary,
+        lib: &Library,
         public: bool,
         flags: FLAGS,
     ) {
@@ -1162,28 +1162,28 @@ impl<'a> Enum<'a> {
     fn generate_def_flagged(
         &self,
         out: &mut Vec<TokenTree>,
-        lib: &Libary,
+        lib: &Library,
         public: bool,
         flags: FLAGS,
     ) {
         match lib {
-            Libary::Jsony { .. } => self.generate_def_jsony(out, public, flags),
-            Libary::Nanoserde => self.generate_def_nanoserde(out, public, flags),
-            Libary::Musli => self.generate_def_musli(out, public, flags),
-            Libary::Serde
-            | Libary::Sonic
-            | Libary::Miniserde
-            | Libary::Midiserde
-            | Libary::Toml
-            | Libary::TomlEdit => self.generate_def_serde(out, public, flags),
-            Libary::Facet => self.generate_def_facet(out, public),
-            Libary::Baseline | Libary::TomlSpanner | Libary::TomlSpan => {
+            Library::Jsony { .. } => self.generate_def_jsony(out, public, flags),
+            Library::Nanoserde => self.generate_def_nanoserde(out, public, flags),
+            Library::Musli => self.generate_def_musli(out, public, flags),
+            Library::Serde
+            | Library::Sonic
+            | Library::Miniserde
+            | Library::Midiserde
+            | Library::Toml
+            | Library::TomlEdit => self.generate_def_serde(out, public, flags),
+            Library::Facet => self.generate_def_facet(out, public),
+            Library::Baseline | Library::TomlSpanner | Library::TomlSpan => {
                 self.generate_def_baseline(out, public)
             }
-            Libary::TomlSpannerMacros => {
+            Library::TomlSpannerMacros => {
                 panic!("enum generate_def not supported for {:?}", lib.name())
             }
-            Libary::Merde => {
+            Library::Merde => {
                 panic!("enum generate_def not supported for {:?}", lib.name())
             }
         }

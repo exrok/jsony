@@ -108,7 +108,7 @@ impl<'a> Struct<'a> {
                                     skip = true;
                                 }
                             }
-                            FieldFeatureDecl::TrivalDefault => {
+                            FieldFeatureDecl::TrivialDefault => {
                                 if rand.rng.gen_bool(0.25) {
                                     skip = true;
                                 }
