@@ -57,6 +57,8 @@ pub struct FieldSpec {
     pub ty: Type<'static>,
     /// `#[jsony(rename = "...")]`; the JSON key actually used.
     pub rename: Option<String>,
+    /// `#[jsony(alias = "...")]`; an additional accepted input key.
+    pub alias: Option<String>,
     /// `#[jsony(default)]` — may be omitted from the input.
     pub default: bool,
     /// `#[jsony(skip)]` — never present in JSON, filled with Default.
@@ -64,9 +66,20 @@ pub struct FieldSpec {
 }
 
 impl FieldSpec {
-    /// The JSON key for this field (rename overrides the declared name).
+    /// The canonical JSON key for this field (rename overrides the declared name).
     fn key(&self) -> &str {
         self.rename.as_deref().unwrap_or(&self.name)
+    }
+
+    /// Pick a key to write into a sampled input: the canonical key, or, when the
+    /// field has an alias, the alias half the time (exercising the alias parse
+    /// path). The write side always emits the canonical key, so round-trip
+    /// identity holds either way.
+    fn input_key(&self, rand: &mut Rand) -> &str {
+        match &self.alias {
+            Some(a) if rand.rng.gen_bool(0.5) => a,
+            _ => self.key(),
+        }
     }
 }
 
@@ -98,12 +111,18 @@ pub struct Case {
     pub id: u64,
     pub traits: TraitSet,
     pub body: Body,
+    /// `#[jsony(transparent)]` — a single-field struct serialized as its inner
+    /// value rather than as an object/array.
+    pub transparent: bool,
 }
 
 impl Case {
     /// The `#[jsony(...)]` container attribute contents.
     pub fn container_attr(&self) -> String {
         let mut s = self.traits.attr_list();
+        if self.transparent {
+            s.push_str(", transparent");
+        }
         if let Body::Enum { repr, .. } = &self.body {
             match repr {
                 EnumRepr::External => {}
@@ -153,19 +172,28 @@ fn type_choices(binary: bool) -> Vec<Type<'static>> {
     v
 }
 
-fn gen_fields(rng: &mut StdRng, count: usize, attrs: bool, binary: bool) -> Vec<FieldSpec> {
+fn gen_fields(
+    rng: &mut StdRng,
+    count: usize,
+    attrs: bool,
+    binary: bool,
+    allow_alias: bool,
+) -> Vec<FieldSpec> {
     let choices = type_choices(binary);
     let mut fields = Vec::new();
     for i in 0..count {
         let name = format!("f{i}");
         let ty = *choices.choose(rng).unwrap();
-        let (mut rename, mut default, mut skip) = (None, false, false);
+        let (mut rename, mut alias, mut default, mut skip) = (None, None, false, false);
         if attrs {
             if rng.gen_bool(0.15) {
                 skip = true;
             } else {
                 if rng.gen_bool(0.25) {
                     rename = Some(format!("ren_{name}"));
+                }
+                if allow_alias && rng.gen_bool(0.25) {
+                    alias = Some(format!("al_{name}"));
                 }
                 default = rng.gen_bool(0.25);
             }
@@ -174,11 +202,25 @@ fn gen_fields(rng: &mut StdRng, count: usize, attrs: bool, binary: bool) -> Vec<
             name,
             ty,
             rename,
+            alias,
             default,
             skip,
         });
     }
     fields
+}
+
+/// A single plain field (no rename/alias/default/skip), for transparent structs.
+fn gen_plain_field(rng: &mut StdRng, binary: bool) -> FieldSpec {
+    let ty = *type_choices(binary).choose(rng).unwrap();
+    FieldSpec {
+        name: "f0".to_string(),
+        ty,
+        rename: None,
+        alias: None,
+        default: false,
+        skip: false,
+    }
 }
 
 fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> VariantSpec {
@@ -200,10 +242,13 @@ fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> Va
     let fields = match kind {
         VarKind::Unit => Vec::new(),
         // Tuple variants currently support exactly one field.
-        VarKind::Tuple => gen_fields(rng, 1, false, binary),
+        VarKind::Tuple => gen_fields(rng, 1, false, binary, false),
         VarKind::Struct => {
             let n = rng.gen_range(1..4);
-            gen_fields(rng, n, true, binary)
+            // alias on enum-variant struct fields is not honored by jsony (the
+            // parser only matches the canonical/renamed key), so it is excluded
+            // here to keep the round-trip oracle sound. Tracked as a finding.
+            gen_fields(rng, n, true, binary, false)
         }
     };
     VariantSpec { name, kind, fields }
@@ -213,22 +258,32 @@ fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> Va
 pub fn case_from_id(id: u64) -> Case {
     let mut rng = StdRng::seed_from_u64(id);
     let binary = rng.gen_bool(0.5);
-    let traits = TraitSet {
+    let mut traits = TraitSet {
         from_json: true,
         to_json: true,
         from_binary: binary,
         to_binary: binary,
     };
-    let body = match rng.gen_range(0..10) {
+    let mut transparent = false;
+    let body = match rng.gen_range(0..12) {
         0..=3 => {
             let n = rng.gen_range(1..6);
-            Body::Named(gen_fields(&mut rng, n, true, binary))
+            Body::Named(gen_fields(&mut rng, n, true, binary, true))
         }
         4..=5 => {
             let n = rng.gen_range(1..4);
-            Body::Tuple(gen_fields(&mut rng, n, false, binary))
+            Body::Tuple(gen_fields(&mut rng, n, false, binary, false))
         }
         6 => Body::Unit,
+        7 => {
+            // Transparent named newtype: serialized as the inner value.
+            // Restricted to JSON traits: transparent binary additionally
+            // requires the inner type be Pod, which most generated types are not.
+            transparent = true;
+            traits.from_binary = false;
+            traits.to_binary = false;
+            Body::Named(vec![gen_plain_field(&mut rng, false)])
+        }
         _ => {
             let repr = match rng.gen_range(0..4) {
                 0 => EnumRepr::Internal,
@@ -247,6 +302,7 @@ pub fn case_from_id(id: u64) -> Case {
         id,
         traits,
         body,
+        transparent,
     }
 }
 
@@ -267,7 +323,8 @@ fn write_named_object(fields: &[FieldSpec], rand: &mut Rand, out: &mut TextWrite
         if field.default && rand.rng.gen_bool(0.5) {
             continue;
         }
-        field.key().encode_json__jsony(out);
+        let key = field.input_key(rand).to_string();
+        key.encode_json__jsony(out);
         out.push_colon();
         write_value(field.ty, rand, out);
         out.push_comma();
@@ -275,8 +332,15 @@ fn write_named_object(fields: &[FieldSpec], rand: &mut Rand, out: &mut TextWrite
     out.end_json_object();
 }
 
-fn write_struct_body(body: &Body, rand: &mut Rand, out: &mut TextWriter) {
-    match body {
+fn write_struct_body(case: &Case, rand: &mut Rand, out: &mut TextWriter) {
+    if case.transparent {
+        // Single-field newtype: serialized as the inner value.
+        if let Body::Named(fields) = &case.body {
+            write_value(fields[0].ty, rand, out);
+            return;
+        }
+    }
+    match &case.body {
         Body::Named(fields) => write_named_object(fields, rand, out),
         Body::Tuple(fields) => {
             if fields.len() == 1 {
@@ -308,7 +372,8 @@ fn write_inline_fields(fields: &[FieldSpec], rand: &mut Rand, out: &mut TextWrit
         if field.default && rand.rng.gen_bool(0.5) {
             continue;
         }
-        field.key().encode_json__jsony(out);
+        let key = field.input_key(rand).to_string();
+        key.encode_json__jsony(out);
         out.push_colon();
         write_value(field.ty, rand, out);
         out.push_comma();
@@ -376,7 +441,7 @@ pub fn sample_json(case: &Case, sample_seed: u64) -> String {
     };
     match &case.body {
         Body::Enum { repr, variants } => write_enum(*repr, variants, &mut rand, &mut out),
-        body => write_struct_body(body, &mut rand, &mut out),
+        _ => write_struct_body(case, &mut rand, &mut out),
     }
     out.into_string()
 }

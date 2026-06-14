@@ -31,3 +31,34 @@ cmd = ["cargo", "run"]
 pwd = "."
 cmd = ["cargo", "run", "-p", "derive_tester", "--release", "--", "quick"]
 require = ["build-jsony-macros"]
+
+# Larger round-trip sweep (well-formed inputs only).
+[action.derive-tester-full]
+pwd = "."
+cmd = ["cargo", "run", "-p", "derive_tester", "--release", "--", "run", "10000"]
+require = ["build-jsony-macros"]
+
+# Soundness tier: adds truncated/malformed inputs and the counting-allocator
+# leak check, driving the partial-initialization drop paths. Currently surfaces
+# open leak bugs in tagged-enum decode (see docs/derive-tester.md).
+[action.derive-tester-sound]
+pwd = "."
+cmd = ["cargo", "run", "-p", "derive_tester", "--release", "--", "sound", "1000"]
+require = ["build-jsony-macros"]
+
+# AddressSanitizer + LeakSanitizer tier (nightly, build-std). Compiles the
+# malformed-heavy subset with -Zsanitizer=address and runs it under
+# ASAN_OPTIONS=detect_leaks=1, catching use-after-free, overflow, double-free,
+# and leaks in the unsafe parser. Currently surfaces open leak bugs.
+[action.derive-tester-asan]
+pwd = "."
+cmd = ["cargo", "run", "-p", "derive_tester", "--release", "--", "asan", "200"]
+require = ["build-jsony-macros"]
+
+# Curated miri subset: independent leak/UB verdict on the distilled reproductions
+# (tests/derive_tester_repro.rs), catching strict-provenance and alignment UB the
+# native sanitizers miss.
+[action.derive-tester-miri]
+pwd = "."
+cmd = ["cargo", "+nightly", "miri", "test", "--test", "derive_tester_repro"]
+require = ["build-jsony-macros"]

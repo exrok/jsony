@@ -9,8 +9,72 @@
 //! parallelizes trivially.
 
 use anyhow::{bail, Context, Result};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
+
+/// A batch-compilation toolchain configuration. The throughput spec is the
+/// default fast tier. The ASAN spec rebuilds std with the address sanitizer for
+/// the soundness tier.
+#[derive(Clone, Copy)]
+pub struct ToolchainSpec {
+    /// Subdirectory + cache key, so distinct specs do not collide on disk.
+    pub name: &'static str,
+    /// rustup toolchain override (e.g. `nightly`), or None for the default.
+    pub channel: Option<&'static str>,
+    /// Extra `RUSTFLAGS` for the capture build, baked into the captured command.
+    pub rustflags: &'static str,
+    /// Explicit `--target` triple, required by the sanitizers.
+    pub target: Option<&'static str>,
+    /// Pass `-Zbuild-std` so std/core/alloc are rebuilt. The sanitizers need this
+    /// to instrument allocations and reads inside std (LeakSanitizer in
+    /// particular reports nothing without it).
+    pub build_std: bool,
+    /// `[profile.*]` overrides appended to the scaffold manifest.
+    pub profile: &'static str,
+    /// Environment applied when running a compiled batch binary.
+    pub run_env: &'static [(&'static str, &'static str)],
+}
+
+/// Throughput profile (see docs/derive-tester.md). The batch crate is never
+/// debugged and its runtime is already cheap, so strip debug info and skip
+/// optimization for fast compiles. The dependencies are built once and reused
+/// across every batch, so optimize them and strip their debug info.
+pub const THROUGHPUT: ToolchainSpec = ToolchainSpec {
+    name: "stable",
+    channel: None,
+    rustflags: "",
+    target: None,
+    build_std: false,
+    profile: r#"[profile.dev]
+debug = false
+opt-level = 0
+
+[profile.dev.package."*"]
+debug = false
+opt-level = 3
+"#,
+    run_env: &[],
+};
+
+/// AddressSanitizer + LeakSanitizer tier. Soundness profile keeps overflow and
+/// debug-assertion checks on, and `-Zbuild-std` instruments std so LSAN reports
+/// leaks. Runs over the malformed-heavy input set.
+pub const ASAN: ToolchainSpec = ToolchainSpec {
+    name: "asan",
+    channel: Some("nightly"),
+    rustflags: "-Zsanitizer=address",
+    target: Some("x86_64-unknown-linux-gnu"),
+    build_std: true,
+    profile: r#"[profile.dev]
+debug = true
+opt-level = 1
+overflow-checks = true
+debug-assertions = true
+"#,
+    run_env: &[("ASAN_OPTIONS", "detect_leaks=1:abort_on_error=1")],
+};
 
 pub struct Toolchain {
     /// Environment-variable prefix cargo used (e.g. `LD_LIBRARY_PATH=... CARGO_*=...`).
@@ -20,18 +84,24 @@ pub struct Toolchain {
     /// Still contains the placeholder input path `src/main.rs` to be substituted.
     base: String,
     work_dir: PathBuf,
+    /// Environment applied to each batch binary run (e.g. `ASAN_OPTIONS`).
+    run_env: Vec<(String, String)>,
 }
 
 impl Toolchain {
     /// Scaffold + build once, capturing the rustc command. `jsony_root` is the
     /// absolute path to the jsony crate (the repo root).
-    pub fn prepare(jsony_root: &str, work_dir: PathBuf) -> Result<Toolchain> {
-        let scaffold = work_dir.join("scaffold");
+    ///
+    /// The capture is cached in `work_dir` and reused when neither the jsony
+    /// sources, the generated macros, the rustc version, nor the scaffold
+    /// manifest have changed since the last run. That skips the `cargo build -vv`
+    /// bootstrap on every tight edit-test loop where only the harness changed.
+    pub fn prepare(jsony_root: &str, work_dir: PathBuf, spec: ToolchainSpec) -> Result<Toolchain> {
+        let base_dir = work_dir.join(spec.name);
+        let scaffold = base_dir.join("scaffold");
         std::fs::create_dir_all(scaffold.join("src"))?;
-        std::fs::write(
-            scaffold.join("Cargo.toml"),
-            format!(
-                r#"[package]
+        let cargo_toml = format!(
+            r#"[package]
 name = "dt_scaffold"
 version = "0.1.0"
 edition = "2021"
@@ -41,25 +111,47 @@ jsony = {{ path = "{jsony_root}" }}
 
 [patch.crates-io]
 jsony_macros = {{ path = "{jsony_root}/crates/jsony_macros" }}
-"#
-            ),
-        )?;
-        std::fs::write(scaffold.join("src/main.rs"), "fn main() {}\n")?;
 
-        let target = work_dir.join("target");
+{}"#,
+            spec.profile
+        );
+        std::fs::write(scaffold.join("Cargo.toml"), &cargo_toml)?;
+
+        let run_env: Vec<(String, String)> = spec
+            .run_env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+
+        let fingerprint = capture_fingerprint(jsony_root, &cargo_toml, spec);
+        let cache_path = base_dir.join("toolchain.cache");
+        if let Some(tc) = load_cache(&cache_path, &fingerprint, work_dir.clone(), &run_env) {
+            return Ok(tc);
+        }
+
+        let target = base_dir.join("target");
         // Force a fresh build of the scaffold bin so the verbose rustc line is emitted.
         let _ = std::fs::remove_file(scaffold.join("src/main.rs"));
         std::fs::write(scaffold.join("src/main.rs"), "fn main() {}\n")?;
 
-        let out = Command::new("cargo")
-            .arg("build")
-            .arg("-vv")
-            .arg("--color=never")
-            .current_dir(&scaffold)
+        let mut cmd = Command::new("cargo");
+        if let Some(channel) = spec.channel {
+            cmd.arg(format!("+{channel}"));
+        }
+        cmd.arg("build").arg("-vv").arg("--color=never");
+        if spec.build_std {
+            cmd.arg("-Zbuild-std");
+        }
+        if let Some(triple) = spec.target {
+            cmd.arg("--target").arg(triple);
+        }
+        cmd.current_dir(&scaffold)
             .env("CARGO_TARGET_DIR", &target)
-            .env("CARGO_TERM_COLOR", "never")
-            .output()
-            .context("spawning cargo build -vv")?;
+            .env("CARGO_TERM_COLOR", "never");
+        if !spec.rustflags.is_empty() {
+            cmd.env("RUSTFLAGS", spec.rustflags);
+        }
+        let out = cmd.output().context("spawning cargo build -vv")?;
         if !out.status.success() {
             bail!(
                 "cargo build -vv failed:\n{}",
@@ -80,10 +172,15 @@ jsony_macros = {{ path = "{jsony_root}/crates/jsony_macros" }}
         base = strip_flag_token(&base, "--json=");
         base = strip_flag_token(&base, "-C incremental=");
 
+        // Persist the capture: fingerprint, then envs and base on their own
+        // lines (both are single-line, the rustc command has no embedded newline).
+        let _ = std::fs::write(&cache_path, format!("{fingerprint}\n{envs}\n{base}\n"));
+
         Ok(Toolchain {
             envs,
             base,
             work_dir,
+            run_env,
         })
     }
 
@@ -110,13 +207,98 @@ jsony_macros = {{ path = "{jsony_root}/crates/jsony_macros" }}
     }
 
     /// Run a compiled batch binary with the input file path as its argument,
-    /// returning its captured output.
+    /// returning its captured output. Applies the spec's run environment (e.g.
+    /// `ASAN_OPTIONS`).
     pub fn run(&self, bin: &Path, input_path: &Path) -> Result<std::process::Output, String> {
-        Command::new(bin)
-            .arg(input_path)
-            .output()
+        let mut cmd = Command::new(bin);
+        cmd.arg(input_path);
+        for (k, v) in &self.run_env {
+            cmd.env(k, v);
+        }
+        cmd.output()
             .map_err(|e| format!("spawn {}: {e}", bin.display()))
     }
+}
+
+/// Fingerprint of everything that would invalidate a cached rustc command: the
+/// rustc version, the scaffold manifest (so a profile change is detected), and
+/// the newest mtime across the jsony sources and the generated macros.
+fn capture_fingerprint(jsony_root: &str, cargo_toml: &str, spec: ToolchainSpec) -> String {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    if let Ok(out) = Command::new("rustc").arg("--version").output() {
+        out.stdout.hash(&mut h);
+    }
+    cargo_toml.hash(&mut h);
+    // Spec discriminators that are not reflected in the manifest.
+    spec.channel.hash(&mut h);
+    spec.rustflags.hash(&mut h);
+    spec.target.hash(&mut h);
+    spec.build_std.hash(&mut h);
+    let root = Path::new(jsony_root);
+    let mut newest = SystemTime::UNIX_EPOCH;
+    for rel in ["src", "Cargo.toml", "crates/jsony_macros/src"] {
+        max_mtime(&root.join(rel), &mut newest);
+    }
+    if let Ok(d) = newest.duration_since(SystemTime::UNIX_EPOCH) {
+        d.as_nanos().hash(&mut h);
+    }
+    format!("{:016x}", h.finish())
+}
+
+/// Recursively fold the newest modification time under `path` into `newest`.
+fn max_mtime(path: &Path, newest: &mut SystemTime) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if let Ok(m) = meta.modified() {
+        if m > *newest {
+            *newest = m;
+        }
+    }
+    if meta.is_dir() {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            max_mtime(&entry.path(), newest);
+        }
+    }
+}
+
+/// Reload a cached capture when its fingerprint matches and the rlib it refers
+/// to still exists (the target dir persists alongside the cache).
+fn load_cache(
+    cache_path: &Path,
+    fingerprint: &str,
+    work_dir: PathBuf,
+    run_env: &[(String, String)],
+) -> Option<Toolchain> {
+    let body = std::fs::read_to_string(cache_path).ok()?;
+    let mut lines = body.lines();
+    if lines.next()? != fingerprint {
+        return None;
+    }
+    let envs = lines.next()?.to_string();
+    let base = lines.next()?.to_string();
+    let rlib = extern_rlib(&base, "jsony")?;
+    if !Path::new(rlib).exists() {
+        return None;
+    }
+    Some(Toolchain {
+        envs,
+        base,
+        work_dir,
+        run_env: run_env.to_vec(),
+    })
+}
+
+/// Extract the `--extern <crate>=<path>` rlib path from a captured command.
+fn extern_rlib<'a>(base: &'a str, crate_name: &str) -> Option<&'a str> {
+    let needle = format!("--extern {crate_name}=");
+    let start = base.find(&needle)? + needle.len();
+    let rest = &base[start..];
+    let end = rest.find(' ').unwrap_or(rest.len());
+    Some(&rest[..end])
 }
 
 /// Locate the `Running \`...rustc --crate-name <name> ...\`` line in cargo's

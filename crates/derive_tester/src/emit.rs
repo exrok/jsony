@@ -11,8 +11,48 @@ use proc_macro2::TokenStream;
 use crate::gen::{Body, Case, FieldSpec, VarKind};
 use crate::schema::Type;
 
-/// Record separator in the runtime input file: `name<TAB>json`.
+/// Record separator in the runtime input file: `name<TAB>kind<TAB>json`.
 pub(crate) const FIELD_SEP: char = '\t';
+
+/// Input kinds in the record file. `OK` inputs must round-trip, `BAD` inputs
+/// (truncated or malformed) must fail without panicking or leaking.
+pub(crate) const KIND_OK: char = 'o';
+pub(crate) const KIND_BAD: char = 'b';
+
+/// Counting global allocator prepended to every batch. The oracle measures the
+/// live-byte balance around each parse: it must return to its pre-parse value,
+/// otherwise the generated `FromJson` leaked a (possibly partially initialized)
+/// allocation. jsony's parser keeps no persistent scratch, so the only
+/// allocations crossing a window are those owned by the parsed value or its
+/// error, both of which the oracle drops inside the window.
+const ALLOCATOR: &str = r#"use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicIsize, Ordering};
+static LIVE: AtomicIsize = AtomicIsize::new(0);
+struct CountingAlloc;
+unsafe impl GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        let p = System.alloc(l);
+        if !p.is_null() { LIVE.fetch_add(l.size() as isize, Ordering::Relaxed); }
+        p
+    }
+    unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
+        let p = System.alloc_zeroed(l);
+        if !p.is_null() { LIVE.fetch_add(l.size() as isize, Ordering::Relaxed); }
+        p
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        LIVE.fetch_sub(l.size() as isize, Ordering::Relaxed);
+        System.dealloc(p, l);
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: Layout, new_size: usize) -> *mut u8 {
+        let np = System.realloc(p, l, new_size);
+        if !np.is_null() { LIVE.fetch_add(new_size as isize - l.size() as isize, Ordering::Relaxed); }
+        np
+    }
+}
+#[global_allocator]
+static GLOBAL: CountingAlloc = CountingAlloc;
+"#;
 
 /// Render a schema `Type` to its Rust source spelling (e.g. `Vec < u32 >`).
 fn type_str(ty: Type) -> String {
@@ -30,6 +70,9 @@ fn field_attr(f: &FieldSpec) -> String {
     if let Some(r) = &f.rename {
         parts.push(format!("rename = {r:?}"));
     }
+    if let Some(a) = &f.alias {
+        parts.push(format!("alias = {a:?}"));
+    }
     if f.default {
         parts.push("default".to_string());
     }
@@ -44,6 +87,10 @@ fn emit_def(out: &mut String, case: &Case) {
     let name = &case.name;
     let _ = writeln!(out, "#[derive(jsony::Jsony, PartialEq, Debug)]");
     let _ = writeln!(out, "#[jsony({})]", case.container_attr());
+    // transparent FromJson requires repr(transparent).
+    if case.transparent {
+        let _ = writeln!(out, "#[repr(transparent)]");
+    }
     match &case.body {
         Body::Named(fields) => {
             let _ = writeln!(out, "struct {name} {{");
@@ -95,30 +142,51 @@ fn emit_def(out: &mut String, case: &Case) {
 fn emit_arm(out: &mut String, case: &Case) {
     let name = &case.name;
     let _ = writeln!(out, "        {name:?} => {{");
+    // Live-byte baseline. Every path below restores it before the leak check,
+    // unless it early-returns on a correctness failure.
+    let _ = writeln!(out, "            let before = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(out, "            if kind == \"{KIND_BAD}\" {{");
+    // Negative path: a truncated/malformed input must fail (or, rarely, parse)
+    // without panicking. The value or error is dropped in-window so the leak
+    // check below catches a partially-initialized field that was never dropped.
     let _ = writeln!(
         out,
-        "            let v1: {name} = match jsony::from_json(input) {{ Ok(v) => v, Err(e) => return Err(format!(\"from_json: {{e}}\")) }};"
+        "                match jsony::from_json::<{name}>(input) {{ Ok(v) => drop(v), Err(e) => drop(e) }}"
     );
-    let _ = writeln!(out, "            let s = jsony::to_json(&v1);");
+    let _ = writeln!(out, "            }} else {{");
+    // Positive path: round-trip inside a scope so every value drops before the
+    // leak check.
     let _ = writeln!(
         out,
-        "            let v2: {name} = match jsony::from_json(&s) {{ Ok(v) => v, Err(e) => return Err(format!(\"reparse: {{e}} json={{s}}\")) }};"
+        "                let v1: {name} = match jsony::from_json(input) {{ Ok(v) => v, Err(e) => return Err(format!(\"from_json: {{e}}\")) }};"
+    );
+    let _ = writeln!(out, "                let s = jsony::to_json(&v1);");
+    let _ = writeln!(
+        out,
+        "                let v2: {name} = match jsony::from_json(&s) {{ Ok(v) => v, Err(e) => return Err(format!(\"reparse: {{e}} json={{s}}\")) }};"
     );
     let _ = writeln!(
         out,
-        "            if v1 != v2 {{ return Err(format!(\"json mismatch: {{v1:?}} != {{v2:?}} json={{s}}\")); }}"
+        "                if v1 != v2 {{ return Err(format!(\"json mismatch: {{v1:?}} != {{v2:?}} json={{s}}\")); }}"
     );
     if case.traits.binary() {
-        let _ = writeln!(out, "            let b = jsony::to_binary(&v1);");
+        let _ = writeln!(out, "                let b = jsony::to_binary(&v1);");
         let _ = writeln!(
             out,
-            "            let v3: {name} = match jsony::from_binary(&b) {{ Ok(v) => v, Err(_) => return Err(format!(\"from_binary failed (json={{s}})\")) }};"
+            "                let v3: {name} = match jsony::from_binary(&b) {{ Ok(v) => v, Err(_) => return Err(format!(\"from_binary failed (json={{s}})\")) }};"
         );
         let _ = writeln!(
             out,
-            "            if v1 != v3 {{ return Err(format!(\"binary mismatch: {{v1:?}} != {{v3:?}} (json={{s}})\")); }}"
+            "                if v1 != v3 {{ return Err(format!(\"binary mismatch: {{v1:?}} != {{v3:?}} (json={{s}})\")); }}"
         );
     }
+    let _ = writeln!(out, "            }}");
+    // Leak check: live bytes must be back to baseline.
+    let _ = writeln!(out, "            let after = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(
+        out,
+        "            if after != before {{ return Err(format!(\"leak: {{}} bytes (kind={{kind}} json={{input}})\", after - before)); }}"
+    );
     let _ = writeln!(out, "            Ok(())");
     let _ = writeln!(out, "        }}");
 }
@@ -127,14 +195,16 @@ fn emit_arm(out: &mut String, case: &Case) {
 pub(crate) fn emit_batch(cases: &[Case]) -> String {
     let mut out = String::new();
     out.push_str("#![allow(dead_code, non_snake_case, non_camel_case_types, unused)]\n");
-    out.push_str("use std::io::Read;\n\n");
+    out.push_str("use std::io::Read;\n");
+    out.push_str(ALLOCATOR);
+    out.push('\n');
 
     for case in cases {
         emit_def(&mut out, case);
         out.push('\n');
     }
 
-    out.push_str("fn run_case(name: &str, input: &str) -> Result<(), String> {\n");
+    out.push_str("fn run_case(name: &str, kind: &str, input: &str) -> Result<(), String> {\n");
     out.push_str("    match name {\n");
     for case in cases {
         emit_arm(&mut out, case);
@@ -159,12 +229,15 @@ pub(crate) fn emit_batch(cases: &[Case]) -> String {
     out.push_str("        if line.is_empty() { continue; }\n");
     let _ = writeln!(
         out,
-        "        let (name, input) = line.split_once('{}').expect(\"name<SEP>json\");",
+        "        let mut cols = line.splitn(3, '{}');",
         FIELD_SEP.escape_default()
     );
+    out.push_str("        let name = cols.next().expect(\"name\");\n");
+    out.push_str("        let kind = cols.next().expect(\"kind\");\n");
+    out.push_str("        let input = cols.next().unwrap_or(\"\");\n");
     out.push_str("        total += 1;\n");
     out.push_str(
-        "        if let Err(e) = run_case(name, input) { eprintln!(\"FAIL {name}: {e}\"); fails += 1; }\n",
+        "        if let Err(e) = run_case(name, kind, input) { eprintln!(\"FAIL {name}: {e}\"); fails += 1; }\n",
     );
     out.push_str("    }\n");
     out.push_str(
