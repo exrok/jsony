@@ -41,19 +41,24 @@ fn main() -> Result<()> {
     let count = || -> Result<u64> { Ok(args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(1000)) };
     let samples = || -> Result<u32> { Ok(args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(20)) };
     let batch = || -> Result<u64> { Ok(args.get(4).map(|s| s.parse()).transpose()?.unwrap_or(50)) };
+    // `DT_SEED=<u64>` pins the id band so a prior run reproduces exactly. Unset
+    // (the default) draws a fresh random band each run, so re-running explores
+    // new cases rather than re-testing the same ids.
+    let seed: Option<u64> = std::env::var("DT_SEED").ok().map(|s| s.parse()).transpose()?;
 
     let r = match mode {
         "quick" => run::quick()?,
-        // round-trip only (well-formed inputs)
-        "run" => run::sweep(count()?, samples()?, batch()?, false)?,
-        // adds truncated/malformed inputs + the allocator leak check
-        "sound" => run::sweep(count()?, samples()?, batch()?, true)?,
-        // malformed-heavy inputs under AddressSanitizer + LeakSanitizer (nightly,
+        // round-trip + equivalence (well-formed inputs)
+        "run" => run::sweep(count()?, samples()?, batch()?, false, seed)?,
+        // adds duplicate-key/truncated/malformed inputs + the allocator leak check
+        "sound" => run::sweep(count()?, samples()?, batch()?, true, seed)?,
+        // the full soundness set under AddressSanitizer + LeakSanitizer (nightly,
         // build-std). Defaults to a smaller count since sanitized runs are slower.
         "asan" => run::asan(
             args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(200),
             samples()?,
             batch()?,
+            seed,
         )?,
         other => {
             bail!("unknown mode: {other} (expected `quick`, `run`/`sound`/`asan <count> [samples] [batch]`, or `case <id>`)")

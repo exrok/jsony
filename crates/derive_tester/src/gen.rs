@@ -316,13 +316,30 @@ fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> Va
     VariantSpec { name, kind, fields }
 }
 
+/// SplitMix64 finalizer. Sequential ids (`0, 1, 2, ...`) seeded directly into
+/// `StdRng` produce correlated streams (nearby seeds share early draws), which
+/// biases sampling and, for small member counts, makes shuffles collapse to the
+/// identity. Mixing the id first decorrelates the streams while keeping the
+/// mapping a pure function of the id, so `case <id>` still reproduces exactly.
+pub fn mix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
 /// Build the deterministic case for `id`.
 pub fn case_from_id(id: u64) -> Case {
-    let mut rng = StdRng::seed_from_u64(id);
+    let mut rng = StdRng::seed_from_u64(mix64(id));
     let binary = rng.gen_bool(0.5);
+    // JSON trait direction. `Both` is the common path. `FromJson`-only is a
+    // distinct codegen path the symmetric case never reaches, so generate it
+    // sometimes. (`ToJson`-only needs a value source independent of decoding and
+    // is left for the value-literal oracle.)
+    let from_json_only = rng.gen_bool(0.2);
     let mut traits = TraitSet {
         from_json: true,
-        to_json: true,
+        to_json: !from_json_only,
         from_binary: binary,
         to_binary: binary,
     };
@@ -391,16 +408,44 @@ pub fn case_from_id(id: u64) -> Case {
 }
 
 // --- Input sampling (coupled with the emitted attributes) ---
+//
+// Sampling builds a small structural JSON tree (`Node`) whose leaves are
+// pre-rendered field-value text from `datagen`. Field values never contain JSON
+// objects (no struct types appear as field types), so the only reorderable
+// members are the structural objects this module builds. Rendering the one tree
+// several ways yields inputs that must all decode to the same value (the
+// permutation and whitespace variants) plus a duplicate-key input that must
+// fail cleanly. Building the tree once keeps every rendering's keys and values
+// identical, so any decode difference between them is a real jsony bug rather
+// than a sampling divergence.
 
-fn write_value(ty: Type, rand: &mut Rand, out: &mut TextWriter) {
-    ty.json_encode(rand, out);
+/// A structural JSON node. `Raw` is opaque pre-rendered text (a scalar, string,
+/// array, or `null`); `Object` is a member list whose ordering and duplication
+/// the renderers vary.
+enum Node {
+    Raw(String),
+    Object(Vec<(String, Node)>),
 }
 
-/// Write a JSON object for a set of named fields, honouring rename / default /
-/// skip. `default` fields may be omitted; `skip` fields are always omitted.
-/// `rule` recases each field key (the active `rename_all`/`rename_all_fields`).
-fn write_named_object(fields: &[FieldSpec], rule: RenameRule, rand: &mut Rand, out: &mut TextWriter) {
-    out.start_json_object();
+/// JSON-encode one field value to a string via the shared `datagen` encoder.
+fn raw_value(ty: Type, rand: &mut Rand) -> String {
+    let mut out = TextWriter::new();
+    ty.json_encode(rand, &mut out);
+    out.into_string()
+}
+
+/// JSON-encode a string literal (object keys and variant-name tag values).
+fn json_string(s: &str) -> String {
+    let mut out = TextWriter::new();
+    s.encode_json__jsony(&mut out);
+    out.into_string()
+}
+
+/// Build an object node for a set of named fields, honouring rename / alias /
+/// default / skip. `default` fields may be omitted, `skip` fields are always
+/// omitted. `rule` recases each key (the active `rename_all`/`rename_all_fields`).
+fn build_named_object(fields: &[FieldSpec], rule: RenameRule, rand: &mut Rand) -> Node {
+    let mut members = Vec::new();
     for field in fields {
         if field.skip {
             continue;
@@ -409,71 +454,51 @@ fn write_named_object(fields: &[FieldSpec], rule: RenameRule, rand: &mut Rand, o
             continue;
         }
         let key = field.input_key(rule, rand);
-        key.encode_json__jsony(out);
-        out.push_colon();
-        write_value(field.ty, rand, out);
-        out.push_comma();
+        members.push((key, Node::Raw(raw_value(field.ty, rand))));
     }
-    out.end_json_object();
+    Node::Object(members)
 }
 
-fn write_struct_body(case: &Case, rand: &mut Rand, out: &mut TextWriter) {
+fn build_variant_content(v: &VariantSpec, rule: RenameRule, rand: &mut Rand) -> Node {
+    match v.kind {
+        VarKind::Unit => Node::Raw("null".to_string()),
+        VarKind::Tuple => Node::Raw(raw_value(v.fields[0].ty, rand)),
+        VarKind::Struct => build_named_object(&v.fields, rule, rand),
+    }
+}
+
+fn build_struct_body(case: &Case, rand: &mut Rand) -> Node {
     if case.transparent {
         // Single-field newtype: serialized as the inner value.
         if let Body::Named(fields) = &case.body {
-            write_value(fields[0].ty, rand, out);
-            return;
+            return Node::Raw(raw_value(fields[0].ty, rand));
         }
     }
     match &case.body {
-        Body::Named(fields) => write_named_object(fields, case.struct_field_rule(), rand, out),
+        Body::Named(fields) => build_named_object(fields, case.struct_field_rule(), rand),
         Body::Tuple(fields) => {
             if fields.len() == 1 {
                 // Newtype: serializes transparently as the inner value.
-                write_value(fields[0].ty, rand, out);
+                Node::Raw(raw_value(fields[0].ty, rand))
             } else {
-                // Multi-field tuple struct: a JSON array (pending the jsony-gap fix).
+                // Multi-field tuple struct: a positional JSON array.
+                let mut out = TextWriter::new();
                 out.start_json_array();
                 for field in fields {
-                    write_value(field.ty, rand, out);
+                    field.ty.json_encode(rand, &mut out);
                     out.push_comma();
                 }
                 out.end_json_array();
+                Node::Raw(out.into_string())
             }
         }
         // jsony serializes a unit struct as an empty object.
-        Body::Unit => out.push_str("{}"),
-        Body::Enum { .. } => unreachable!("handled in sample_json"),
+        Body::Unit => Node::Raw("{}".to_string()),
+        Body::Enum { .. } => unreachable!("handled in build_node"),
     }
 }
 
-/// Write the inline fields of a struct variant directly into the current object
-/// (used by internal tagging). `rule` recases each field key.
-fn write_inline_fields(fields: &[FieldSpec], rule: RenameRule, rand: &mut Rand, out: &mut TextWriter) {
-    for field in fields {
-        if field.skip {
-            continue;
-        }
-        if field.default && rand.rng.gen_bool(0.5) {
-            continue;
-        }
-        let key = field.input_key(rule, rand);
-        key.encode_json__jsony(out);
-        out.push_colon();
-        write_value(field.ty, rand, out);
-        out.push_comma();
-    }
-}
-
-fn write_variant_content(v: &VariantSpec, rule: RenameRule, rand: &mut Rand, out: &mut TextWriter) {
-    match v.kind {
-        VarKind::Unit => out.push_str("null"),
-        VarKind::Tuple => write_value(v.fields[0].ty, rand, out),
-        VarKind::Struct => write_named_object(&v.fields, rule, rand, out),
-    }
-}
-
-fn write_enum(case: &Case, repr: EnumRepr, variants: &[VariantSpec], rand: &mut Rand, out: &mut TextWriter) {
+fn build_enum(case: &Case, repr: EnumRepr, variants: &[VariantSpec], rand: &mut Rand) -> Node {
     let v = &variants[rand.rng.gen_range(0..variants.len())];
     // Variant names follow `rename_all`; struct-variant field keys follow
     // `rename_all_fields` (falling back to `rename_all`).
@@ -481,56 +506,193 @@ fn write_enum(case: &Case, repr: EnumRepr, variants: &[VariantSpec], rand: &mut 
     let field_rule = case.variant_field_rule();
     match repr {
         EnumRepr::External => match v.kind {
-            VarKind::Unit => {
-                name.as_str().encode_json__jsony(out);
-            }
+            VarKind::Unit => Node::Raw(json_string(&name)),
             VarKind::Tuple | VarKind::Struct => {
-                out.start_json_object();
-                name.as_str().encode_json__jsony(out);
-                out.push_colon();
-                write_variant_content(v, field_rule, rand, out);
-                out.push_comma();
-                out.end_json_object();
+                Node::Object(vec![(name, build_variant_content(v, field_rule, rand))])
             }
         },
         EnumRepr::Internal => {
-            out.start_json_object();
-            TAG.encode_json__jsony(out);
-            out.push_colon();
-            name.as_str().encode_json__jsony(out);
-            out.push_comma();
+            let mut members = vec![(TAG.to_string(), Node::Raw(json_string(&name)))];
             if v.kind == VarKind::Struct {
-                write_inline_fields(&v.fields, field_rule, rand, out);
+                // Internal tagging inlines the struct fields beside the tag.
+                if let Node::Object(inner) = build_named_object(&v.fields, field_rule, rand) {
+                    members.extend(inner);
+                }
             }
-            out.end_json_object();
+            Node::Object(members)
         }
         EnumRepr::Adjacent => {
-            out.start_json_object();
-            TAG.encode_json__jsony(out);
-            out.push_colon();
-            name.as_str().encode_json__jsony(out);
-            out.push_comma();
+            let mut members = vec![(TAG.to_string(), Node::Raw(json_string(&name)))];
             if v.kind != VarKind::Unit {
-                CONTENT.encode_json__jsony(out);
-                out.push_colon();
-                write_variant_content(v, field_rule, rand, out);
-                out.push_comma();
+                members.push((CONTENT.to_string(), build_variant_content(v, field_rule, rand)));
             }
-            out.end_json_object();
+            Node::Object(members)
         }
     }
 }
 
-/// Produce one JSON input for `case`, deterministic in `sample_seed`.
-pub fn sample_json(case: &Case, sample_seed: u64) -> String {
-    let mut out = TextWriter::new();
+fn build_node(case: &Case, rand: &mut Rand) -> Node {
+    match &case.body {
+        Body::Enum { repr, variants } => build_enum(case, *repr, variants, rand),
+        _ => build_struct_body(case, rand),
+    }
+}
+
+/// Render the canonical compact form: members in declaration order.
+fn render_canonical(node: &Node, out: &mut String) {
+    match node {
+        Node::Raw(s) => out.push_str(s),
+        Node::Object(members) => {
+            out.push('{');
+            for (i, (k, v)) in members.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&json_string(k));
+                out.push(':');
+                render_canonical(v, out);
+            }
+            out.push('}');
+        }
+    }
+}
+
+/// Render with every object's members in a shuffled order. A conforming decoder
+/// must produce the same value as the canonical order: membership is keyed by
+/// name, and the order also shifts which member the parser reads through its
+/// first-key versus subsequent-key paths.
+fn render_permuted(node: &Node, rng: &mut StdRng, out: &mut String) {
+    match node {
+        Node::Raw(s) => out.push_str(s),
+        Node::Object(members) => {
+            let mut order: Vec<usize> = (0..members.len()).collect();
+            order.shuffle(rng);
+            // Force a real reordering when the shuffle lands on the identity (for
+            // these structured seeds and small member counts it often does), so
+            // the permutation invariant is actually exercised.
+            if members.len() >= 2 && order.iter().enumerate().all(|(i, &v)| i == v) {
+                order.rotate_left(1);
+            }
+            out.push('{');
+            for (j, &i) in order.iter().enumerate() {
+                if j > 0 {
+                    out.push(',');
+                }
+                out.push_str(&json_string(&members[i].0));
+                out.push(':');
+                render_permuted(&members[i].1, rng, out);
+            }
+            out.push('}');
+        }
+    }
+}
+
+/// Render with insignificant spaces injected around structural tokens. A
+/// conforming decoder must ignore them and produce the canonical value. Only
+/// spaces are used (the record format is tab-delimited and line-based, so tabs
+/// and newlines are unavailable) and only at object boundaries (`Raw` leaves are
+/// opaque), exercising the object whitespace-skipping path.
+fn render_spaced(node: &Node, rng: &mut StdRng, out: &mut String) {
+    fn sp(rng: &mut StdRng, out: &mut String) {
+        for _ in 0..rng.gen_range(0..3) {
+            out.push(' ');
+        }
+    }
+    match node {
+        Node::Raw(s) => out.push_str(s),
+        Node::Object(members) => {
+            out.push('{');
+            sp(rng, out);
+            for (i, (k, v)) in members.iter().enumerate() {
+                if i > 0 {
+                    sp(rng, out);
+                    out.push(',');
+                    sp(rng, out);
+                }
+                out.push_str(&json_string(k));
+                sp(rng, out);
+                out.push(':');
+                sp(rng, out);
+                render_spaced(v, rng, out);
+            }
+            sp(rng, out);
+            out.push('}');
+        }
+    }
+}
+
+/// Render the canonical form with the top-level object's first member emitted
+/// twice (same key and value). jsony rejects duplicate struct keys, so this is a
+/// `BAD` input that must fail cleanly. The first occurrence decodes before the
+/// duplicate is detected, so it drives the error-path drop of an already-built
+/// (possibly heap-owning) field, feeding the leak check. Returns `None` when the
+/// top-level node is not an object with at least one member.
+fn render_dup(node: &Node) -> Option<String> {
+    let Node::Object(members) = node else {
+        return None;
+    };
+    let (k0, v0) = members.first()?;
+    let mut out = String::new();
+    out.push('{');
+    out.push_str(&json_string(k0));
+    out.push(':');
+    render_canonical(v0, &mut out);
+    for (k, v) in members {
+        out.push(',');
+        out.push_str(&json_string(k));
+        out.push(':');
+        render_canonical(v, &mut out);
+    }
+    out.push('}');
+    Some(out)
+}
+
+/// Renderings of one sampled value: the canonical input plus structural variants
+/// for the soundness checks.
+pub struct Sample {
+    /// Canonical compact JSON (the well-formed `o` input).
+    pub canonical: String,
+    /// Same value, object members shuffled. Must decode equal to `canonical`.
+    pub permuted: String,
+    /// Same value, spaces injected. Must decode equal to `canonical`.
+    pub spaced: String,
+    /// Duplicate-key variant. Must fail cleanly. `None` when inapplicable.
+    pub dup: Option<String>,
+}
+
+/// Build one sample and all its renderings, deterministic in `sample_seed`.
+pub fn sample(case: &Case, sample_seed: u64) -> Sample {
     let mut rand = Rand {
-        rng: StdRng::seed_from_u64(sample_seed),
+        rng: StdRng::seed_from_u64(mix64(sample_seed)),
         steam: 95,
     };
-    match &case.body {
-        Body::Enum { repr, variants } => write_enum(case, *repr, variants, &mut rand, &mut out),
-        _ => write_struct_body(case, &mut rand, &mut out),
+    let node = build_node(case, &mut rand);
+    // A separate RNG drives the transforms so the canonical value stays fixed
+    // regardless of how many spaces/permutations the variants draw.
+    let mut trng = StdRng::seed_from_u64(mix64(sample_seed ^ 0xD1B5_4A32_D192_ED03));
+    let mut canonical = String::new();
+    render_canonical(&node, &mut canonical);
+    let mut permuted = String::new();
+    render_permuted(&node, &mut trng, &mut permuted);
+    let mut spaced = String::new();
+    render_spaced(&node, &mut trng, &mut spaced);
+    let dup = render_dup(&node);
+    Sample {
+        canonical,
+        permuted,
+        spaced,
+        dup,
     }
-    out.into_string()
+}
+
+/// Produce one canonical JSON input for `case`, deterministic in `sample_seed`.
+pub fn sample_json(case: &Case, sample_seed: u64) -> String {
+    let mut rand = Rand {
+        rng: StdRng::seed_from_u64(mix64(sample_seed)),
+        steam: 95,
+    };
+    let node = build_node(case, &mut rand);
+    let mut out = String::new();
+    render_canonical(&node, &mut out);
+    out
 }

@@ -9,8 +9,8 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 
 use crate::compile::{Toolchain, ToolchainSpec, ASAN, THROUGHPUT};
-use crate::emit::{emit_batch, FIELD_SEP, KIND_BAD, KIND_OK};
-use crate::gen::{case_from_id, sample_json, Case};
+use crate::emit::{emit_batch, FIELD_SEP, KIND_BAD, KIND_EQ, KIND_OK};
+use crate::gen::{case_from_id, sample, sample_json, Case};
 
 /// Cap on stored failure messages (all failures are still counted).
 const MAX_FAILURE_SAMPLES: usize = 50;
@@ -35,37 +35,70 @@ fn jsony_root() -> Result<String> {
 }
 
 /// Build the runtime input file content for a batch. Per case: `samples`
-/// well-formed inputs, plus truncated copies of the first few as `BAD` inputs to
-/// drive the partial-initialization drop paths. Deterministic per (id, index).
+/// well-formed inputs. For the first few samples it also emits equivalence
+/// inputs (key-permuted and whitespace-injected, which must decode equal) and,
+/// in the soundness tier, duplicate-key/truncated/malformed inputs that must
+/// fail cleanly. Every record is deterministic per (id, index).
 fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
     let mut content = String::new();
     let mut count = 0u64;
-    let record = |content: &mut String, name: &str, kind: char, json: &str| {
+    let record = |content: &mut String, name: &str, kind: char, json: &str, extra: &str| {
         content.push_str(name);
         content.push(FIELD_SEP);
         content.push(kind);
         content.push(FIELD_SEP);
         content.push_str(json);
+        if !extra.is_empty() {
+            content.push(FIELD_SEP);
+            content.push_str(extra);
+        }
         content.push('\n');
     };
-    // In the soundness tier the first few well-formed inputs per case are also
-    // truncated into malformed records to drive the partial-init drop paths.
+    // Equivalence inputs run in every tier (cheap, decode-only). The soundness
+    // tier adds the duplicate-key/truncated/malformed inputs that drive the
+    // partial-init drop paths.
+    let eq_seeds = samples.min(4);
     let bad_seeds = if bad { samples.min(4) } else { 0 };
     for case in cases {
+        // A ToJson-only case (none generated yet) has no decoder, so the derived
+        // decode-oriented inputs would never run; emit only canonical inputs.
+        let derive_inputs = case.traits.from_json;
         for k in 0..samples {
             let seed = case.id ^ (k as u64).wrapping_mul(0x9E3779B97F4A7C15);
-            let json = sample_json(case, seed);
-            record(&mut content, &case.name, KIND_OK, &json);
-            count += 1;
-            if k < bad_seeds {
-                for cut in truncations(&json) {
-                    record(&mut content, &case.name, KIND_BAD, cut);
-                    count += 1;
+            if derive_inputs && (k < eq_seeds || k < bad_seeds) {
+                let s = sample(case, seed);
+                record(&mut content, &case.name, KIND_OK, &s.canonical, "");
+                count += 1;
+                if k < eq_seeds {
+                    // Skip records that are byte-identical to the canonical input
+                    // (shapes with no reorderable object, e.g. newtypes).
+                    if s.permuted != s.canonical {
+                        record(&mut content, &case.name, KIND_EQ, &s.canonical, &s.permuted);
+                        count += 1;
+                    }
+                    if s.spaced != s.canonical {
+                        record(&mut content, &case.name, KIND_EQ, &s.canonical, &s.spaced);
+                        count += 1;
+                    }
                 }
-                for bad in malformations(&json) {
-                    record(&mut content, &case.name, KIND_BAD, &bad);
-                    count += 1;
+                if k < bad_seeds {
+                    if let Some(dup) = &s.dup {
+                        record(&mut content, &case.name, KIND_BAD, dup, "");
+                        count += 1;
+                    }
+                    for cut in truncations(&s.canonical) {
+                        record(&mut content, &case.name, KIND_BAD, cut, "");
+                        count += 1;
+                    }
+                    for bad in malformations(&s.canonical) {
+                        record(&mut content, &case.name, KIND_BAD, &bad, "");
+                        count += 1;
+                    }
                 }
+            } else {
+                let json = sample_json(case, seed);
+                record(&mut content, &case.name, KIND_OK, &json, "");
+                count += 1;
             }
         }
     }
@@ -232,20 +265,43 @@ pub fn run(
     Ok(report)
 }
 
-/// Quick tier: a modest fixed round-trip smoke (well-formed inputs only).
+/// Resolve the id band a sweep covers. `seed` is the band start: `Some(s)`
+/// reproduces a prior run, `None` (the default) draws a fresh random band from
+/// OS entropy so repeated runs explore new cases instead of re-testing the same
+/// ids. The start is clamped so `start + count` cannot overflow. The chosen band
+/// is announced, and any failure prints `T<id>`, reproducible with `case <id>`.
+fn band(seed: Option<u64>, count: u64) -> std::ops::Range<u64> {
+    let start = match seed {
+        Some(s) => s,
+        None => rand::random::<u64>() % (u64::MAX - count.max(1)),
+    };
+    eprintln!(
+        "derive_tester band: ids {start}..{} ({count} types). Reproduce this band with \
+         DT_SEED={start}; reproduce one failing case with `case <id>`.",
+        start + count
+    );
+    start..start + count
+}
+
+/// Quick tier: a modest fixed round-trip smoke (well-formed + equivalence
+/// inputs). Fixed band so it is a stable CI gate.
 pub fn quick() -> Result<Report> {
     run(0..200, 50, 20, 16, false, THROUGHPUT)
 }
 
-/// Round-trip sweep on the throughput toolchain. `bad` adds the malformed inputs.
-pub fn sweep(count: u64, samples: u32, batch: u64, bad: bool) -> Result<Report> {
-    run(0..count, batch, samples, 16, bad, THROUGHPUT)
+/// Round-trip sweep on the throughput toolchain. `bad` adds the malformed inputs
+/// and the leak check. `seed` pins the id band (see [`band`]).
+pub fn sweep(count: u64, samples: u32, batch: u64, bad: bool, seed: Option<u64>) -> Result<Report> {
+    run(band(seed, count), batch, samples, 16, bad, THROUGHPUT)
 }
 
-/// ASAN + LSAN tier: malformed-heavy inputs on the sanitizer toolchain. Smaller
-/// waves since sanitized batches compile and run slower.
-pub fn asan(count: u64, samples: u32, batch: u64) -> Result<Report> {
-    run(0..count, batch, samples, 8, true, ASAN)
+/// ASAN + LSAN tier on the sanitizer toolchain. It runs the full soundness check
+/// set (round-trip, equivalence, duplicate-key, and the counting-allocator leak
+/// check, since that allocator is compiled into every batch) with AddressSanitizer
+/// and LeakSanitizer layered on top, so it is "sound + ASAN" in one pass. Smaller
+/// waves since sanitized batches compile and run slower. `seed` pins the id band.
+pub fn asan(count: u64, samples: u32, batch: u64, seed: Option<u64>) -> Result<Report> {
+    run(band(seed, count), batch, samples, 8, true, ASAN)
 }
 
 /// Emit the standalone source for a single case id, plus its sampled inputs as a
