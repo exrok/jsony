@@ -417,12 +417,14 @@ fn encode_binary_field(
         output;
         [
             if let Some(path) = field.with(TO_BINARY) {
-                splat!(output; [~path])
+                // Span the method on the `with` path so a missing
+                // `encode_binary` blames the attribute, not the derive.
+                splat!(output; [~path]::[@ with_method(path, "encode_binary")])
             } else {
-                splat!(output; <[~field.ty] as [~&ctx.crate_path]::ToBinary>)
+                splat!(output; <[~field.ty] as [~&ctx.crate_path]::ToBinary>::encode_binary)
             }
         ]
-        ::encode_binary(
+        (
             [place(output)], encoder
         );
     };
@@ -438,12 +440,14 @@ fn decode_binary_field(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
         out;
         [
             if let Some(path) = field.with(FROM_BINARY) {
-                splat!(out; [~path])
+                // Span the method on the `with` path so a missing
+                // `decode_binary` blames the attribute, not the derive.
+                splat!(out; [~path]::[@ with_method(path, "decode_binary")])
             } else {
-                splat!(out; <[~field.ty] as [ctx.FromBinary(out)]>)
+                splat!(out; <[~field.ty] as [ctx.FromBinary(out)]>::decode_binary)
             }
         ]
-        ::decode_binary(
+        (
             decoder
         )
     };
@@ -488,11 +492,23 @@ impl Ctx<'_> {
     }
 }
 
+/// A method-name token (e.g. `decode_json`) carrying the span of the `with`
+/// path's final segment. When the user's `with` module is missing that method,
+/// rustc blames the path in the attribute rather than the `#[derive(..)]` entry
+/// point, which is where a generated ident's default span would otherwise land.
+fn with_method(path: &[TokenTree], method: &'static str) -> TokenTree {
+    let span = path
+        .last()
+        .map(TokenTree::span)
+        .unwrap_or_else(Span::call_site);
+    TokenTree::Ident(Ident::new(method, span))
+}
+
 fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
     if let Some(with) = field.with(FROM_JSON) {
         splat! { out;
            [~&ctx.crate_path]::__internal::emplace_json_for_with_attribute::<&mut ::jsony::parser::Parser<#[#: &ctx.lifetime]>, [~field.ty], _>(
-               &[~with]::decode_json
+               &[~with]::[@ with_method(with, "decode_json")]
            )
         }
     } else if let Some(with) = field.validate(FROM_JSON) {
@@ -757,7 +773,7 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
             splat!(out;
                 [
                     if let Some(with) = field.with(TO_JSON) {
-                        splat!(out; [~with]::encode_json)
+                        splat!(out; [~with]::[@ with_method(with, "encode_json")])
                     } else {
                         splat!(out; <[~field.ty] as ::jsony::ToJson>::encode_json__jsony)
                     }
@@ -779,7 +795,7 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
                     }]
                     [
                         if let Some(with) = field.with(TO_JSON) {
-                            splat!(out; [~with]::encode_json)
+                            splat!(out; [~with]::[@ with_method(with, "encode_json")])
                         } else {
                             splat!(out; <[~field.ty] as ::jsony::ToJson>::encode_json__jsony)
                         }
@@ -912,7 +928,7 @@ fn inner_struct_to_json(
                 }
                 splat!(out; [
                             if let Some(with) = field.with(TO_JSON) {
-                                splat!(out; [~with]::encode_json)
+                                splat!(out; [~with]::[@ with_method(with, "encode_json")])
                             } else {
                                 splat!(out; <[~field.ty] as ::jsony::ToJson>::encode_json__jsony)
                             }
@@ -1346,7 +1362,7 @@ fn enum_variant_to_json(
                 out;
                 [
                     if let Some(with) = field.with(TO_JSON) {
-                        splat!(out; [~with]::encode_json)
+                        splat!(out; [~with]::[@ with_method(with, "encode_json")])
                     } else {
                         splat!(out; <[~field.ty] as ::jsony::ToJson>::encode_json__jsony)
                     }

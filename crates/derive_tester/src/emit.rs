@@ -8,7 +8,7 @@ use std::fmt::Write;
 
 use proc_macro2::TokenStream;
 
-use crate::gen::{Body, Case, FieldSpec, VarKind};
+use crate::gen::{Body, Case, DefaultSpec, FieldSpec, VarKind, DEFAULT_CONST};
 use crate::schema::Type;
 
 /// Record separator in the runtime input file: `name<TAB>kind<TAB>json`.
@@ -75,8 +75,17 @@ fn field_attr(f: &FieldSpec) -> String {
     if let Some(a) = &f.alias {
         parts.push(format!("alias = {a:?}"));
     }
-    if f.default {
-        parts.push("default".to_string());
+    // `with` and `validate` are mutually exclusive (jsony rejects both at once).
+    if f.with {
+        parts.push("with = jsony::helper::json_string".to_string());
+    } else if f.validate {
+        parts.push(format!("validate = {VALIDATOR}"));
+    }
+    match f.default {
+        DefaultSpec::None => {}
+        DefaultSpec::Bare => parts.push("default".to_string()),
+        DefaultSpec::Expr => parts.push("default = Default::default()".to_string()),
+        DefaultSpec::Const => parts.push(format!("default = {DEFAULT_CONST}")),
     }
     if parts.is_empty() {
         String::new()
@@ -84,6 +93,16 @@ fn field_attr(f: &FieldSpec) -> String {
         format!("#[jsony({})] ", parts.join(", "))
     }
 }
+
+/// Name of the always-`Ok` validator function prepended to every batch and
+/// referenced by `#[jsony(validate = ...)]` fields.
+const VALIDATOR: &str = "dt_validate_ok";
+
+/// An always-accepting validator, generic over the field type. Exercises the
+/// `validate` codegen path (the decoded value is run through it) without
+/// rejecting any well-formed input.
+const VALIDATOR_DEF: &str =
+    "fn dt_validate_ok<T>(_value: &T) -> ::std::result::Result<(), String> { Ok(()) }\n";
 
 fn emit_def(out: &mut String, case: &Case) {
     let name = &case.name;
@@ -114,6 +133,9 @@ fn emit_def(out: &mut String, case: &Case) {
         Body::Enum { variants, .. } => {
             let _ = writeln!(out, "enum {name} {{");
             for v in variants {
+                if let Some(r) = &v.rename {
+                    let _ = writeln!(out, "    #[jsony(rename = {r:?})]");
+                }
                 match v.kind {
                     VarKind::Unit => {
                         let _ = writeln!(out, "    {},", v.name);
@@ -242,6 +264,7 @@ pub(crate) fn emit_batch(cases: &[Case]) -> String {
     out.push_str("#![allow(dead_code, non_snake_case, non_camel_case_types, unused)]\n");
     out.push_str("use std::io::Read;\n");
     out.push_str(ALLOCATOR);
+    out.push_str(VALIDATOR_DEF);
     out.push('\n');
 
     for case in cases {

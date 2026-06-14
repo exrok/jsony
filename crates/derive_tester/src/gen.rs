@@ -53,6 +53,54 @@ pub enum EnumRepr {
 pub const TAG: &str = "kind";
 pub const CONTENT: &str = "data";
 
+/// The constant emitted (and asserted) for the `Const` default. A non-zero
+/// value distinguishes "default applied" from "field left zero-initialized",
+/// and fits every generated integer type.
+pub const DEFAULT_CONST: i64 = 7;
+
+/// How a field's `#[jsony(default)]` is rendered, and whether the sampler can
+/// make an absolute assertion about the value it fills in.
+#[derive(Clone, Copy, PartialEq)]
+pub enum DefaultSpec {
+    /// No `default` attribute. The field is always present in the input.
+    None,
+    /// `#[jsony(default)]` — the bare form, fills with `Default::default()`.
+    Bare,
+    /// `#[jsony(default = Default::default())]` — the custom-expression branch
+    /// (`DefaultKind::Custom`), distinct codegen from the bare form.
+    Expr,
+    /// `#[jsony(default = DEFAULT_CONST)]` on an integer field. The known
+    /// constant lets the sampler assert the filled value absolutely: an input
+    /// that omits the field must decode equal to one that sets it to the
+    /// constant.
+    Const,
+}
+
+impl DefaultSpec {
+    /// Whether the field carries any `default`, so the sampler may omit it.
+    fn is_set(self) -> bool {
+        self != DefaultSpec::None
+    }
+}
+
+/// Integer types, the only ones that take a `Const` default (a bare integer
+/// literal coerces to any of them, and its JSON form is the decimal digits).
+fn is_int(ty: Type) -> bool {
+    matches!(
+        ty,
+        Type::U8
+            | Type::I8
+            | Type::U16
+            | Type::I16
+            | Type::U32
+            | Type::I32
+            | Type::U64
+            | Type::I64
+            | Type::U128
+            | Type::I128
+    )
+}
+
 pub struct FieldSpec {
     pub name: String,
     pub ty: Type<'static>,
@@ -60,10 +108,17 @@ pub struct FieldSpec {
     pub rename: Option<String>,
     /// `#[jsony(alias = "...")]`; an additional accepted input key.
     pub alias: Option<String>,
-    /// `#[jsony(default)]` — may be omitted from the input.
-    pub default: bool,
+    /// `#[jsony(default ...)]` — the field may be omitted from the input.
+    pub default: DefaultSpec,
     /// `#[jsony(skip)]` — never present in JSON, filled with Default.
     pub skip: bool,
+    /// `#[jsony(with = jsony::helper::json_string)]` — the field's value is
+    /// serialized as a JSON string containing the value's own JSON. The sampler
+    /// emits the matching transformed input (see [`FieldSpec::with_wrap`]).
+    pub with: bool,
+    /// `#[jsony(validate = ...)]` — an always-`Ok` validator runs on the decoded
+    /// value. Mutually exclusive with `with` (jsony rejects both on one field).
+    pub validate: bool,
 }
 
 impl FieldSpec {
@@ -88,6 +143,19 @@ impl FieldSpec {
             _ => self.key(rule),
         }
     }
+
+    /// Map a field value's native JSON text to the on-the-wire form. With
+    /// `#[jsony(with = jsony::helper::json_string)]` the value's JSON is embedded
+    /// as a JSON string (`42` becomes `"42"`), matching what the helper encodes,
+    /// so the sampled input drives the `with` decode path and re-encoding
+    /// reproduces it. Otherwise the value is passed through unchanged.
+    fn with_wrap(&self, native: String) -> String {
+        if self.with {
+            json_string(&native)
+        } else {
+            native
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -101,6 +169,21 @@ pub struct VariantSpec {
     pub name: String,
     pub kind: VarKind,
     pub fields: Vec<FieldSpec>,
+    /// `#[jsony(rename = "...")]` on the variant; the JSON variant name actually
+    /// used. An explicit rename wins outright, bypassing `rename_all`.
+    pub rename: Option<String>,
+}
+
+impl VariantSpec {
+    /// The JSON name for this variant: an explicit `rename` wins outright,
+    /// otherwise the container `rename_all` recases the declared name. Mirrors
+    /// jsony's variant-name resolution.
+    fn json_name(&self, rule: RenameRule) -> String {
+        match &self.rename {
+            Some(r) => r.clone(),
+            None => rule.apply_to_variant(&self.name),
+        }
+    }
 }
 
 pub enum Body {
@@ -246,7 +329,8 @@ fn gen_fields(
     for i in 0..count {
         let name = format!("f{i}");
         let ty = *choices.choose(rng).unwrap();
-        let (mut rename, mut alias, mut default, mut skip) = (None, None, false, false);
+        let (mut rename, mut alias, mut skip) = (None, None, false);
+        let (mut default, mut with, mut validate) = (DefaultSpec::None, false, false);
         if attrs {
             if rng.gen_bool(0.15) {
                 skip = true;
@@ -257,7 +341,27 @@ fn gen_fields(
                 if allow_alias && rng.gen_bool(0.25) {
                     alias = Some(format!("al_{name}"));
                 }
-                default = rng.gen_bool(0.25);
+                if rng.gen_bool(0.25) {
+                    // A `Const` default on integers carries an absolute value
+                    // check; the other forms exercise the bare and custom-expr
+                    // codegen branches.
+                    default = if is_int(ty) && rng.gen_bool(0.5) {
+                        DefaultSpec::Const
+                    } else if rng.gen_bool(0.5) {
+                        DefaultSpec::Expr
+                    } else {
+                        DefaultSpec::Bare
+                    };
+                }
+                // `with` and `validate` are mutually exclusive (jsony rejects
+                // both on one field). `with` re-encodes the value as a JSON
+                // string via the shipped `json_string` helper, so it stays
+                // round-trip-safe for every generated type.
+                match rng.gen_range(0..4) {
+                    0 => with = true,
+                    1 => validate = true,
+                    _ => {}
+                }
             }
         }
         fields.push(FieldSpec {
@@ -267,6 +371,8 @@ fn gen_fields(
             alias,
             default,
             skip,
+            with,
+            validate,
         });
     }
     fields
@@ -280,8 +386,10 @@ fn gen_plain_field(rng: &mut StdRng, binary: bool) -> FieldSpec {
         ty,
         rename: None,
         alias: None,
-        default: false,
+        default: DefaultSpec::None,
         skip: false,
+        with: false,
+        validate: false,
     }
 }
 
@@ -313,7 +421,20 @@ fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> Va
             gen_fields(rng, n, true, binary, true)
         }
     };
-    VariantSpec { name, kind, fields }
+    // Per-variant `#[jsony(rename = "...")]` overrides `rename_all` for the JSON
+    // variant name. Applies to every representation (the external key, the inline
+    // tag value, the adjacent tag value).
+    let rename = if rng.gen_bool(0.25) {
+        Some(format!("ren_V{idx}"))
+    } else {
+        None
+    };
+    VariantSpec {
+        name,
+        kind,
+        fields,
+        rename,
+    }
 }
 
 /// SplitMix64 finalizer. Sequential ids (`0, 1, 2, ...`) seeded directly into
@@ -450,11 +571,12 @@ fn build_named_object(fields: &[FieldSpec], rule: RenameRule, rand: &mut Rand) -
         if field.skip {
             continue;
         }
-        if field.default && rand.rng.gen_bool(0.5) {
+        if field.default.is_set() && rand.rng.gen_bool(0.5) {
             continue;
         }
         let key = field.input_key(rule, rand);
-        members.push((key, Node::Raw(raw_value(field.ty, rand))));
+        let value = field.with_wrap(raw_value(field.ty, rand));
+        members.push((key, Node::Raw(value)));
     }
     Node::Object(members)
 }
@@ -462,7 +584,7 @@ fn build_named_object(fields: &[FieldSpec], rule: RenameRule, rand: &mut Rand) -
 fn build_variant_content(v: &VariantSpec, rule: RenameRule, rand: &mut Rand) -> Node {
     match v.kind {
         VarKind::Unit => Node::Raw("null".to_string()),
-        VarKind::Tuple => Node::Raw(raw_value(v.fields[0].ty, rand)),
+        VarKind::Tuple => Node::Raw(v.fields[0].with_wrap(raw_value(v.fields[0].ty, rand))),
         VarKind::Struct => build_named_object(&v.fields, rule, rand),
     }
 }
@@ -500,9 +622,10 @@ fn build_struct_body(case: &Case, rand: &mut Rand) -> Node {
 
 fn build_enum(case: &Case, repr: EnumRepr, variants: &[VariantSpec], rand: &mut Rand) -> Node {
     let v = &variants[rand.rng.gen_range(0..variants.len())];
-    // Variant names follow `rename_all`; struct-variant field keys follow
-    // `rename_all_fields` (falling back to `rename_all`).
-    let name = case.rename_all.apply_to_variant(&v.name);
+    // Variant names follow an explicit per-variant `rename`, else `rename_all`;
+    // struct-variant field keys follow `rename_all_fields` (falling back to
+    // `rename_all`).
+    let name = v.json_name(case.rename_all);
     let field_rule = case.variant_field_rule();
     match repr {
         EnumRepr::External => match v.kind {
@@ -650,6 +773,67 @@ fn render_dup(node: &Node) -> Option<String> {
     Some(out)
 }
 
+/// Render a member list as a compact JSON object. Values are already raw JSON
+/// text, keys are JSON-string-encoded.
+fn render_members(members: &[(String, String)]) -> String {
+    let mut out = String::from("{");
+    for (i, (k, v)) in members.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&json_string(k));
+        out.push(':');
+        out.push_str(v);
+    }
+    out.push('}');
+    out
+}
+
+/// Build the absolute default-value check for a top-level named struct that has
+/// a `Const`-default field: a pair `(present, omitted)` of object inputs that
+/// differ only in that one member. `present` sets it to [`DEFAULT_CONST`];
+/// `omitted` drops it, forcing jsony to fill the default. A conforming decoder
+/// produces the same value from both, so they go in as an `EQ` pair. This
+/// asserts the *value* jsony fills, which round-trip alone cannot observe (a
+/// wrong-but-consistent default round-trips fine). `None` unless the case is a
+/// non-transparent named struct with such a field.
+fn build_default_eq(case: &Case, seed: u64) -> Option<(String, String)> {
+    if case.transparent {
+        return None;
+    }
+    let Body::Named(fields) = &case.body else {
+        return None;
+    };
+    let target = fields
+        .iter()
+        .position(|f| !f.skip && f.default == DefaultSpec::Const)?;
+    let mut rand = Rand {
+        rng: StdRng::seed_from_u64(mix64(seed ^ 0x5EED_0DEF_A017_C0DE)),
+        steam: 95,
+    };
+    let rule = case.struct_field_rule();
+    let mut members = Vec::new();
+    for (i, field) in fields.iter().enumerate() {
+        if field.skip {
+            continue;
+        }
+        let value = if i == target {
+            field.with_wrap(DEFAULT_CONST.to_string())
+        } else {
+            field.with_wrap(raw_value(field.ty, &mut rand))
+        };
+        members.push((field.key(rule), value));
+    }
+    let present = render_members(&members);
+    members.remove(
+        members
+            .iter()
+            .position(|(k, _)| *k == fields[target].key(rule))?,
+    );
+    let omitted = render_members(&members);
+    Some((present, omitted))
+}
+
 /// Renderings of one sampled value: the canonical input plus structural variants
 /// for the soundness checks.
 pub struct Sample {
@@ -661,6 +845,9 @@ pub struct Sample {
     pub spaced: String,
     /// Duplicate-key variant. Must fail cleanly. `None` when inapplicable.
     pub dup: Option<String>,
+    /// Absolute default-value check: `(field present at the constant, field
+    /// omitted)`. The two must decode equal. `None` when inapplicable.
+    pub default_eq: Option<(String, String)>,
 }
 
 /// Build one sample and all its renderings, deterministic in `sample_seed`.
@@ -680,11 +867,13 @@ pub fn sample(case: &Case, sample_seed: u64) -> Sample {
     let mut spaced = String::new();
     render_spaced(&node, &mut trng, &mut spaced);
     let dup = render_dup(&node);
+    let default_eq = build_default_eq(case, sample_seed);
     Sample {
         canonical,
         permuted,
         spaced,
         dup,
+        default_eq,
     }
 }
 

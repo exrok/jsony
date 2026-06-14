@@ -548,6 +548,104 @@ pub fn catalog() -> Vec<DiagCase> {
         vec![Expect::within("cannot find value", "missing_value")],
     ));
 
+    // 14-17. `with`/`validate`/`default` span discipline. A mistake in one of
+    //        these bindings must point at the binding, not at the derive (the
+    //        implicit forbid). These guard the recently-fixed `with` method
+    //        spans and the already-correct symbol-resolution spans.
+
+    // 14. `with` module missing the FromJson method. The generated
+    //     `module::decode_json` reference must blame the module path in the
+    //     attribute, not the derive entry point. (Fixed: the method ident now
+    //     carries the `with` path's span.)
+    out.push(case(
+        "with_missing_decode_json",
+        src(
+            "mod from_with { pub fn unrelated() {} }\n",
+            "#[derive(jsony::Jsony)]\n#[jsony(FromJson)]\nstruct Probe { #[jsony(with = from_with)] a: u32 }",
+        ),
+        vec![Expect::within("decode_json", "with = from_with")],
+    ));
+
+    // 15. `with` module missing the ToJson method. Same fix on the encode side.
+    out.push(case(
+        "with_missing_encode_json",
+        src(
+            "mod to_with { pub fn unrelated() {} }\n",
+            "#[derive(jsony::Jsony)]\n#[jsony(ToJson)]\nstruct Probe { #[jsony(with = to_with)] a: u32 }",
+        ),
+        vec![Expect::within("encode_json", "with = to_with")],
+    ));
+
+    // 16. `with` module missing both binary methods. Each generated
+    //     `module::{encode,decode}_binary` reference must blame the binding.
+    out.push(case(
+        "with_missing_binary_methods",
+        src(
+            "mod bin_with { pub fn unrelated() {} }\n",
+            "#[derive(jsony::Jsony)]\n#[jsony(Binary)]\nstruct Probe { #[jsony(with = bin_with)] a: u32 }",
+        ),
+        vec![
+            Expect::within("decode_binary", "with = bin_with"),
+            Expect::within("encode_binary", "with = bin_with"),
+        ],
+    ));
+
+    // 17. Unknown `with` module. rustc resolves the path in the user's context,
+    //     so the span already lands on the path token. Guards that it stays
+    //     there (and never collapses to the derive).
+    out.push(case(
+        "with_unknown_module",
+        src(
+            "",
+            "#[derive(jsony::Jsony)]\n#[jsony(FromJson)]\nstruct Probe { #[jsony(with = no_such_module)] a: u32 }",
+        ),
+        vec![Expect::within("no_such_module", "with = no_such_module")],
+    ));
+
+    // 18. Unknown `validate` function. The path is spliced with the user's span,
+    //     so the resolution error points at the function name.
+    out.push(case(
+        "validate_unknown_fn",
+        src(
+            "",
+            "#[derive(jsony::Jsony)]\n#[jsony(FromJson)]\nstruct Probe { #[jsony(validate = no_such_check)] a: u32 }",
+        ),
+        vec![Expect::within("no_such_check", "validate = no_such_check")],
+    ));
+
+    // 19. Unknown `default` expression. The expression is spliced verbatim, so
+    //     the resolution error points at the user's token.
+    out.push(case(
+        "default_unknown_expr",
+        src(
+            "",
+            "#[derive(jsony::Jsony)]\n#[jsony(FromJson)]\nstruct Probe { #[jsony(default = no_such_default())] a: u32 }",
+        ),
+        vec![Expect::within("no_such_default", "default = no_such_default")],
+    ));
+
+    // 20. `validate` function with the wrong signature (returns `bool`, not
+    //     `Result<(), String>`). The ideal error points at the validator in the
+    //     attribute; the macro currently raises the obligation at the generated
+    //     `emplace_json_for_validate_attribute` call, whose span is the derive
+    //     path. This is the same qualified-path/obligation-span limitation as
+    //     `field_missing_tojson`, deferred for the same reason.
+    out.push(
+        case(
+            "validate_wrong_signature",
+            src(
+                "fn bad_check<T>(_v: &T) -> bool { true }\n",
+                "#[derive(jsony::Jsony)]\n#[jsony(FromJson)]\nstruct Probe { #[jsony(validate = bad_check)] a: u32 }",
+            ),
+            vec![Expect::within("Result", "validate = bad_check")],
+        )
+        .known(
+            "validate signature mismatch surfaces as a trait obligation on the \
+             emplace helper call, which lands on the derive path; same \
+             qualified-path/obligation-span limitation as field_missing_tojson",
+        ),
+    );
+
     out
 }
 

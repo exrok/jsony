@@ -81,6 +81,12 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
                         record(&mut content, &case.name, KIND_EQ, &s.canonical, &s.spaced);
                         count += 1;
                     }
+                    // Absolute default-value check: omitting a `default = N` field
+                    // must decode equal to setting it to N.
+                    if let Some((present, omitted)) = &s.default_eq {
+                        record(&mut content, &case.name, KIND_EQ, present, omitted);
+                        count += 1;
+                    }
                 }
                 if k < bad_seeds {
                     if let Some(dup) = &s.dup {
