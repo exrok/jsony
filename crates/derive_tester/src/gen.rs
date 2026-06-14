@@ -108,7 +108,9 @@ impl Case {
             match repr {
                 EnumRepr::External => {}
                 EnumRepr::Internal => s.push_str(&format!(", tag = {TAG:?}")),
-                EnumRepr::Adjacent => s.push_str(&format!(", tag = {TAG:?}, content = {CONTENT:?}")),
+                EnumRepr::Adjacent => {
+                    s.push_str(&format!(", tag = {TAG:?}, content = {CONTENT:?}"))
+                }
             }
         }
         s
@@ -121,19 +123,33 @@ impl Case {
 fn type_choices(binary: bool) -> Vec<Type<'static>> {
     use Type::*;
     let mut v = vec![
-        U8, I8, U16, I16, U32, I32, U64, I64, U128, I128, F32, F64, Bool, String,
-        Option(&U32), Option(&String), Option(&Bool), Option(&I64),
-        Vec(&U32), Vec(&String), Vec(&Bool), Vec(&I64), Vec(&F64),
+        U8,
+        I8,
+        U16,
+        I16,
+        U32,
+        I32,
+        U64,
+        I64,
+        U128,
+        I128,
+        F32,
+        F64,
+        Bool,
+        String,
+        Option(&U32),
+        Option(&String),
+        Option(&Bool),
+        Option(&I64),
+        Vec(&U32),
+        Vec(&String),
+        Vec(&Bool),
+        Vec(&I64),
+        Vec(&F64),
     ];
-    // jsony-gap: `Box<T>` has no FromBinary/ToBinary impls yet. Box JSON works,
-    // so we still exercise it in JSON-only cases. Correct version (restore once
-    // jsony adds Box binary support — then this `if` becomes unconditional):
-    //     v.push(Box(&U32));
-    //     v.push(Box(&String));
-    if !binary {
-        v.push(Box(&U32));
-        v.push(Box(&String));
-    }
+    let _ = binary;
+    v.push(Box(&U32));
+    v.push(Box(&String));
     v
 }
 
@@ -187,14 +203,7 @@ fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> Va
         VarKind::Tuple => gen_fields(rng, 1, false, binary),
         VarKind::Struct => {
             let n = rng.gen_range(1..4);
-            let mut fields = gen_fields(rng, n, true, binary);
-            // jsony-bug workaround: an enum struct-variant that serializes zero
-            // fields (e.g. all `skip`) makes ToJson emit malformed JSON
-            // (internal tag -> `{"kind":}`, external -> `{}}`). Until that is
-            // fixed, force at least one serialized field. Correct version
-            // (restore once the bug is fixed): just `gen_fields(rng, n, true, binary)`.
-            fields[0].skip = false;
-            fields
+            gen_fields(rng, n, true, binary)
         }
     };
     VariantSpec { name, kind, fields }
@@ -215,11 +224,10 @@ pub fn case_from_id(id: u64) -> Case {
             let n = rng.gen_range(1..6);
             Body::Named(gen_fields(&mut rng, n, true, binary))
         }
-        // jsony-gap: JSON FromJson is only implemented for single-field (newtype)
-        // tuple structs. Correct version (restore once multi-field tuple-struct
-        // FromJson lands — the sampler already handles the >1 array form):
-        //     4..=5 => { let n = rng.gen_range(1..4); Body::Tuple(gen_fields(&mut rng, n, false, binary)) }
-        4..=5 => Body::Tuple(gen_fields(&mut rng, 1, false, binary)),
+        4..=5 => {
+            let n = rng.gen_range(1..4);
+            Body::Tuple(gen_fields(&mut rng, n, false, binary))
+        }
         6 => Body::Unit,
         _ => {
             let repr = match rng.gen_range(0..4) {

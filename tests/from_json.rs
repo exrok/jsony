@@ -57,6 +57,25 @@ fn simple_struct() {
 }
 
 #[test]
+fn tuple_struct() {
+    #[derive(Jsony, Debug, PartialEq)]
+    pub struct Triple(i32, String, bool);
+
+    assert_eq!(
+        from_json::<Triple>(arr![-7, "hi", true]).unwrap(),
+        Triple(-7, "hi".to_string(), true)
+    );
+    // Length mismatches and non-array inputs are rejected.
+    assert!(from_json::<Triple>(arr![1, "x"]).is_err());
+    assert!(from_json::<Triple>(arr![1, "x", true, 5]).is_err());
+    assert!(from_json::<Triple>("5").is_err());
+
+    #[derive(Jsony, Debug, PartialEq)]
+    pub struct Pair(u8, u8);
+    assert_eq!(from_json::<Pair>(arr![1, 2]).unwrap(), Pair(1, 2));
+}
+
+#[test]
 fn defaults() {
     #[derive(Jsony, Default)]
     struct Simple {

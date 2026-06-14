@@ -153,6 +153,10 @@ use crate::{
     parser::{JsonParentContext, Parser},
 };
 
+/// Array decoder for derived multi-field tuple structs. Re-exported from
+/// [`crate::json`] so generated code can reach it under the `__internal` path.
+pub use crate::json::dyn_tuple_decode;
+
 type DecodeFn<'a> = unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>;
 use super::DecodeError;
 

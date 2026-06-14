@@ -711,12 +711,35 @@ fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
                     parser
                 )
             );
-            ToJsonKind::Forward(field)
         }
-        _ => {
-            throw!("FromJson not implemented for Tuples with multiple fields yet.")
+        fields => {
+            // Decode the JSON array positionally into each field via its own
+            // offset and FromJson::emplace_from_json. dyn_tuple_decode owns the
+            // array-stepping, length check, and per-field drop-on-error cleanup.
+            splat!(out;
+                ::jsony::__internal::dyn_tuple_decode(
+                    dst,
+                    parser,
+                    &[[
+                        [for ((i, field) in fields.iter().enumerate()) {
+                            (
+                                ::std::mem::offset_of!(
+                                    [ctx.dead_target_type(out)],
+                                    [@Literal::usize_unsuffixed(i).into()]
+                                ),
+                                < [~field.ty] as ::jsony::FromJson<#[#: &ctx.lifetime]> >::emplace_from_json
+                            ),
+                        }]
+                    ]],
+                    &[[
+                        [for (field in fields.iter()) {
+                            |ptr| ::std::ptr::drop_in_place(ptr.cast::<[~field.ty]>().as_ptr()),
+                        }]
+                    ]]
+                )
+            );
         }
-    };
+    }
     let stream = out.split_off_stream(head);
     impl_from_json(out, ctx, stream);
 }
@@ -752,7 +775,7 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
                     [if first {
                         first = false;
                     } else {
-                        splat!(out; out.push_comma());
+                        splat!(out; out.push_comma(););
                     }]
                     [
                         if let Some(with) = field.with(TO_JSON) {
@@ -1169,7 +1192,10 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
         crate::template::raw_escape(&tag_name, &mut text);
         text.push_str("\":");
         splat! { out; out.push_str([@Literal::string(&text).into()]); };
-    } else if all_objects {
+    } else if all_objects && matches!(ctx.target.tag, Tag::Default) {
+        // The shared outer object is an external-tag optimization: each variant
+        // fills in `"Variant":..` without its own braces. Untagged variants
+        // already emit their full representation, so they must not be wrapped.
         splat!(out; out.start_json_object(););
     }
     splat!(
@@ -1186,7 +1212,7 @@ fn enum_to_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     );
     if let Tag::Inline(..) = &ctx.target.tag {
         splat! { out; out.end_json_object(); };
-    } else if all_objects {
+    } else if all_objects && matches!(ctx.target.tag, Tag::Default) {
         splat! { out; out.end_json_object(); };
     }
     splat! { out; Self::Kind {} };
@@ -1236,7 +1262,17 @@ fn enum_variant_to_json_struct(
                 _ => ()
             }
         ]
-        [inner_struct_to_json(out, ctx, &variant.fields, text, false, field_rename)];
+        [inner_struct_to_json(out, ctx, &variant.fields, text, false, field_rename)]
+        [
+            // When the variant serializes zero fields, inner_struct_to_json emits
+            // nothing and leaves the accumulated tag name plus opening brace in
+            // `text` unflushed. Flush it here so the closing operations below see
+            // the correct buffer state instead of emitting malformed JSON.
+            if !text.is_empty() {
+                splat!(out; out.push_str([@Literal::string(&text).into()]););
+                text.clear();
+            }
+        ];
         [
             // opt: Could do a static '}' push if we know that there isn't a trailing comma which
             // can occur when flattening

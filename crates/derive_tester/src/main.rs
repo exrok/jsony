@@ -38,7 +38,9 @@ fn main() -> Result<()> {
             let batch: u64 = args.get(4).map(|s| s.parse()).transpose()?.unwrap_or(50);
             run::run(0..count, batch, samples, 16)?
         }
-        other => bail!("unknown mode: {other} (expected `quick` or `run <count> [samples] [batch]`)"),
+        other => {
+            bail!("unknown mode: {other} (expected `quick` or `run <count> [samples] [batch]`)")
+        }
     };
     report(&r);
     Ok(())

@@ -703,6 +703,12 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Box<[T]> {
     }
 }
 
+unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Box<T> {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        Box::new(T::decode_binary(decoder))
+    }
+}
+
 unsafe impl<T: ToBinary> ToBinary for Option<T> {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         if let Some(value) = self {
@@ -876,6 +882,27 @@ mod test {
                 boxed
             );
         }
+    }
+
+    #[test]
+    fn boxed_value() {
+        // Box<T> forwards to the inner T's encoding, so a boxed value is byte
+        // identical to the bare value and decodes back through Box::new.
+        let mut output = BytesWriter::new();
+        let value: u32 = 0xdead_beef;
+        let mut bare = BytesWriter::new();
+        value.encode_binary(&mut bare);
+        let boxed: Box<u32> = Box::new(value);
+        boxed.encode_binary(&mut output);
+        assert_eq!(output.buffer_slice(), bare.buffer_slice());
+        assert_eq!(from_binary::<Box<u32>>(output.buffer_slice()).unwrap(), boxed);
+
+        let mut tester = Tester::default();
+        tester.assert_roundtrip_all(&[
+            Box::new(String::from("hello")),
+            Box::new(String::new()),
+        ]);
+        tester.assert_roundtrip(&Box::new(vec![1u32, 2, 3]));
     }
 
     #[test]

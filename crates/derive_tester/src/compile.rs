@@ -151,10 +151,7 @@ fn strip_flag_token(cmd: &str, prefix: &str) -> String {
         return cmd.to_string();
     };
     let from = start + prefix.len();
-    let end = cmd[from..]
-        .find(' ')
-        .map(|i| from + i)
-        .unwrap_or(cmd.len());
+    let end = cmd[from..].find(' ').map(|i| from + i).unwrap_or(cmd.len());
     let mut out = String::with_capacity(cmd.len());
     out.push_str(&cmd[..start]);
     out.push_str(&cmd[end..]);

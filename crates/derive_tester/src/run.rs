@@ -55,7 +55,13 @@ fn sample_inputs(cases: &[Case], samples: u32) -> (String, u64) {
 
 /// Compile and run one batch (given its source + input file content). `slot` is
 /// reused across waves so the temp-file set stays bounded.
-fn run_batch(tc: &Toolchain, work: &std::path::Path, slot: usize, src: &str, input: &str) -> Result<(), String> {
+fn run_batch(
+    tc: &Toolchain,
+    work: &std::path::Path,
+    slot: usize,
+    src: &str,
+    input: &str,
+) -> Result<(), String> {
     let tag = format!("b{slot}");
     let input_path = work.join(format!("{tag}.input"));
     std::fs::write(&input_path, input).map_err(|e| format!("write {tag}.input: {e}"))?;

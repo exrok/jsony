@@ -167,7 +167,9 @@ pub(crate) fn emit_batch(cases: &[Case]) -> String {
         "        if let Err(e) = run_case(name, input) { eprintln!(\"FAIL {name}: {e}\"); fails += 1; }\n",
     );
     out.push_str("    }\n");
-    out.push_str("    if fails > 0 { eprintln!(\"{fails}/{total} FAILURES\"); std::process::exit(1); }\n");
+    out.push_str(
+        "    if fails > 0 { eprintln!(\"{fails}/{total} FAILURES\"); std::process::exit(1); }\n",
+    );
     out.push_str("    println!(\"OK {total} cases\");\n");
     out.push_str("}\n");
     out

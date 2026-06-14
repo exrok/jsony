@@ -912,7 +912,8 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>, T2: FromJson<'de>> FromJs
 }
 #[allow(clippy::type_complexity)]
 #[inline(never)]
-unsafe fn dyn_tuple_decode<'a>(
+#[doc(hidden)]
+pub unsafe fn dyn_tuple_decode<'a>(
     dest: NonNull<()>,
     parser: &mut Parser<'a>,
     fields: &[(

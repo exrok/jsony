@@ -197,3 +197,24 @@ fn tuples() {
         ]
     );
 }
+
+#[test]
+fn tuple_struct() {
+    #[derive(Jsony)]
+    #[jsony(ToJson)]
+    struct Newtype(u32);
+    assert_eq!(jsony::to_json(&Newtype(7)).as_str(), "7");
+
+    #[derive(Jsony)]
+    #[jsony(ToJson)]
+    struct Pair(u8, u8);
+    assert_eq!(jsony::to_json(&Pair(1, 2)).as_str(), "[1,2]");
+
+    #[derive(Jsony)]
+    #[jsony(ToJson)]
+    struct Triple(i32, String, bool);
+    assert_eq!(
+        jsony::to_json(&Triple(-7, "hi".to_string(), true)).as_str(),
+        r#"[-7,"hi",true]"#
+    );
+}

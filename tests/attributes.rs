@@ -273,6 +273,10 @@ fn enum_variations() {
         },
         Single(bool),
         Empty,
+        EmptyRecord {
+            #[jsony(skip)]
+            hidden: &'a str,
+        },
     }
 
     assert_json_eq!(
@@ -295,6 +299,12 @@ fn enum_variations() {
 
     assert_json_eq!("Empty", ExternallyTagged::Empty);
 
+    // A struct variant whose every field is skipped serializes zero fields.
+    assert_json_eq!(
+        { "EmptyRecord": {} },
+        ExternallyTagged::EmptyRecord { hidden: "" }
+    );
+
     #[derive(Jsony, Debug, PartialEq)]
     #[jsony(Json, tag = "type")]
     enum InternallyTagged<'a> {
@@ -309,6 +319,10 @@ fn enum_variations() {
         },
         // Single(bool), compile-time error
         Empty,
+        EmptyRecord {
+            #[jsony(skip)]
+            hidden: &'a str,
+        },
     }
 
     assert_json_eq!(
@@ -329,6 +343,11 @@ fn enum_variations() {
         InternallyTagged::Empty
     );
 
+    assert_json_eq!(
+        { "type": "EmptyRecord" },
+        InternallyTagged::EmptyRecord { hidden: "" }
+    );
+
     #[derive(Jsony, Debug, PartialEq)]
     #[jsony(Json, tag = "type", content = "data")]
     enum AdjacentlyTagged<'a> {
@@ -343,6 +362,10 @@ fn enum_variations() {
         },
         Single(bool),
         Empty,
+        EmptyRecord {
+            #[jsony(skip)]
+            hidden: &'a str,
+        },
     }
 
     assert_json_eq!(
@@ -366,6 +389,11 @@ fn enum_variations() {
     assert_json_eq!(
         { "type": "Empty" },
         AdjacentlyTagged::Empty
+    );
+
+    assert_json_eq!(
+        { "type": "EmptyRecord", "data": {} },
+        AdjacentlyTagged::EmptyRecord { hidden: "" }
     );
 
     #[derive(Jsony, Debug, PartialEq)]
@@ -397,6 +425,27 @@ fn enum_variations() {
     );
 
     assert_json_eq!(true, Untagged::Single(true));
+}
+
+#[test]
+fn untagged_all_struct_variants() {
+    // Every variant is a struct, so each serializes directly as an object with
+    // no extra wrapping. The empty variant serializes zero fields.
+    #[derive(Jsony, Debug, PartialEq)]
+    #[jsony(Json, untagged)]
+    enum Untagged {
+        Pair {
+            a: u32,
+            b: u32,
+        },
+        Empty {
+            #[jsony(skip)]
+            hidden: i32,
+        },
+    }
+
+    assert_json_eq!({ "a": 1, "b": 2 }, Untagged::Pair { a: 1, b: 2 });
+    assert_json_eq!({}, Untagged::Empty { hidden: 0 });
 }
 
 #[test]
