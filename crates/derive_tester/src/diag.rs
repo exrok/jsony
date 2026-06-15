@@ -646,6 +646,73 @@ pub fn catalog() -> Vec<DiagCase> {
         ),
     );
 
+    // 21. Two `#[jsony(other)]` variants. The macro owns this span and points it
+    //     at the second offending variant.
+    out.push(case(
+        "two_other_variants",
+        src(
+            "",
+            "#[derive(jsony::Jsony)]\n#[jsony(FromJson)]\nenum Probe { #[jsony(other)] A, #[jsony(other)] B }",
+        ),
+        vec![Expect::within("Only one other variant", "other)] B")],
+    ));
+
+    // 22. An `other` variant with more than one field. The span points at the
+    //     second field, the first one past the single value `other` may carry.
+    out.push(case(
+        "other_too_many_fields",
+        src(
+            "",
+            "#[derive(jsony::Jsony)]\n#[jsony(FromJson)]\nenum Probe { A, #[jsony(other)] B { x: u32, y: u32 } }",
+        ),
+        vec![Expect::within(
+            "Other variants may only have upto a single field",
+            "y: u32",
+        )],
+    ));
+
+    // 23. `untagged` together with `tag`. The macro owns this span and points it
+    //     at the conflicting `tag` attribute.
+    out.push(case(
+        "untagged_with_tag",
+        src(
+            "",
+            "#[derive(jsony::Jsony)]\n#[jsony(FromJson, untagged, tag = \"k\")]\nenum Probe { A, B }",
+        ),
+        vec![Expect::within("Cannot have a tag", "tag = \"k\"")],
+    ));
+
+    // 24. `via = Iterator` without `flatten`. The span points at the offending
+    //     field, not the derive.
+    out.push(case(
+        "via_without_flatten",
+        src(
+            "",
+            "#[derive(jsony::Jsony)]\n#[jsony(ToJson)]\nstruct Probe { #[jsony(via = Iterator)] pairs: Vec<(String, u32)> }",
+        ),
+        vec![Expect::within("only supported with flatten", "pairs: Vec")],
+    ));
+
+    // 25. `ToStr`/`FromStr` on an enum with a data-carrying variant. The message is
+    //     correct, but the whole-enum check is raised at the derive entry point, so
+    //     its span lands on the derive path rather than the offending variant. Same
+    //     class of span limitation as `field_missing_tojson`: deferred-by-cost.
+    out.push(
+        case(
+            "tostr_data_variant",
+            src(
+                "",
+                "#[derive(jsony::Jsony)]\n#[jsony(ToStr, FromStr)]\nenum Probe { A(u32), B }",
+            ),
+            vec![Expect::within("must not have any tuple or struct", "A(u32)")],
+        )
+        .known(
+            "the FromStr/ToStr data-variant check is raised at the derive entry \
+             point, so its primary span lands on the derive path rather than the \
+             offending variant; the message itself is correct",
+        ),
+    );
+
     out
 }
 

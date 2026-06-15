@@ -10,8 +10,8 @@ use rayon::prelude::*;
 
 use crate::compile::{Toolchain, ToolchainSpec, ASAN, THROUGHPUT};
 use crate::diag::{self, check_case};
-use crate::emit::{emit_batch, FIELD_SEP, KIND_BAD, KIND_EQ, KIND_OK};
-use crate::gen::{case_from_id, sample, sample_json, Case};
+use crate::emit::{emit_batch, FIELD_SEP, KIND_BAD, KIND_EQ, KIND_OK, KIND_REJECT};
+use crate::gen::{case_from_id, sample, sample_json, Body, Case};
 
 /// Cap on stored failure messages (all failures are still counted).
 const MAX_FAILURE_SAMPLES: usize = 50;
@@ -61,6 +61,13 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
     let eq_seeds = samples.min(4);
     let bad_seeds = if bad { samples.min(4) } else { 0 };
     for case in cases {
+        // A Str enum has no JSON form. One trigger record fires its self-contained
+        // `ToStr`/`FromStr` oracle arm, which checks every variant internally.
+        if let Body::Str(_) = &case.body {
+            record(&mut content, &case.name, KIND_OK, "str", "");
+            count += 1;
+            continue;
+        }
         // A ToJson-only case (none generated yet) has no decoder, so the derived
         // decode-oriented inputs would never run; emit only canonical inputs.
         let derive_inputs = case.traits.from_json;
@@ -87,11 +94,44 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
                         record(&mut content, &case.name, KIND_EQ, present, omitted);
                         count += 1;
                     }
+                    // `ignore_tag_adjacent_fields`: with the flag, injected extra
+                    // keys must be ignored, so the injected input decodes equal to
+                    // the canonical one. (The no-flag negative is emitted below as
+                    // a BAD input in the soundness tier.)
+                    if case.ignore_tag_adjacent {
+                        if let Some(adj) = &s.adjacent {
+                            record(&mut content, &case.name, KIND_EQ, &s.canonical, adj);
+                            count += 1;
+                        }
+                    }
+                    // A rejecting validator must abort the decode when its field
+                    // holds the sentinel. This is a strict must-error assertion
+                    // (KIND_REJECT), run in every tier since it is decode-only.
+                    if let Some(reject) = &s.validate_reject {
+                        record(&mut content, &case.name, KIND_REJECT, reject, "");
+                        count += 1;
+                    }
+                    // `other` catch-all: an unknown tag must decode to the same
+                    // value as the other variant's own (known) tag.
+                    if let Some((known, unknown)) = &s.other_eq {
+                        record(&mut content, &case.name, KIND_EQ, known, unknown);
+                        count += 1;
+                    }
                 }
                 if k < bad_seeds {
                     if let Some(dup) = &s.dup {
                         record(&mut content, &case.name, KIND_BAD, dup, "");
                         count += 1;
+                    }
+                    // An externally-tagged enum without `ignore_tag_adjacent_fields`
+                    // must reject an extra key adjacent to the tag. The error fires
+                    // after the variant content (possibly heap-owning) is built, so
+                    // it also drives the partial-init drop path for the leak check.
+                    if !case.ignore_tag_adjacent {
+                        if let Some(adj) = &s.adjacent {
+                            record(&mut content, &case.name, KIND_BAD, adj, "");
+                            count += 1;
+                        }
                     }
                     for cut in truncations(&s.canonical) {
                         record(&mut content, &case.name, KIND_BAD, cut, "");

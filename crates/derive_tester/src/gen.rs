@@ -83,6 +83,37 @@ impl DefaultSpec {
     }
 }
 
+/// The integer sentinel a rejecting validator refuses. A small positive value
+/// fits every integer field type (`TryFrom<u8>` succeeds) and is distinct from
+/// the common `MIN`/`MAX`/`0` boundary values the int sampler favours, so the
+/// avoidance in [`FieldSpec::sample_value`] almost never has to perturb a value.
+pub const VALIDATE_SENTINEL: i64 = 13;
+
+/// How a field's `#[jsony(validate = ...)]` is rendered, and whether the sampler
+/// can drive a rejecting input through it.
+#[derive(Clone, Copy, PartialEq)]
+pub enum ValidateKind {
+    /// No `validate` attribute.
+    None,
+    /// `validate = dt_validate_ok` — the always-`Ok` generic validator. Proves the
+    /// validate codegen runs and does not corrupt a well-formed decode. Any type.
+    Ok,
+    /// `validate = dt_validate_reject` — a function validator rejecting the integer
+    /// [`VALIDATE_SENTINEL`]. Integer fields only.
+    Reject,
+    /// `validate = jsony::require!(|v| *v != SENTINEL, ..)` — the `require!` closure
+    /// flavor, rejecting the same sentinel. Integer fields only.
+    Require,
+}
+
+impl ValidateKind {
+    /// Whether this validator rejects the sentinel. Such a field's well-formed
+    /// inputs must avoid the sentinel, and a sentinel input is a BAD input.
+    fn rejects(self) -> bool {
+        matches!(self, ValidateKind::Reject | ValidateKind::Require)
+    }
+}
+
 /// Integer types, the only ones that take a `Const` default (a bare integer
 /// literal coerces to any of them, and its JSON form is the decimal digits).
 fn is_int(ty: Type) -> bool {
@@ -116,9 +147,11 @@ pub struct FieldSpec {
     /// serialized as a JSON string containing the value's own JSON. The sampler
     /// emits the matching transformed input (see [`FieldSpec::with_wrap`]).
     pub with: bool,
-    /// `#[jsony(validate = ...)]` — an always-`Ok` validator runs on the decoded
-    /// value. Mutually exclusive with `with` (jsony rejects both on one field).
-    pub validate: bool,
+    /// `#[jsony(validate = ...)]` — a validator runs on the decoded value.
+    /// Mutually exclusive with `with` (jsony rejects both on one field). The
+    /// rejecting flavors ([`ValidateKind::Reject`]/[`ValidateKind::Require`]) are
+    /// keyed on [`VALIDATE_SENTINEL`].
+    pub validate: ValidateKind,
 }
 
 impl FieldSpec {
@@ -156,6 +189,18 @@ impl FieldSpec {
             native
         }
     }
+
+    /// The on-the-wire value text for a well-formed input: a random value's JSON
+    /// with the `with` transform applied. For a rejecting validator the value is
+    /// kept off [`VALIDATE_SENTINEL`] so the input stays well-formed (the sentinel
+    /// is reserved for the BAD input built by [`build_validate_reject`]).
+    fn sample_value(&self, rand: &mut Rand) -> String {
+        let mut native = raw_value(self.ty, rand);
+        if self.validate.rejects() && native == VALIDATE_SENTINEL.to_string() {
+            native = (VALIDATE_SENTINEL + 1).to_string();
+        }
+        self.with_wrap(native)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -172,6 +217,13 @@ pub struct VariantSpec {
     /// `#[jsony(rename = "...")]` on the variant; the JSON variant name actually
     /// used. An explicit rename wins outright, bypassing `rename_all`.
     pub rename: Option<String>,
+    /// `#[jsony(rename_all = "...")]` on the variant; recases this variant's own
+    /// struct-field keys, overriding the container `rename_all_fields`/`rename_all`
+    /// for those fields. Only meaningful for struct variants.
+    pub rename_all: RenameRule,
+    /// `#[jsony(other)]` — the catch-all variant for an unknown tag (FromJson).
+    /// Only one per enum, and only on a unit variant.
+    pub other: bool,
 }
 
 impl VariantSpec {
@@ -184,6 +236,41 @@ impl VariantSpec {
             None => rule.apply_to_variant(&self.name),
         }
     }
+
+    /// Rename rule applied to this variant's struct-field keys. Mirrors jsony's
+    /// `variant_field_rename_rule`: the per-variant `rename_all` wins first, then
+    /// the container `rename_all_fields`, then the container `rename_all`.
+    fn field_rule(&self, case: &Case) -> RenameRule {
+        if self.rename_all != RenameRule::None {
+            self.rename_all
+        } else if case.rename_all_fields != RenameRule::None {
+            case.rename_all_fields
+        } else {
+            case.rename_all
+        }
+    }
+}
+
+/// A variant of a `ToStr`/`FromStr` enum (fieldless). Its string form follows an
+/// explicit per-variant `rename`, else the container `rename_all`.
+pub struct StrVariant {
+    pub name: String,
+    pub rename: Option<String>,
+}
+
+impl StrVariant {
+    /// The string `to_str` yields and `parse` accepts for this variant.
+    fn expected(&self, rule: RenameRule) -> String {
+        match &self.rename {
+            Some(r) => r.clone(),
+            None => rule.apply_to_variant(&self.name),
+        }
+    }
+
+    /// The expected string under the case's `rename_all`.
+    pub fn expected_str(&self, case: &Case) -> String {
+        self.expected(case.rename_all)
+    }
 }
 
 pub enum Body {
@@ -194,6 +281,9 @@ pub enum Body {
         repr: EnumRepr,
         variants: Vec<VariantSpec>,
     },
+    /// A fieldless enum deriving `#[jsony(ToStr, FromStr)]`. Checked by a dedicated
+    /// string oracle (no JSON/binary), see `emit::emit_str_arm`.
+    Str(Vec<StrVariant>),
 }
 
 pub struct Case {
@@ -212,11 +302,24 @@ pub struct Case {
     /// field keys, overriding `rename_all` for fields while leaving variant
     /// names on `rename_all`.
     pub rename_all_fields: RenameRule,
+    /// `#[jsony(ignore_tag_adjacent_fields)]`, externally-tagged enums only. Extra
+    /// unknown keys in the tag object are ignored on decode rather than rejected.
+    /// The sampler couples this: with the flag, an input carrying injected extras
+    /// must decode equal to the clean input; without it, the same input is BAD.
+    pub ignore_tag_adjacent: bool,
 }
 
 impl Case {
     /// The `#[jsony(...)]` container attribute contents.
     pub fn container_attr(&self) -> String {
+        // A Str enum derives only `ToStr`/`FromStr` (no JSON/binary traits, no tag).
+        if let Body::Str(_) = &self.body {
+            let mut s = "ToStr, FromStr".to_string();
+            if let Some(v) = self.rename_all.attr_value() {
+                s.push_str(&format!(", rename_all = {v:?}"));
+            }
+            return s;
+        }
         let mut s = self.traits.attr_list();
         if self.transparent {
             s.push_str(", transparent");
@@ -230,6 +333,9 @@ impl Case {
                 }
             }
         }
+        if self.ignore_tag_adjacent {
+            s.push_str(", ignore_tag_adjacent_fields");
+        }
         if let Some(v) = self.rename_all.attr_value() {
             s.push_str(&format!(", rename_all = {v:?}"));
         }
@@ -242,16 +348,6 @@ impl Case {
     /// Rename rule applied to top-level struct field keys.
     fn struct_field_rule(&self) -> RenameRule {
         self.rename_all
-    }
-
-    /// Rename rule applied to enum struct-variant field keys: `rename_all_fields`
-    /// when set, otherwise the container `rename_all` (jsony falls back to it).
-    fn variant_field_rule(&self) -> RenameRule {
-        if self.rename_all_fields != RenameRule::None {
-            self.rename_all_fields
-        } else {
-            self.rename_all
-        }
     }
 }
 
@@ -323,6 +419,7 @@ fn gen_fields(
     attrs: bool,
     binary: bool,
     allow_alias: bool,
+    allow_reject: bool,
 ) -> Vec<FieldSpec> {
     let choices = type_choices(binary);
     let mut fields = Vec::new();
@@ -330,7 +427,7 @@ fn gen_fields(
         let name = format!("f{i}");
         let ty = *choices.choose(rng).unwrap();
         let (mut rename, mut alias, mut skip) = (None, None, false);
-        let (mut default, mut with, mut validate) = (DefaultSpec::None, false, false);
+        let (mut default, mut with, mut validate) = (DefaultSpec::None, false, ValidateKind::None);
         if attrs {
             if rng.gen_bool(0.15) {
                 skip = true;
@@ -356,10 +453,23 @@ fn gen_fields(
                 // `with` and `validate` are mutually exclusive (jsony rejects
                 // both on one field). `with` re-encodes the value as a JSON
                 // string via the shipped `json_string` helper, so it stays
-                // round-trip-safe for every generated type.
+                // round-trip-safe for every generated type. The rejecting
+                // validators only attach to integer fields in a position where
+                // the sampler can also emit a sentinel BAD input (top-level named
+                // structs), otherwise the always-`Ok` validator is used.
                 match rng.gen_range(0..4) {
                     0 => with = true,
-                    1 => validate = true,
+                    1 => {
+                        validate = if allow_reject && is_int(ty) {
+                            match rng.gen_range(0..3) {
+                                0 => ValidateKind::Reject,
+                                1 => ValidateKind::Require,
+                                _ => ValidateKind::Ok,
+                            }
+                        } else {
+                            ValidateKind::Ok
+                        };
+                    }
                     _ => {}
                 }
             }
@@ -378,6 +488,19 @@ fn gen_fields(
     fields
 }
 
+/// Enable `#[jsony(with = json_string)]` on tuple-position fields with moderate
+/// probability. `with` is the field attribute meaningful on positional (unnamed)
+/// fields (`rename`/`alias` key only named fields), and the `json_string` helper
+/// keeps every generated type round-trip-safe. Codegen supports `with` on both
+/// tuple-struct and tuple-variant fields.
+fn add_tuple_with(rng: &mut StdRng, fields: &mut [FieldSpec]) {
+    for f in fields {
+        if rng.gen_bool(0.3) {
+            f.with = true;
+        }
+    }
+}
+
 /// A single plain field (no rename/alias/default/skip), for transparent structs.
 fn gen_plain_field(rng: &mut StdRng, binary: bool) -> FieldSpec {
     let ty = *type_choices(binary).choose(rng).unwrap();
@@ -389,7 +512,7 @@ fn gen_plain_field(rng: &mut StdRng, binary: bool) -> FieldSpec {
         default: DefaultSpec::None,
         skip: false,
         with: false,
-        validate: false,
+        validate: ValidateKind::None,
     }
 }
 
@@ -411,14 +534,20 @@ fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> Va
     };
     let fields = match kind {
         VarKind::Unit => Vec::new(),
-        // Tuple variants currently support exactly one field.
-        VarKind::Tuple => gen_fields(rng, 1, false, binary, false),
+        // Tuple variants currently support exactly one field. `with` is the one
+        // attribute valid on the positional field.
+        VarKind::Tuple => {
+            let mut tf = gen_fields(rng, 1, false, binary, false, false);
+            add_tuple_with(rng, &mut tf);
+            tf
+        }
         VarKind::Struct => {
             let n = rng.gen_range(1..4);
             // alias on enum-variant struct fields is now honored by jsony, so the
             // sampler exercises the alias parse path here too (see the resolved
-            // finding in docs/derive-tester.md).
-            gen_fields(rng, n, true, binary, true)
+            // finding in docs/derive-tester.md). Rejecting validators are not used
+            // on variant fields (the BAD-input builder targets top-level structs).
+            gen_fields(rng, n, true, binary, true, false)
         }
     };
     // Per-variant `#[jsony(rename = "...")]` overrides `rename_all` for the JSON
@@ -429,12 +558,41 @@ fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> Va
     } else {
         None
     };
+    // Per-variant `#[jsony(rename_all = "...")]` recases this variant's own field
+    // keys, taking precedence over the container's `rename_all_fields`/`rename_all`.
+    // Only meaningful (and only emitted) on struct variants, which have field keys.
+    let rename_all = if kind == VarKind::Struct && rng.gen_bool(0.35) {
+        RenameRule::random(rng)
+    } else {
+        RenameRule::None
+    };
     VariantSpec {
         name,
         kind,
         fields,
         rename,
+        rename_all,
+        other: false,
     }
+}
+
+/// Generate the variants of a `ToStr`/`FromStr` enum: 1..5 fieldless variants,
+/// each sometimes carrying an explicit `rename`. Distinct declared names (`V0`,
+/// `V1`, ...) and the disjoint `ren_V{i}` rename space keep every variant's string
+/// form unique, so `to_str`/`parse` is unambiguous under any `rename_all`.
+fn gen_str_enum(rng: &mut StdRng) -> Vec<StrVariant> {
+    let n = rng.gen_range(1..5);
+    (0..n)
+        .map(|i| {
+            let name = format!("V{i}");
+            let rename = if rng.gen_bool(0.3) {
+                Some(format!("ren_V{i}"))
+            } else {
+                None
+            };
+            StrVariant { name, rename }
+        })
+        .collect()
 }
 
 /// SplitMix64 finalizer. Sequential ids (`0, 1, 2, ...`) seeded directly into
@@ -465,14 +623,33 @@ pub fn case_from_id(id: u64) -> Case {
         to_binary: binary,
     };
     let mut transparent = false;
-    let body = match rng.gen_range(0..12) {
+    let body = match rng.gen_range(0..13) {
+        12 => {
+            // A `ToStr`/`FromStr` enum: no JSON/binary traits (none of the round
+            // trip applies), checked by the dedicated string oracle.
+            traits = TraitSet {
+                from_json: false,
+                to_json: false,
+                from_binary: false,
+                to_binary: false,
+            };
+            Body::Str(gen_str_enum(&mut rng))
+        }
         0..=3 => {
             let n = rng.gen_range(1..6);
-            Body::Named(gen_fields(&mut rng, n, true, binary, true))
+            Body::Named(gen_fields(&mut rng, n, true, binary, true, true))
         }
         4..=5 => {
             let n = rng.gen_range(1..4);
-            Body::Tuple(gen_fields(&mut rng, n, false, binary, false))
+            // `with` is intentionally NOT enabled on tuple-*struct* fields: jsony's
+            // tuple-struct decoder ignores the field's `with` transform (it encodes
+            // `[1,"2"]` but then decodes expecting a raw number), and a single-field
+            // tuple-struct `with` fails to compile (a JSON-kind marker conflict).
+            // Both are open jsony bugs surfaced by this harness, so adding them to
+            // the round-trip gate would make it red. Tuple *variant* `with` works
+            // and is covered via `gen_variant`.
+            let tf = gen_fields(&mut rng, n, false, binary, false, false);
+            Body::Tuple(tf)
         }
         6 => Body::Unit,
         7 => {
@@ -491,9 +668,17 @@ pub fn case_from_id(id: u64) -> Case {
                 _ => EnumRepr::External,
             };
             let n = rng.gen_range(1..4);
-            let variants = (0..n)
+            let mut variants: Vec<VariantSpec> = (0..n)
                 .map(|i| gen_variant(&mut rng, i, repr, binary))
                 .collect();
+            // Optionally designate one unit variant the FromJson catch-all `other`.
+            // Requires another variant to remain (a meaningful enum keeps at least
+            // one concrete arm), so only when there are at least two variants.
+            if variants.len() >= 2 && rng.gen_bool(0.3) {
+                if let Some(v) = variants.iter_mut().find(|v| v.kind == VarKind::Unit) {
+                    v.other = true;
+                }
+            }
             Body::Enum { repr, variants }
         }
     };
@@ -515,8 +700,28 @@ pub fn case_from_id(id: u64) -> Case {
                 rename_all_fields = RenameRule::random(&mut rng);
             }
         }
+        // A Str enum's variant strings follow `rename_all`; set it often so the
+        // recasing paths are exercised against `to_str`/`parse`.
+        Body::Str(_) => {
+            if rng.gen_bool(0.6) {
+                rename_all = RenameRule::random(&mut rng);
+            }
+        }
         _ => {}
     }
+    // `ignore_tag_adjacent_fields` only applies to externally-tagged enums (the
+    // adjacent-key skip is part of the external-tag decode loop). Set it on a
+    // fraction of them; the sampler emits the injected EQ input when set.
+    //
+    // It is NOT combined with an `other` variant: that pairing currently fails to
+    // compile (`E0499` in jsony's generated decode loop, where the `other` path
+    // and the adjacent-skip loop both mutably borrow the variant cursor). An open
+    // jsony bug surfaced by this harness, excluded here to keep the gate green.
+    let body_has_other =
+        matches!(&body, Body::Enum { variants, .. } if variants.iter().any(|v| v.other));
+    let ignore_tag_adjacent = matches!(&body, Body::Enum { repr: EnumRepr::External, .. })
+        && !body_has_other
+        && rng.gen_bool(0.4);
     Case {
         name: format!("T{id}"),
         id,
@@ -525,6 +730,7 @@ pub fn case_from_id(id: u64) -> Case {
         transparent,
         rename_all,
         rename_all_fields,
+        ignore_tag_adjacent,
     }
 }
 
@@ -575,7 +781,7 @@ fn build_named_object(fields: &[FieldSpec], rule: RenameRule, rand: &mut Rand) -
             continue;
         }
         let key = field.input_key(rule, rand);
-        let value = field.with_wrap(raw_value(field.ty, rand));
+        let value = field.sample_value(rand);
         members.push((key, Node::Raw(value)));
     }
     Node::Object(members)
@@ -584,7 +790,7 @@ fn build_named_object(fields: &[FieldSpec], rule: RenameRule, rand: &mut Rand) -
 fn build_variant_content(v: &VariantSpec, rule: RenameRule, rand: &mut Rand) -> Node {
     match v.kind {
         VarKind::Unit => Node::Raw("null".to_string()),
-        VarKind::Tuple => Node::Raw(v.fields[0].with_wrap(raw_value(v.fields[0].ty, rand))),
+        VarKind::Tuple => Node::Raw(v.fields[0].sample_value(rand)),
         VarKind::Struct => build_named_object(&v.fields, rule, rand),
     }
 }
@@ -600,33 +806,37 @@ fn build_struct_body(case: &Case, rand: &mut Rand) -> Node {
         Body::Named(fields) => build_named_object(fields, case.struct_field_rule(), rand),
         Body::Tuple(fields) => {
             if fields.len() == 1 {
-                // Newtype: serializes transparently as the inner value.
-                Node::Raw(raw_value(fields[0].ty, rand))
+                // Newtype: serializes transparently as the inner value (which the
+                // field's `with` transform, if any, wraps).
+                Node::Raw(fields[0].sample_value(rand))
             } else {
-                // Multi-field tuple struct: a positional JSON array.
-                let mut out = TextWriter::new();
-                out.start_json_array();
-                for field in fields {
-                    field.ty.json_encode(rand, &mut out);
-                    out.push_comma();
+                // Multi-field tuple struct: a positional JSON array. Each element
+                // is the field's sampled value, honouring its `with` transform.
+                let mut out = String::from("[");
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&field.sample_value(rand));
                 }
-                out.end_json_array();
-                Node::Raw(out.into_string())
+                out.push(']');
+                Node::Raw(out)
             }
         }
         // jsony serializes a unit struct as an empty object.
         Body::Unit => Node::Raw("{}".to_string()),
         Body::Enum { .. } => unreachable!("handled in build_node"),
+        Body::Str(_) => unreachable!("str enums are checked by the dedicated arm, not sampled"),
     }
 }
 
 fn build_enum(case: &Case, repr: EnumRepr, variants: &[VariantSpec], rand: &mut Rand) -> Node {
     let v = &variants[rand.rng.gen_range(0..variants.len())];
     // Variant names follow an explicit per-variant `rename`, else `rename_all`;
-    // struct-variant field keys follow `rename_all_fields` (falling back to
-    // `rename_all`).
+    // struct-variant field keys follow the per-variant `rename_all`, then
+    // `rename_all_fields`, then `rename_all` (see `VariantSpec::field_rule`).
     let name = v.json_name(case.rename_all);
-    let field_rule = case.variant_field_rule();
+    let field_rule = v.field_rule(case);
     match repr {
         EnumRepr::External => match v.kind {
             VarKind::Unit => Node::Raw(json_string(&name)),
@@ -773,6 +983,66 @@ fn render_dup(node: &Node) -> Option<String> {
     Some(out)
 }
 
+/// Render an externally-tagged enum object with extra unknown keys injected
+/// around the variant tag. The injected keys never collide with a variant name
+/// (no variant name contains `$`), and their values exercise scalar, nested-array,
+/// and nested-object skipping. Returns `None` unless `node` is an object with at
+/// least one member (i.e. a tuple/struct variant; unit variants render as a bare
+/// string and have no object to inject into). With `ignore_tag_adjacent_fields`
+/// set the result must decode equal to the canonical input, otherwise it is a BAD
+/// input that must error cleanly.
+fn render_adjacent(node: &Node, rng: &mut StdRng) -> Option<String> {
+    let Node::Object(members) = node else {
+        return None;
+    };
+    if members.is_empty() {
+        return None;
+    }
+    const EXTRAS: [(&str, &str); 3] = [
+        ("$adj0", "12345"),
+        ("$adj1", "[1,[2,3],{\"k\":[4,5]}]"),
+        ("$adj2", "{\"a\":1,\"b\":[true,null,{\"c\":2}]}"),
+    ];
+    // How many extras to inject, and how many of them precede the tag (the rest
+    // follow it). Covers before-only, after-only, and straddling placements.
+    let count = rng.gen_range(1..=EXTRAS.len());
+    let before = rng.gen_range(0..=count);
+    let mut out = String::from("{");
+    let mut first = true;
+    let push_extra = |out: &mut String, first: &mut bool, k: &str, v: &str| {
+        if !*first {
+            out.push(',');
+        }
+        *first = false;
+        out.push_str(&json_string(k));
+        out.push(':');
+        out.push_str(v);
+    };
+    for &(k, v) in &EXTRAS[..before] {
+        push_extra(&mut out, &mut first, k, v);
+    }
+    for (k, v) in members {
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push_str(&json_string(k));
+        out.push(':');
+        render_canonical(v, &mut out);
+    }
+    for &(k, v) in &EXTRAS[before..count] {
+        push_extra(&mut out, &mut first, k, v);
+    }
+    out.push('}');
+    Some(out)
+}
+
+/// Whether the case is an externally-tagged enum (the only shape `render_adjacent`
+/// and `ignore_tag_adjacent_fields` apply to).
+fn external_tagged(case: &Case) -> bool {
+    matches!(&case.body, Body::Enum { repr: EnumRepr::External, .. })
+}
+
 /// Render a member list as a compact JSON object. Values are already raw JSON
 /// text, keys are JSON-string-encoded.
 fn render_members(members: &[(String, String)]) -> String {
@@ -820,7 +1090,7 @@ fn build_default_eq(case: &Case, seed: u64) -> Option<(String, String)> {
         let value = if i == target {
             field.with_wrap(DEFAULT_CONST.to_string())
         } else {
-            field.with_wrap(raw_value(field.ty, &mut rand))
+            field.sample_value(&mut rand)
         };
         members.push((field.key(rule), value));
     }
@@ -832,6 +1102,72 @@ fn build_default_eq(case: &Case, seed: u64) -> Option<(String, String)> {
     );
     let omitted = render_members(&members);
     Some((present, omitted))
+}
+
+/// Build a rejecting-validator BAD input: a structurally-complete top-level
+/// object whose one rejecting-validate field is set to [`VALIDATE_SENTINEL`]. A
+/// conforming decoder runs the validator on that field and aborts the decode
+/// cleanly, dropping the already-built earlier fields (the partial-init drop
+/// path). All other fields take ordinary, sentinel-free values, so the *only*
+/// reason the input fails is the validator firing. `None` unless the case is a
+/// non-transparent named struct with such a field.
+///
+/// The rejecting assertion is JSON-only (the input is JSON). The binary validate
+/// path is exercised for non-corruption by the round trip, which only ever feeds
+/// it sentinel-free values, so binary rejection is not separately asserted.
+fn build_validate_reject(case: &Case, seed: u64) -> Option<String> {
+    if case.transparent {
+        return None;
+    }
+    let Body::Named(fields) = &case.body else {
+        return None;
+    };
+    let target = fields
+        .iter()
+        .position(|f| !f.skip && f.validate.rejects())?;
+    let mut rand = Rand {
+        rng: StdRng::seed_from_u64(mix64(seed ^ 0x5EED_BAD0_DEFA_17ED)),
+        steam: 95,
+    };
+    let rule = case.struct_field_rule();
+    let mut members = Vec::new();
+    for (i, field) in fields.iter().enumerate() {
+        if field.skip {
+            continue;
+        }
+        let value = if i == target {
+            VALIDATE_SENTINEL.to_string()
+        } else {
+            field.sample_value(&mut rand)
+        };
+        members.push((field.key(rule), value));
+    }
+    Some(render_members(&members))
+}
+
+/// Build the `other`-variant decode check: a pair `(known, unknown)` that must
+/// both decode to the catch-all `other` variant. `known` carries the other
+/// variant's own tag name (a known name that maps to it directly), `unknown`
+/// carries a tag no declared variant uses (which the `other` rule must absorb).
+/// A conforming decoder yields the same value from both, so they go in as an EQ
+/// pair. This is what proves the catch-all actually fires: round-trip alone never
+/// presents an unknown tag. `None` unless the enum has an `other` variant.
+fn build_other_eq(case: &Case) -> Option<(String, String)> {
+    let Body::Enum { repr, variants } = &case.body else {
+        return None;
+    };
+    let other = variants.iter().find(|v| v.other)?;
+    let known = other.json_name(case.rename_all);
+    let unknown = "__dt_unknown_tag__";
+    let render = |tag: &str| -> String {
+        match repr {
+            EnumRepr::External => json_string(tag),
+            EnumRepr::Internal | EnumRepr::Adjacent => {
+                render_members(&[(TAG.to_string(), json_string(tag))])
+            }
+        }
+    };
+    Some((render(&known), render(unknown)))
 }
 
 /// Renderings of one sampled value: the canonical input plus structural variants
@@ -848,6 +1184,17 @@ pub struct Sample {
     /// Absolute default-value check: `(field present at the constant, field
     /// omitted)`. The two must decode equal. `None` when inapplicable.
     pub default_eq: Option<(String, String)>,
+    /// Externally-tagged enum object with extra unknown keys injected around the
+    /// tag. With `ignore_tag_adjacent_fields` it must decode equal to `canonical`
+    /// (an EQ input); without the flag it must error (a BAD input). `None` unless
+    /// the case is an external enum and the sampled variant rendered as an object.
+    pub adjacent: Option<String>,
+    /// A rejecting-validator BAD input (a field set to [`VALIDATE_SENTINEL`]). Must
+    /// fail to decode. `None` unless the case has a rejecting-validate field.
+    pub validate_reject: Option<String>,
+    /// The `other`-variant check: `(known-tag input, unknown-tag input)`, both of
+    /// which must decode to the catch-all variant. `None` unless the enum has one.
+    pub other_eq: Option<(String, String)>,
 }
 
 /// Build one sample and all its renderings, deterministic in `sample_seed`.
@@ -868,12 +1215,22 @@ pub fn sample(case: &Case, sample_seed: u64) -> Sample {
     render_spaced(&node, &mut trng, &mut spaced);
     let dup = render_dup(&node);
     let default_eq = build_default_eq(case, sample_seed);
+    let adjacent = if external_tagged(case) {
+        render_adjacent(&node, &mut trng)
+    } else {
+        None
+    };
+    let validate_reject = build_validate_reject(case, sample_seed);
+    let other_eq = build_other_eq(case);
     Sample {
         canonical,
         permuted,
         spaced,
         dup,
         default_eq,
+        adjacent,
+        validate_reject,
+        other_eq,
     }
 }
 

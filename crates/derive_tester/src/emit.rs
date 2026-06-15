@@ -8,7 +8,10 @@ use std::fmt::Write;
 
 use proc_macro2::TokenStream;
 
-use crate::gen::{Body, Case, DefaultSpec, FieldSpec, VarKind, DEFAULT_CONST};
+use crate::gen::{
+    Body, Case, DefaultSpec, FieldSpec, ValidateKind, VarKind, VariantSpec, DEFAULT_CONST,
+    VALIDATE_SENTINEL,
+};
 use crate::schema::Type;
 
 /// Record separator in the runtime input file: `name<TAB>kind<TAB>json`.
@@ -20,6 +23,10 @@ pub(crate) const FIELD_SEP: char = '\t';
 pub(crate) const KIND_OK: char = 'o';
 pub(crate) const KIND_BAD: char = 'b';
 pub(crate) const KIND_EQ: char = 'e';
+/// `REJECT` inputs must fail to decode (a stricter `BAD`: the decode is required
+/// to error, not merely to avoid panicking). Used for the rejecting-validator
+/// inputs, where a decode that *accepts* the sentinel is itself the bug.
+pub(crate) const KIND_REJECT: char = 'r';
 
 /// Counting global allocator prepended to every batch. The oracle measures the
 /// live-byte balance around each parse: it must return to its pre-parse value,
@@ -78,8 +85,15 @@ fn field_attr(f: &FieldSpec) -> String {
     // `with` and `validate` are mutually exclusive (jsony rejects both at once).
     if f.with {
         parts.push("with = jsony::helper::json_string".to_string());
-    } else if f.validate {
-        parts.push(format!("validate = {VALIDATOR}"));
+    } else {
+        match f.validate {
+            ValidateKind::None => {}
+            ValidateKind::Ok => parts.push(format!("validate = {VALIDATOR_OK}")),
+            ValidateKind::Reject => parts.push(format!("validate = {VALIDATOR_REJECT}")),
+            ValidateKind::Require => parts.push(format!(
+                "validate = jsony::require!(|v| *v != {VALIDATE_SENTINEL}, \"dt sentinel rejected\")"
+            )),
+        }
     }
     match f.default {
         DefaultSpec::None => {}
@@ -94,15 +108,50 @@ fn field_attr(f: &FieldSpec) -> String {
     }
 }
 
-/// Name of the always-`Ok` validator function prepended to every batch and
-/// referenced by `#[jsony(validate = ...)]` fields.
-const VALIDATOR: &str = "dt_validate_ok";
+/// `#[jsony(...)]` attribute prefix for an enum variant (empty if none). Combines
+/// the per-variant `rename`, `rename_all`, and `other` markers into one attribute.
+fn variant_attr(v: &VariantSpec) -> String {
+    let mut parts = Vec::new();
+    if let Some(r) = &v.rename {
+        parts.push(format!("rename = {r:?}"));
+    }
+    if let Some(val) = v.rename_all.attr_value() {
+        parts.push(format!("rename_all = {val:?}"));
+    }
+    if v.other {
+        parts.push("other".to_string());
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("    #[jsony({})]\n", parts.join(", "))
+    }
+}
 
-/// An always-accepting validator, generic over the field type. Exercises the
-/// `validate` codegen path (the decoded value is run through it) without
-/// rejecting any well-formed input.
-const VALIDATOR_DEF: &str =
-    "fn dt_validate_ok<T>(_value: &T) -> ::std::result::Result<(), String> { Ok(()) }\n";
+/// Name of the always-`Ok` validator prepended to every batch and referenced by
+/// `#[jsony(validate = ...)]` fields with [`ValidateKind::Ok`].
+const VALIDATOR_OK: &str = "dt_validate_ok";
+
+/// Name of the rejecting validator referenced by [`ValidateKind::Reject`] fields.
+const VALIDATOR_REJECT: &str = "dt_validate_reject";
+
+/// The two validator definitions prepended to every batch:
+///
+/// - `dt_validate_ok` accepts any value, proving the validate codegen runs and
+///   does not corrupt a well-formed decode.
+/// - `dt_validate_reject` rejects the integer sentinel, proving the validator is
+///   actually invoked and that its `Err` aborts the decode. `TryFrom<u8>` is
+///   implemented for every integer type, and the sampler only attaches it to
+///   integer fields, so the bound always holds.
+fn validator_defs() -> String {
+    format!(
+        "fn dt_validate_ok<T>(_value: &T) -> ::std::result::Result<(), String> {{ Ok(()) }}\n\
+         fn dt_validate_reject<T: ::std::cmp::PartialEq + ::std::convert::TryFrom<u8>>(v: &T) \
+         -> ::std::result::Result<(), String> {{ \
+         if let Ok(s) = <T as ::std::convert::TryFrom<u8>>::try_from({VALIDATE_SENTINEL}u8) {{ \
+         if *v == s {{ return Err(::std::string::String::from(\"dt sentinel rejected\")); }} }} Ok(()) }}\n"
+    )
+}
 
 fn emit_def(out: &mut String, case: &Case) {
     let name = &case.name;
@@ -123,7 +172,7 @@ fn emit_def(out: &mut String, case: &Case) {
         Body::Tuple(fields) => {
             let _ = write!(out, "struct {name}(");
             for f in fields {
-                let _ = write!(out, "{}, ", type_str(f.ty));
+                let _ = write!(out, "{}{}, ", field_attr(f), type_str(f.ty));
             }
             let _ = writeln!(out, ");");
         }
@@ -133,15 +182,19 @@ fn emit_def(out: &mut String, case: &Case) {
         Body::Enum { variants, .. } => {
             let _ = writeln!(out, "enum {name} {{");
             for v in variants {
-                if let Some(r) = &v.rename {
-                    let _ = writeln!(out, "    #[jsony(rename = {r:?})]");
-                }
+                out.push_str(&variant_attr(v));
                 match v.kind {
                     VarKind::Unit => {
                         let _ = writeln!(out, "    {},", v.name);
                     }
                     VarKind::Tuple => {
-                        let _ = writeln!(out, "    {}({}),", v.name, type_str(v.fields[0].ty));
+                        let _ = writeln!(
+                            out,
+                            "    {}({}{}),",
+                            v.name,
+                            field_attr(&v.fields[0]),
+                            type_str(v.fields[0].ty)
+                        );
                     }
                     VarKind::Struct => {
                         let _ = writeln!(out, "    {} {{", v.name);
@@ -160,10 +213,64 @@ fn emit_def(out: &mut String, case: &Case) {
             }
             let _ = writeln!(out, "}}");
         }
+        Body::Str(variants) => {
+            let _ = writeln!(out, "enum {name} {{");
+            for v in variants {
+                if let Some(r) = &v.rename {
+                    let _ = writeln!(out, "    #[jsony(rename = {r:?})]");
+                }
+                let _ = writeln!(out, "    {},", v.name);
+            }
+            let _ = writeln!(out, "}}");
+        }
     }
 }
 
+/// The unknown string the FromStr oracle asserts is rejected. No generated variant
+/// (declared `V{i}`, renamed `ren_V{i}`, or recased) can produce it.
+const STR_UNKNOWN: &str = "__dt_no_such_variant__";
+
+/// Emit the dedicated `ToStr`/`FromStr` oracle arm for a Str enum. It is
+/// self-contained (no JSON, one trigger record): for every variant it asserts
+/// `to_str` yields the expected string and that string `parse`s back to the same
+/// variant, then asserts an unknown string fails to parse.
+fn emit_str_arm(out: &mut String, case: &Case, variants: &[crate::gen::StrVariant]) {
+    let name = &case.name;
+    let _ = writeln!(out, "        {name:?} => {{");
+    let _ = writeln!(out, "            let before = LIVE.load(Ordering::Relaxed);");
+    // `{expected:?}` (a quoted string) is only ever placed in an *operand*
+    // position (a `&str` literal); embedding it inside a message format string
+    // would nest quotes and break the generated literal.
+    for v in variants {
+        let expected = v.expected_str(case);
+        let vname = &v.name;
+        let _ = writeln!(
+            out,
+            "            if {name}::{vname}.to_str() != {expected:?} {{ return Err(format!(\"to_str {name}::{vname} wrong: got {{:?}}\", {name}::{vname}.to_str())); }}"
+        );
+        let _ = writeln!(
+            out,
+            "            match {expected:?}.parse::<{name}>() {{ Ok({name}::{vname}) => {{}}, _ => return Err(format!(\"parse to {name}::{vname} failed\")) }}"
+        );
+    }
+    let _ = writeln!(
+        out,
+        "            if {STR_UNKNOWN:?}.parse::<{name}>().is_ok() {{ return Err(format!(\"unknown string unexpectedly parsed\")); }}"
+    );
+    let _ = writeln!(out, "            let after = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(
+        out,
+        "            if after != before {{ return Err(format!(\"leak: {{}} bytes (str {name})\", after - before)); }}"
+    );
+    let _ = writeln!(out, "            Ok(())");
+    let _ = writeln!(out, "        }}");
+}
+
 fn emit_arm(out: &mut String, case: &Case) {
+    if let Body::Str(variants) = &case.body {
+        emit_str_arm(out, case, variants);
+        return;
+    }
     let name = &case.name;
     let can_decode = case.traits.from_json;
     let can_encode = case.traits.to_json;
@@ -185,6 +292,14 @@ fn emit_arm(out: &mut String, case: &Case) {
         let _ = writeln!(
             out,
             "                \"{KIND_BAD}\" => {{ match jsony::from_json::<{name}>(input) {{ Ok(v) => drop(v), Err(e) => drop(e) }} }}"
+        );
+        // Reject path: the input must error (e.g. a rejecting validator firing on
+        // its sentinel). A decode that *accepts* it is the failure. The value or
+        // error drops in scope so the leak check still covers the partial-init
+        // drop the rejection triggers.
+        let _ = writeln!(
+            out,
+            "                \"{KIND_REJECT}\" => {{ match jsony::from_json::<{name}>(input) {{ Ok(v) => {{ drop(v); return Err(format!(\"reject input accepted: json={{input}}\")); }} Err(e) => drop(e) }} }}"
         );
         // Equivalence path: `input` and `extra` are two encodings of the same
         // value (key-permuted or whitespace-injected). Both must decode and
@@ -264,7 +379,7 @@ pub(crate) fn emit_batch(cases: &[Case]) -> String {
     out.push_str("#![allow(dead_code, non_snake_case, non_camel_case_types, unused)]\n");
     out.push_str("use std::io::Read;\n");
     out.push_str(ALLOCATOR);
-    out.push_str(VALIDATOR_DEF);
+    out.push_str(&validator_defs());
     out.push('\n');
 
     for case in cases {
