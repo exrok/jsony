@@ -553,7 +553,11 @@ fn drive_corpus_case(case: &corpus::Case) -> Result<u64, String> {
         Driver::Array => jsony_macros_source::expand_array_str(&src),
     }) {
         Ok(out) => out,
-        Err(_) => return Err("panicked outside the derive catch (tokenize or non-Error panic)".to_string()),
+        Err(_) => {
+            return Err(
+                "panicked outside the derive catch (tokenize or non-Error panic)".to_string(),
+            )
+        }
     };
     let errored = out.contains("compile_error");
     match &case.expect_error {

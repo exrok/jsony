@@ -9,11 +9,28 @@ pub enum GenericKind {
     Const,
 }
 
+// Manual Copy/Clone (matching `EnumKind`): a derived `Clone` emits the unstable
+// `derive_clone_copy_internals` helper, which the generated proc-macro crate
+// rejects.
+impl Copy for GenericKind {}
+impl Clone for GenericKind {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
 #[cfg_attr(feature = "debug", derive(Debug))]
 pub struct Generic<'a> {
     pub kind: GenericKind,
     pub ident: &'a Ident,
     pub bounds: &'a [TokenTree],
+}
+
+impl Copy for Generic<'_> {}
+impl Clone for Generic<'_> {
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 #[cfg_attr(feature = "debug", derive(Debug))]
 pub enum DeriveTargetKind {
@@ -167,14 +184,6 @@ pub struct DeriveTargetInner<'a> {
     pub repr: Repr,
     pub version: Option<u16>,
     pub min_version: u16,
-}
-
-impl<'a> DeriveTargetInner<'a> {
-    pub fn has_lifetime(&self) -> bool {
-        self.generics
-            .iter()
-            .any(|x| matches!(x.kind, GenericKind::Lifetime))
-    }
 }
 
 #[cfg_attr(feature = "debug", derive(Debug))]

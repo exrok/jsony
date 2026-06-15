@@ -318,7 +318,13 @@ fn emit_def(out: &mut String, case: &Case) {
         Body::Named(fields) => {
             let _ = writeln!(out, "struct {name}{lt} {{");
             for f in fields {
-                let _ = writeln!(out, "    {}{}: {},", field_attr(f), f.name, field_type_str(f));
+                let _ = writeln!(
+                    out,
+                    "    {}{}: {},",
+                    field_attr(f),
+                    f.name,
+                    field_type_str(f)
+                );
             }
             // The flatten field is declared last, so its inlined keys follow the
             // regular fields in encode order.

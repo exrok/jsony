@@ -501,3 +501,38 @@ fn to_from_str_with_json() {
         SimpleEnum::Canary
     );
 }
+
+#[test]
+fn generic_enum_struct_variant() {
+    // Regression: a generic enum with a struct variant used to emit a nested
+    // `type __TEMP = (T,)` alias that referenced `T` from the outer impl (E0401)
+    // and failed to compile. The alias now re-declares the target's generics.
+    #[derive(Jsony, Debug, PartialEq)]
+    #[jsony(Json)]
+    enum E<T> {
+        A { x: T },
+        B,
+    }
+
+    for original in [E::A { x: 7i32 }, E::B] {
+        let s = jsony::to_json(&original);
+        let back: E<i32> = jsony::from_json(&s).unwrap();
+        assert_eq!(original, back);
+    }
+
+    // Two type parameters across distinct struct-variant fields.
+    #[derive(Jsony, Debug, PartialEq)]
+    #[jsony(Json)]
+    enum Pair<T, U> {
+        Both { a: T, b: U },
+        Neither,
+    }
+
+    let original = Pair::Both {
+        a: "hi".to_string(),
+        b: vec![1u8, 2, 3],
+    };
+    let s = jsony::to_json(&original);
+    let back: Pair<String, Vec<u8>> = jsony::from_json(&s).unwrap();
+    assert_eq!(original, back);
+}

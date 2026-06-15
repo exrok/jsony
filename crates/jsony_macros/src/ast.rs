@@ -7,10 +7,22 @@ pub enum GenericKind {
     Type,
     Const,
 }
+impl Copy for GenericKind {}
+impl Clone for GenericKind {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
 pub struct Generic<'a> {
     pub kind: GenericKind,
     pub ident: &'a Ident,
     pub bounds: &'a [TokenTree],
+}
+impl Copy for Generic<'_> {}
+impl Clone for Generic<'_> {
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 pub enum DeriveTargetKind {
     TupleStruct,
@@ -143,14 +155,6 @@ pub struct DeriveTargetInner<'a> {
     pub repr: Repr,
     pub version: Option<u16>,
     pub min_version: u16,
-}
-impl<'a> DeriveTargetInner<'a> {
-    pub fn has_lifetime(&self) -> bool {
-        self.generics.iter().any(|x| match x.kind {
-            GenericKind::Lifetime => true,
-            _ => false,
-        })
-    }
 }
 pub struct Field<'a> {
     pub name: &'a Ident,

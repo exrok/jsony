@@ -74,6 +74,37 @@ fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBound
         }
     }
 }
+/// Whether `ident` appears as an identifier anywhere in `tt`, recursing into
+/// groups so grouped types like `(u32, T)` and `[T; 3]` are matched. Used to pick
+/// the subset of a target's generics that an enum struct variant actually
+/// references, so the nested `__TEMP` alias declares exactly those (an unused
+/// type parameter on a type alias is E0091, a missing one is E0401).
+fn tree_uses_ident(tt: &TokenTree, ident: &str) -> bool {
+    match tt {
+        TokenTree::Ident(found) => found.to_string() == ident,
+        TokenTree::Group(group) => {
+            for inner in group.stream() {
+                if tree_uses_ident(&inner, ident) {
+                    return true;
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+/// Emit `<'a, T>` for a non-empty generic list (USE form: lifetimes + names, no
+/// bounds) or nothing when empty. Applies a `__TEMP` alias's declared generics
+/// at its use sites.
+fn emit_generic_args(out: &mut RustWriter, generics: &[Generic]) {
+    {
+        if !generics.is_empty() {
+            out.blit_punct(3);
+            fmt_generics(out, generics, USE);
+            out.blit_punct(2);
+        };
+    };
+}
 const DEAD_USE: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: false,
     bounds: false,
@@ -765,10 +796,14 @@ fn struct_schema(
     out: &mut RustWriter,
     ctx: &Ctx,
     fields: &[&Field],
-    temp_tuple: Option<&Ident>,
+    temp_tuple: Option<(&Ident, &[Generic])>,
     field_rename: RenameRule,
 ) {
-    let ag_gen = if ctx.target.generics.iter().any(|g| !match g.kind {
+    let ag_source: &[Generic] = match temp_tuple {
+        Some((_, generics)) => generics,
+        None => &ctx.target.generics,
+    };
+    let ag_gen = if ag_source.iter().any(|g| !match g.kind {
         GenericKind::Lifetime => true,
         _ => false,
     }) {
@@ -776,7 +811,7 @@ fn struct_schema(
         out.blit_punct(3);
         fmt_generics(
             out,
-            &ctx.target.generics,
+            ag_source,
             GenericBoundFormatting {
                 lifetimes: false,
                 bounds: false,
@@ -801,8 +836,9 @@ fn struct_schema(
                 {
                     let at = out.buf.len();
                     {
-                        if let Some(ty) = temp_tuple {
+                        if let Some((ty, _)) = temp_tuple {
                             out.push_ident(&ty);
+                            out.buf.push(ag_gen.clone());
                             out.blit_punct(0);
                             out.buf.push(Literal::usize_unsuffixed(i).into());
                         } else {
@@ -2091,13 +2127,26 @@ fn enum_variant_from_json_struct(
     };
     let has_field_alias = any_field_flag & Field::WITH_FROM_JSON_ALIAS != 0;
     let use_alias = is_inline_tag || has_field_alias;
+    let temp_ident = Ident::new("__TEMP", Span::call_site());
+    let mut used_generics: Vec<Generic> = Vec::new();
+    for g in &ctx.target.generics {
+        let name = g.ident.to_string();
+        let mut used = false;
+        'fields: for field in &ordered_fields {
+            for tt in field.ty {
+                if tree_uses_ident(tt, &name) {
+                    used = true;
+                    break 'fields;
+                }
+            }
+        }
+        if used {
+            used_generics.push(*g);
+        }
+    }
     {
         out.blit(733, 2);
-        if ctx.target.has_lifetime() {
-            out.blit(1, 2);
-            out.push_ident(&ctx.lifetime);
-            out.blit_punct(2);
-        };
+        emit_generic_args(out, &used_generics);
         out.blit_punct(5);
         {
             let at = out.buf.len();
@@ -2119,7 +2168,7 @@ fn enum_variant_from_json_struct(
                         out,
                         ctx,
                         &ordered_fields,
-                        Some(&Ident::new("__TEMP", Span::call_site())),
+                        Some((&temp_ident, &used_generics)),
                         field_rename,
                     )
                 };
@@ -2128,7 +2177,9 @@ fn enum_variant_from_json_struct(
             out.blit(751, 13);
             out.tt_group(Delimiter::Brace, at);
         };
-        out.blit(764, 24);
+        out.blit(764, 18);
+        emit_generic_args(out, &used_generics);
+        out.blit(782, 6);
         {
             if let Some(flatten_field) = flattening {
                 {

@@ -157,6 +157,33 @@ fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBound
     }
 }
 
+/// Whether `ident` appears as an identifier anywhere in `tt`, recursing into
+/// groups so grouped types like `(u32, T)` and `[T; 3]` are matched. Used to pick
+/// the subset of a target's generics that an enum struct variant actually
+/// references, so the nested `__TEMP` alias declares exactly those (an unused
+/// type parameter on a type alias is E0091, a missing one is E0401).
+fn tree_uses_ident(tt: &TokenTree, ident: &str) -> bool {
+    match tt {
+        TokenTree::Ident(found) => found.to_string() == ident,
+        TokenTree::Group(group) => {
+            for inner in group.stream() {
+                if tree_uses_ident(&inner, ident) {
+                    return true;
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Emit `<'a, T>` for a non-empty generic list (USE form: lifetimes + names, no
+/// bounds) or nothing when empty. Applies a `__TEMP` alias's declared generics
+/// at its use sites.
+fn emit_generic_args(out: &mut RustWriter, generics: &[Generic]) {
+    splat!(out; [?(!generics.is_empty()) < [fmt_generics(out, generics, USE)] >]);
+}
+
 const DEAD_USE: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: false,
     bounds: false,
@@ -603,12 +630,18 @@ fn struct_schema(
     out: &mut RustWriter,
     ctx: &Ctx,
     fields: &[&Field],
-    temp_tuple: Option<&Ident>,
+    // For an enum struct variant the schema offsets are taken against the
+    // `__TEMP` tuple alias. The alias is a nested item, so its generic list is
+    // only the subset of the target generics the variant actually uses (passed
+    // here); a struct uses the real target type with all its generics.
+    temp_tuple: Option<(&Ident, &[Generic])>,
     field_rename: RenameRule,
 ) {
-    let ag_gen = if ctx
-        .target
-        .generics
+    let ag_source: &[Generic] = match temp_tuple {
+        Some((_, generics)) => generics,
+        None => &ctx.target.generics,
+    };
+    let ag_gen = if ag_source
         .iter()
         .any(|g| !matches!(g.kind, GenericKind::Lifetime))
     {
@@ -616,7 +649,7 @@ fn struct_schema(
         append_tok!(< out);
         fmt_generics(
             out,
-            &ctx.target.generics,
+            ag_source,
             GenericBoundFormatting {
                 lifetimes: false,
                 bounds: false,
@@ -632,8 +665,8 @@ fn struct_schema(
             [~&ctx.crate_path]::__internal::Field {
                 name: [@field_name_literal(ctx, field, field_rename).into()],
                 offset: ::std::mem::offset_of!([
-                    if let Some(ty) = temp_tuple {
-                        splat!(out; [#: &ty], [@Literal::usize_unsuffixed(i).into()])
+                    if let Some((ty, _)) = temp_tuple {
+                        splat!(out; [#: &ty][@ag_gen.clone()], [@Literal::usize_unsuffixed(i).into()])
                     } else {
                         splat!(out; [#: &ctx.target.name][@ag_gen.clone()], [#: field.name])
                     }
@@ -1500,19 +1533,39 @@ fn enum_variant_from_json_struct(
     let is_inline_tag = matches!(ctx.target.tag, Tag::Inline(_));
     let has_field_alias = any_field_flag & Field::WITH_FROM_JSON_ALIAS != 0;
     let use_alias = is_inline_tag || has_field_alias;
+    // The `__TEMP` tuple alias is a nested item, so it must re-declare exactly
+    // the target generics this variant's fields reference (USE = lifetimes +
+    // names, no bounds). Declaring an unused type parameter on the alias is
+    // E0091, omitting a referenced one is E0401, so take the precise subset.
+    let temp_ident = Ident::new("__TEMP", Span::call_site());
+    let mut used_generics: Vec<Generic> = Vec::new();
+    for g in &ctx.target.generics {
+        let name = g.ident.to_string();
+        let mut used = false;
+        'fields: for field in &ordered_fields {
+            for tt in field.ty {
+                if tree_uses_ident(tt, &name) {
+                    used = true;
+                    break 'fields;
+                }
+            }
+        }
+        if used {
+            used_generics.push(*g);
+        }
+    }
     // The flatten and non-flatten cases differ only in three spots (the
     // `temp_flatten`/`flatten_visitor` setup, the visitor argument, and one
     // writeback field), so emit a single block and gate those pieces — this
     // keeps the large schema/decode token sequence from being generated twice.
     splat! {
         out;
-        // Note a type alias with an un-used generic is not an error
-        type __TEMP[?(ctx.target.has_lifetime())<#[#: &ctx.lifetime]>] = ([for (field in &ordered_fields) { [~field.ty], }]);
+        type __TEMP[emit_generic_args(out, &used_generics)] = ([for (field in &ordered_fields) { [~field.ty], }]);
         let schema = ::jsony::__internal::ObjectSchema{
-            inner: const { &[struct_schema(out, ctx, &ordered_fields, Some(&Ident::new("__TEMP", Span::call_site())), field_rename)]},
+            inner: const { &[struct_schema(out, ctx, &ordered_fields, Some((&temp_ident, &used_generics)), field_rename)]},
             phantom: ::std::marker::PhantomData,
         };
-        let mut temp = ::std::mem::MaybeUninit::<__TEMP>::uninit();
+        let mut temp = ::std::mem::MaybeUninit::<__TEMP[emit_generic_args(out, &used_generics)]>::uninit();
         [if let Some(flatten_field) = flattening {
             splat! {
                 out;

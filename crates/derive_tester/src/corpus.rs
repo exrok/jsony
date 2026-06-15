@@ -296,15 +296,15 @@ pub fn valid() -> Vec<Case> {
     // --- enum `other` variant WITH a field (FromText path) ---
     out.push(ok(
         "other_tuple_field",
-        "#[derive(jsony::Jsony)] #[jsony(FromJson)] enum OT { A, #[jsony(other)] Other(String) }",
+        "#[derive(jsony::Jsony)] #[jsony(FromJson)] enum 01 { A, #[jsony(other)] Other(String) }",
     ));
     out.push(ok(
         "other_struct_field",
-        "#[derive(jsony::Jsony)] #[jsony(FromJson)] enum OS { A, #[jsony(other)] Other { name: String } }",
+        "#[derive(jsony::Jsony)] #[jsony(FromJson)] enum O2 { A, #[jsony(other)] Other { name: String } }",
     ));
     out.push(ok(
         "other_unit",
-        "#[derive(jsony::Jsony)] #[jsony(FromJson)] enum OU { A, #[jsony(other)] Other }",
+        "#[derive(jsony::Jsony)] #[jsony(FromJson)] enum O3 { A, #[jsony(other)] Other }",
     ));
 
     // --- enum struct-variant flatten ---
@@ -1049,7 +1049,10 @@ pub fn templates() -> Vec<Case> {
     out.push(arr_ok("arr_single", "only_one"));
 
     // --- literal grammar (lit.rs) via array elements ---
-    out.push(arr_ok("lit_escapes", r#""tab\tnewline\nquote\"backslash\\""#));
+    out.push(arr_ok(
+        "lit_escapes",
+        r#""tab\tnewline\nquote\"backslash\\""#,
+    ));
     out.push(arr_ok("lit_unicode", r#""\u{1F600} smile""#));
     out.push(arr_ok("lit_hex_escape", r#""\x41\x42""#));
     out.push(arr_ok("lit_raw_string", r##"r#"raw "quotes" inside"#"##));
@@ -1114,16 +1117,16 @@ pub fn templates() -> Vec<Case> {
         "For comprehensions must be",
         "a: 1, for x in y; z",
     ));
-    out.push(obj_err(
-        "obj_literal_then_token",
-        "Unknown symbol",
-        "5 x",
-    ));
+    out.push(obj_err("obj_literal_then_token", "Unknown symbol", "5 x"));
     out.push(obj_err("obj_paren_key", "Expected [key]", "(x): 1"));
     out.push(obj_err("obj_numeric_key", "Unexpected key", "5: 1"));
     out.push(obj_err("obj_float_key", "Unexpected key", "1.5: 1"));
     out.push(obj_err("obj_literal_no_colon", "Expected colon", "5"));
-    out.push(obj_err("obj_in_no_semicolon", "Unexpected Eof", "in writer"));
+    out.push(obj_err(
+        "obj_in_no_semicolon",
+        "Unexpected Eof",
+        "in writer",
+    ));
     out.push(obj_err(
         "obj_match_no_block",
         "Expected Blocked for Match",
@@ -1176,4 +1179,3 @@ pub fn describe(case: &Case) -> String {
     let _ = writeln!(s, "{}", case.src);
     s
 }
-

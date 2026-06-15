@@ -1543,16 +1543,13 @@ fn apply_generics(rng: &mut StdRng, body: &mut Body, transparent: bool) -> Vec<G
         return Vec::new();
     }
     // Collect mutable refs to the fields that can host a generic parameter:
-    // struct fields, or *tuple*-variant fields of an enum. Struct-variant fields
-    // are excluded: a generic enum with a struct variant emits a `type __TEMP =
-    // (..)` inner alias that references the type parameter from the outer item
-    // (E0401) and fails to compile — a jsony codegen bug, see
-    // docs/known-issues.md.
+    // struct fields, or any variant's fields of an enum. The `any_borrow` guard
+    // above already excludes borrowing cases, so the parameter list stays `<T,
+    // U>` with no lifetime to drop.
     let mut fields: Vec<&mut FieldSpec> = match body {
         Body::Named(f) | Body::Tuple(f) => f.iter_mut().collect(),
         Body::Enum { variants, .. } => variants
             .iter_mut()
-            .filter(|v| v.kind == VarKind::Tuple)
             .flat_map(|v| v.fields.iter_mut())
             .collect(),
         _ => return Vec::new(),
