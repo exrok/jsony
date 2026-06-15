@@ -716,6 +716,100 @@ pub fn catalog() -> Vec<DiagCase> {
         ),
     );
 
+    // 26. A field `#[jsony(version = N)]` without a container `version` attribute.
+    //     The macro owns this span and points it at the offending field version.
+    out.push(case(
+        "field_version_without_container",
+        src(
+            "",
+            "#[derive(jsony::Jsony)]\n#[jsony(Binary)]\nstruct Probe { a: u32, #[jsony(version = 1)] b: u32 }",
+        ),
+        vec![Expect::within(
+            "field versions require a version attribute on the container",
+            "version = 1",
+        )],
+    ));
+
+    // 27. A field version greater than the container version. The message is
+    //     correct, but the check is raised with no span (`Error::msg`), so its
+    //     primary span lands on the derive path rather than the offending field.
+    //     Same span limitation as `field_missing_tojson`: deferred-by-cost.
+    out.push(
+        case(
+            "field_version_exceeds_container",
+            src(
+                "",
+                "#[derive(jsony::Jsony)]\n#[jsony(Binary, version = 1)]\nstruct Probe { a: u32, #[jsony(version = 2)] b: u32 }",
+            ),
+            vec![Expect::within(
+                "greater than container version",
+                "version = 2",
+            )],
+        )
+        .known(
+            "the field-version-exceeds-container check uses Error::msg with no \
+             span, so its primary span lands on the derive path rather than the \
+             offending field version; the message itself is correct",
+        ),
+    );
+
+    // 28. `zerocopy` with a non-POD field. The ideal error points at the offending
+    //     field; the POD const-assert is an E0080 const-eval panic whose span is
+    //     the derive macro, so it lands on the derive path. Message is correct.
+    out.push(
+        case(
+            "zerocopy_non_pod_field",
+            src(
+                "",
+                "#[derive(jsony::Jsony)]\n#[jsony(Binary, zerocopy)]\n#[repr(C)]\nstruct Probe { a: u32, bad: String }",
+            ),
+            vec![Expect::within("Not all fields implement POD", "bad: String")],
+        )
+        .known(
+            "the POD field check is an E0080 const-eval panic whose span is the \
+             derive macro, so its primary span lands on the derive path rather \
+             than the offending field; the message itself is correct",
+        ),
+    );
+
+    // 29. `zerocopy` without `repr(C)`. The macro owns this message; the ideal
+    //     points at the missing repr / the `zerocopy` attribute. Currently the
+    //     error originates at the derive macro, so it lands on the derive path.
+    out.push(
+        case(
+            "zerocopy_missing_repr_c",
+            src(
+                "",
+                "#[derive(jsony::Jsony)]\n#[jsony(Binary, zerocopy)]\nstruct Probe { a: u32, b: u32 }",
+            ),
+            vec![Expect::within("repr(transparent) or repr(C)", "zerocopy")],
+        )
+        .known(
+            "the repr(C)/repr(transparent) requirement error originates at the \
+             derive macro, so its primary span lands on the derive path rather \
+             than the `zerocopy` attribute; the message itself is correct",
+        ),
+    );
+
+    // 30. `zerocopy` over a struct with implicit padding (`u8` then `u32`). The
+    //     ideal points at the gap; the E0080 const-eval panic's span is the derive
+    //     macro. Message is correct.
+    out.push(
+        case(
+            "zerocopy_padding",
+            src(
+                "",
+                "#[derive(jsony::Jsony)]\n#[jsony(Binary, zerocopy)]\n#[repr(C)]\nstruct Probe { a: u8, b: u32 }",
+            ),
+            vec![Expect::within("gaps between fields", "b: u32")],
+        )
+        .known(
+            "the no-padding check is an E0080 const-eval panic whose span is the \
+             derive macro, so its primary span lands on the derive path rather \
+             than the padded layout; the message itself is correct",
+        ),
+    );
+
     out
 }
 

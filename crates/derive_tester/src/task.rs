@@ -26,6 +26,7 @@ impl<'a> LotsOfStructs<'a> {
         let mut rand = Rand {
             rng: StdRng::from_seed([0u8; 32]),
             steam: 95,
+            full: false,
         };
         let mut structs = Vec::new();
         let mut json_input: HashMap<String, String> = HashMap::new();

@@ -48,6 +48,11 @@ pub enum EnumRepr {
     External,
     Internal,
     Adjacent,
+    /// `#[jsony(untagged)]` — no tag wrapper. Variants are tried in declaration
+    /// order and the first structurally-matching one wins. JSON-only. The
+    /// generator keeps variants disjoint (see [`gen_untagged_variants`]) so the
+    /// match is unambiguous and the round-trip oracle stays valid.
+    Untagged,
 }
 
 pub const TAG: &str = "kind";
@@ -172,7 +177,9 @@ impl FieldSpec {
     /// `rename_all`.
     fn input_key(&self, rule: RenameRule, rand: &mut Rand) -> String {
         match &self.alias {
-            Some(a) if rand.rng.gen_bool(0.5) => a.clone(),
+            // The encode oracle needs the canonical key (the re-encoded form), so
+            // never substitute the alias under `full`.
+            Some(a) if !rand.full && rand.rng.gen_bool(0.5) => a.clone(),
             _ => self.key(rule),
         }
     }
@@ -284,6 +291,82 @@ pub enum Body {
     /// A fieldless enum deriving `#[jsony(ToStr, FromStr)]`. Checked by a dedicated
     /// string oracle (no JSON/binary), see `emit::emit_str_arm`.
     Str(Vec<StrVariant>),
+    /// A binary version family: several `#[jsony(Binary, version ...)]` structs
+    /// sharing a field plan, exercised by a dedicated cross-version oracle (no
+    /// JSON), see `emit::emit_version_arm`. Emits its own type definitions.
+    Version(VersionFamily),
+    /// A `#[jsony(Binary, zerocopy)]` POD struct, exercised by a dedicated
+    /// alignment oracle (no JSON), see `emit::emit_pod_arm`. Emits its own type
+    /// definitions (the POD struct plus transparent POD / non-POD wrappers).
+    Pod(PodFamily),
+}
+
+/// One field in a version family's shared field plan. Field `i` is present in a
+/// schema iff `intro <= schema.cur`. `intro == 0` marks a required base field
+/// carried across every version; `intro > 0` fields are introduced later and,
+/// when decoding bytes whose version predates the field, are filled from `fill`.
+pub struct VersionField {
+    pub ty: Type<'static>,
+    pub intro: u16,
+    /// A deterministically-sampled value literal (the value actually encoded).
+    pub value: String,
+    /// `Some(lit)` => `#[jsony(default = lit)]`; the value filled when the field
+    /// is absent from older bytes. `None` => no `default` attribute, so jsony
+    /// fills `Default::default()` ([`VersionField::fill`] returns the zero/false
+    /// literal in that case). Always distinct from `value` so the fill is
+    /// observable.
+    pub default: Option<String>,
+}
+
+impl VersionField {
+    /// The literal jsony must fill when this field is absent from the decoded
+    /// bytes: the explicit `default`, else the type's `Default` (`0` / `false`).
+    pub fn fill(&self) -> &str {
+        match &self.default {
+            Some(d) => d,
+            None => match self.ty {
+                Type::Bool => "false",
+                _ => "0",
+            },
+        }
+    }
+}
+
+/// A decoder/encoder schema in a version family: a struct containing the field
+/// plan's fields with `intro <= cur`, deriving `#[jsony(Binary, version ...)]`
+/// with the given accepted version window `[min, cur]`.
+pub struct VersionSchema {
+    pub min: u16,
+    pub cur: u16,
+}
+
+/// A binary version family: a shared field plan instantiated at several schema
+/// versions. The oracle encodes each schema and cross-decodes it as every other,
+/// asserting in-window decodes fill the right defaults and out-of-window decodes
+/// error (see `emit::emit_version_arm`).
+pub struct VersionFamily {
+    /// Tuple-struct bodies instead of named.
+    pub tuple: bool,
+    /// The shared field plan, ordered by non-decreasing `intro` (base fields
+    /// first). `value`/`default` are deterministically sampled per field so the
+    /// cross-version assertions are absolute.
+    pub fields: Vec<VersionField>,
+    /// The instantiated schemas (declared `{name}_S{idx}`).
+    pub schemas: Vec<VersionSchema>,
+}
+
+/// One field of a `zerocopy` POD struct: a fixed-width scalar (or fixed array of
+/// one), all sharing a single alignment class so `repr(C)` introduces no padding.
+pub struct PodField {
+    pub ty: Type<'static>,
+    pub value: String,
+}
+
+/// A `#[jsony(Binary, zerocopy)] #[repr(C)]` POD struct: its fields all share one
+/// alignment class, so the layout is gap-free and the `POD` const-asserts hold.
+/// Exercised by a self-contained alignment oracle (see `emit::emit_pod_arm`).
+pub struct PodFamily {
+    pub fields: Vec<PodField>,
 }
 
 pub struct Case {
@@ -331,6 +414,7 @@ impl Case {
                 EnumRepr::Adjacent => {
                     s.push_str(&format!(", tag = {TAG:?}, content = {CONTENT:?}"))
                 }
+                EnumRepr::Untagged => s.push_str(", untagged"),
             }
         }
         if self.ignore_tag_adjacent {
@@ -576,6 +660,123 @@ fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> Va
     }
 }
 
+/// Generate disjoint variants for an untagged enum.
+///
+/// Untagged decode tries variants in declaration order and the first
+/// structurally-matching one wins, so the round-trip oracle is only valid if no
+/// two variants can match the same JSON. Disjointness is guaranteed by
+/// construction, independent of declaration order:
+///
+///   - At most one variant per JSON scalar kind (`null` / `bool` / `number` /
+///     `string` / `array`). Each scalar-kind newtype carries a fixed,
+///     non-`Option` type so its JSON kind is fixed.
+///   - Struct variants get globally-unique field names (prefixed with a
+///     per-variant counter) and a required anchor field, so an object encoded
+///     for one variant is missing every other variant's required key and carries
+///     keys unknown to them. Any earlier struct variant therefore fails to
+///     decode it, and matching falls through to the intended variant.
+fn gen_untagged_variants(rng: &mut StdRng) -> Vec<VariantSpec> {
+    // Scalar-kind newtype slots, each a distinct JSON kind. Non-`Option` so the
+    // kind is fixed (an `Option` newtype would also match `null`).
+    const SCALAR_SLOTS: &[Type<'static>] = &[
+        Type::Bool,            // bool kind
+        Type::I64,             // number kind (one number variant only)
+        Type::String,          // string kind
+        Type::Vec(&Type::U32), // array kind
+    ];
+    let mut protos: Vec<(VarKind, Vec<FieldSpec>)> = Vec::new();
+    // NOTE: unit variants are deliberately excluded. jsony's untagged decode
+    // (codegen.rs ~1762) writes a unit variant *unconditionally without consuming
+    // input* and stops generating subsequent variants, so a unit variant neither
+    // matches `null` (the value is left as trailing input) nor lets any later
+    // variant be reached. The correct behavior (serde-style) is unit <-> `null`,
+    // consumed; this is a known jsony gap, surfaced by this harness. Until it is
+    // fixed, untagged enums here use only struct + scalar-newtype variants, whose
+    // disjoint key sets / JSON kinds decode unambiguously.
+    //
+    // A random subset of the scalar-kind newtypes, each at most once.
+    for ty in SCALAR_SLOTS {
+        if rng.gen_bool(0.5) {
+            protos.push((
+                VarKind::Tuple,
+                vec![FieldSpec {
+                    name: "f0".to_string(),
+                    ty: *ty,
+                    rename: None,
+                    alias: None,
+                    default: DefaultSpec::None,
+                    skip: false,
+                    with: false,
+                    validate: ValidateKind::None,
+                }],
+            ));
+        }
+    }
+    // 0..=2 struct variants. Fields get prefixed names (assigned below) and a
+    // required anchor field, so each struct variant owns a unique key set.
+    let n_struct = rng.gen_range(0..3);
+    for _ in 0..n_struct {
+        let count = rng.gen_range(1..4);
+        // No rename/alias: the prefixed declared name is the disjointness anchor,
+        // and a `rename` would drop the prefix and risk a cross-variant key
+        // collision. `default`/`skip`/`with` on the non-anchor fields stay.
+        let mut fields = gen_fields(rng, count, true, false, false, false);
+        for f in fields.iter_mut() {
+            f.rename = None;
+            f.alias = None;
+        }
+        // Force the first field to be a present, required, untransformed anchor.
+        // It MUST be a non-`Option`, non-default, non-skip scalar: an `Option`
+        // field is optional even without a `default`, so an all-`Option` struct
+        // variant would have no required key and match any object (untagged skips
+        // unknown keys), shadowing later variants. A required unique anchor per
+        // variant is what makes the disjointness reasoning hold.
+        const ANCHOR_TYPES: &[Type<'static>] =
+            &[Type::U32, Type::I64, Type::Bool, Type::String];
+        fields[0].ty = *ANCHOR_TYPES.choose(rng).unwrap();
+        fields[0].skip = false;
+        fields[0].default = DefaultSpec::None;
+        fields[0].with = false;
+        protos.push((VarKind::Struct, fields));
+    }
+    // Always at least one variant.
+    if protos.is_empty() {
+        protos.push((
+            VarKind::Tuple,
+            vec![FieldSpec {
+                name: "f0".to_string(),
+                ty: Type::Bool,
+                rename: None,
+                alias: None,
+                default: DefaultSpec::None,
+                skip: false,
+                with: false,
+                validate: ValidateKind::None,
+            }],
+        ));
+    }
+    // Declaration order must not affect correctness; shuffle to exercise that.
+    protos.shuffle(rng);
+    protos
+        .into_iter()
+        .enumerate()
+        .map(|(i, (kind, mut fields))| {
+            // Globally-unique field names keep struct variants' key sets disjoint.
+            for f in fields.iter_mut() {
+                f.name = format!("v{i}_{}", f.name);
+            }
+            VariantSpec {
+                name: format!("V{i}"),
+                kind,
+                fields,
+                rename: None,
+                rename_all: RenameRule::None,
+                other: false,
+            }
+        })
+        .collect()
+}
+
 /// Generate the variants of a `ToStr`/`FromStr` enum: 1..5 fieldless variants,
 /// each sometimes carrying an explicit `rename`. Distinct declared names (`V0`,
 /// `V1`, ...) and the disjoint `ren_V{i}` rename space keep every variant's string
@@ -593,6 +794,192 @@ fn gen_str_enum(rng: &mut StdRng) -> Vec<StrVariant> {
             StrVariant { name, rename }
         })
         .collect()
+}
+
+/// Field types used in version families: owned, fixed-width, `Default` + binary.
+/// (Borrowed `&str` version fields are added once the borrowed-type track exists.)
+const VERSION_TYPES: &[Type<'static>] = &[Type::U32, Type::I32, Type::U64, Type::Bool];
+
+/// The Rust spelling of a version field type.
+pub fn version_type_str(ty: Type) -> &'static str {
+    match ty {
+        Type::U32 => "u32",
+        Type::I32 => "i32",
+        Type::U64 => "u64",
+        Type::Bool => "bool",
+        _ => unreachable!("non-version field type"),
+    }
+}
+
+/// A per-field encoded value literal. Distinct per field index so a decode that
+/// reads the wrong field's bytes (aliasing) is caught, and distinct from the
+/// field's fill value so a present field is distinguishable from a defaulted one.
+fn version_value(ty: Type, idx: usize) -> String {
+    let i = idx as i64;
+    match ty {
+        Type::U32 => format!("{}u32", 300 + i * 7),
+        Type::I32 => format!("{}i32", -(40 + i * 3)),
+        Type::U64 => format!("{}u64", 900_000 + i * 13),
+        // Always `true` so it differs from the `false` Default-fill, keeping the
+        // defaulted-vs-present distinction observable for bool fields.
+        Type::Bool => "true".to_string(),
+        _ => unreachable!("non-version field type"),
+    }
+}
+
+/// A per-field explicit `default` literal, distinct per field and from
+/// [`version_value`], so an absolute "this exact default was filled" check holds.
+fn version_default(ty: Type, idx: usize) -> String {
+    let i = idx as i64;
+    match ty {
+        Type::U32 => format!("{}u32", 100 + i),
+        Type::I32 => format!("{}i32", -(100 + i)),
+        Type::U64 => format!("{}u64", 500 + i),
+        Type::Bool => "false".to_string(),
+        _ => unreachable!("non-version field type"),
+    }
+}
+
+/// Build a binary version family: a shared field plan (base fields at `intro = 0`,
+/// then at least one field introduced at each version `1..=nversions`) instantiated
+/// as schemas `S_0..S_nversions` (each accepting `[0, k]` via the auto `version`)
+/// plus one min-windowed schema (`version = M..`, accepting `[M, nversions]`).
+fn gen_version_family(rng: &mut StdRng) -> VersionFamily {
+    let tuple = rng.gen_bool(0.5);
+    let nversions: u16 = rng.gen_range(1..=3);
+    let nbase = rng.gen_range(1..=2);
+    let mut fields: Vec<VersionField> = Vec::new();
+    let mut idx = 0usize;
+    for _ in 0..nbase {
+        let ty = *VERSION_TYPES.choose(rng).unwrap();
+        fields.push(VersionField {
+            ty,
+            intro: 0,
+            value: version_value(ty, idx),
+            default: None,
+        });
+        idx += 1;
+    }
+    for v in 1..=nversions {
+        let cnt = rng.gen_range(1..=2);
+        for _ in 0..cnt {
+            let ty = *VERSION_TYPES.choose(rng).unwrap();
+            // Mix explicit `default = ..` fields with bare versioned fields (which
+            // fall back to `Default::default()`), exercising both fill paths.
+            let default = if rng.gen_bool(0.6) {
+                Some(version_default(ty, idx))
+            } else {
+                None
+            };
+            fields.push(VersionField {
+                ty,
+                intro: v,
+                value: version_value(ty, idx),
+                default,
+            });
+            idx += 1;
+        }
+    }
+    let mut schemas: Vec<VersionSchema> = (0..=nversions)
+        .map(|cur| VersionSchema { min: 0, cur })
+        .collect();
+    // A min-windowed schema accepting `[M, nversions]`, so encodings below `M`
+    // must be rejected.
+    let m = rng.gen_range(1..=nversions);
+    schemas.push(VersionSchema {
+        min: m,
+        cur: nversions,
+    });
+    VersionFamily {
+        tuple,
+        fields,
+        schemas,
+    }
+}
+
+/// `Type::Array` of `scalar` with `n` elements, using a `'static` element
+/// reference (const-promoted), so POD families can carry fixed arrays.
+fn pod_array(scalar: Type, n: usize) -> Type<'static> {
+    match scalar {
+        Type::U8 => Type::Array(&Type::U8, n),
+        Type::I8 => Type::Array(&Type::I8, n),
+        Type::U16 => Type::Array(&Type::U16, n),
+        Type::I16 => Type::Array(&Type::I16, n),
+        Type::U32 => Type::Array(&Type::U32, n),
+        Type::I32 => Type::Array(&Type::I32, n),
+        Type::F32 => Type::Array(&Type::F32, n),
+        Type::U64 => Type::Array(&Type::U64, n),
+        Type::I64 => Type::Array(&Type::I64, n),
+        Type::F64 => Type::Array(&Type::F64, n),
+        _ => unreachable!("non-POD scalar"),
+    }
+}
+
+/// A finite, in-range Rust literal for a POD scalar, distinct per `n` so a decode
+/// that crosses field/stride boundaries is caught. Floats stay finite (NaN would
+/// break the `PartialEq` round-trip even though the bytes copy exactly).
+fn pod_scalar_value(scalar: Type, n: usize) -> String {
+    let n = n as i64;
+    match scalar {
+        Type::U8 => format!("{}u8", (n % 200) + 1),
+        Type::I8 => format!("{}i8", (n % 100) + 1),
+        Type::U16 => format!("{}u16", 1000 + (n % 5000)),
+        Type::I16 => format!("{}i16", -(1000 + (n % 5000))),
+        Type::U32 => format!("{}u32", 100_000 + n),
+        Type::I32 => format!("{}i32", -(100_000 + n)),
+        Type::F32 => format!("{}.5f32", n),
+        Type::U64 => format!("{}u64", 10_000_000 + n),
+        Type::I64 => format!("{}i64", -(10_000_000 + n)),
+        Type::F64 => format!("{}.25f64", n),
+        _ => unreachable!("non-POD scalar"),
+    }
+}
+
+/// A literal for a POD field (scalar or fixed array), seeded by `n`.
+pub fn pod_value(ty: Type, n: usize) -> String {
+    match ty {
+        Type::Array(elem, len) => {
+            let mut s = String::from("[");
+            for k in 0..len {
+                if k > 0 {
+                    s.push_str(", ");
+                }
+                s.push_str(&pod_scalar_value(*elem, n * 16 + k));
+            }
+            s.push(']');
+            s
+        }
+        scalar => pod_scalar_value(scalar, n),
+    }
+}
+
+/// Build a `zerocopy` POD family. All fields share one alignment class
+/// (`1`/`2`/`4`/`8` bytes), so a `repr(C)` layout has no internal gaps and the
+/// total size is a multiple of the class — i.e. no padding, so the `POD`
+/// const-asserts hold and the raw bytes round-trip.
+fn gen_pod_family(rng: &mut StdRng) -> PodFamily {
+    let class = *[1usize, 2, 4, 8].choose(rng).unwrap();
+    let scalars: &[Type<'static>] = match class {
+        1 => &[Type::U8, Type::I8],
+        2 => &[Type::U16, Type::I16],
+        4 => &[Type::U32, Type::I32, Type::F32],
+        _ => &[Type::U64, Type::I64, Type::F64],
+    };
+    let nfields = rng.gen_range(2..=5);
+    let mut fields = Vec::new();
+    for i in 0..nfields {
+        let scalar = *scalars.choose(rng).unwrap();
+        let ty = if rng.gen_bool(0.3) {
+            pod_array(scalar, rng.gen_range(1..=4))
+        } else {
+            scalar
+        };
+        fields.push(PodField {
+            ty,
+            value: pod_value(ty, i + 1),
+        });
+    }
+    PodFamily { fields }
 }
 
 /// SplitMix64 finalizer. Sequential ids (`0, 1, 2, ...`) seeded directly into
@@ -623,7 +1010,30 @@ pub fn case_from_id(id: u64) -> Case {
         to_binary: binary,
     };
     let mut transparent = false;
-    let body = match rng.gen_range(0..13) {
+    let body = match rng.gen_range(0..15) {
+        14 => {
+            // A `zerocopy` POD struct: manages its own `#[jsony(Binary, zerocopy)]
+            // #[repr(C)]` derive and is checked by the dedicated alignment oracle.
+            traits = TraitSet {
+                from_json: false,
+                to_json: false,
+                from_binary: false,
+                to_binary: false,
+            };
+            Body::Pod(gen_pod_family(&mut rng))
+        }
+        13 => {
+            // A binary version family: manages its own per-schema `#[jsony(Binary,
+            // version ...)]` derives and is checked by the dedicated cross-version
+            // oracle, so the case-level traits are unused.
+            traits = TraitSet {
+                from_json: false,
+                to_json: false,
+                from_binary: false,
+                to_binary: false,
+            };
+            Body::Version(gen_version_family(&mut rng))
+        }
         12 => {
             // A `ToStr`/`FromStr` enum: no JSON/binary traits (none of the round
             // trip applies), checked by the dedicated string oracle.
@@ -660,24 +1070,37 @@ pub fn case_from_id(id: u64) -> Case {
             Body::Named(vec![gen_plain_field(&mut rng, false)])
         }
         _ => {
-            let repr = match rng.gen_range(0..4) {
+            let repr = match rng.gen_range(0..5) {
                 0 => EnumRepr::Internal,
                 1 => EnumRepr::Adjacent,
+                2 => EnumRepr::Untagged,
                 _ => EnumRepr::External,
             };
-            let n = rng.gen_range(1..4);
-            let mut variants: Vec<VariantSpec> = (0..n)
-                .map(|i| gen_variant(&mut rng, i, repr, binary))
-                .collect();
-            // Optionally designate one unit variant the FromJson catch-all `other`.
-            // Requires another variant to remain (a meaningful enum keeps at least
-            // one concrete arm), so only when there are at least two variants.
-            if variants.len() >= 2 && rng.gen_bool(0.3) {
-                if let Some(v) = variants.iter_mut().find(|v| v.kind == VarKind::Unit) {
-                    v.other = true;
+            if repr == EnumRepr::Untagged {
+                // Untagged is a JSON-only tag mode; the binary codec encodes a
+                // discriminant regardless, so restrict to JSON to keep the
+                // generator's disjointness reasoning to the JSON side.
+                traits.from_binary = false;
+                traits.to_binary = false;
+                Body::Enum {
+                    repr,
+                    variants: gen_untagged_variants(&mut rng),
                 }
+            } else {
+                let n = rng.gen_range(1..4);
+                let mut variants: Vec<VariantSpec> = (0..n)
+                    .map(|i| gen_variant(&mut rng, i, repr, binary))
+                    .collect();
+                // Optionally designate one unit variant the FromJson catch-all `other`.
+                // Requires another variant to remain (a meaningful enum keeps at least
+                // one concrete arm), so only when there are at least two variants.
+                if variants.len() >= 2 && rng.gen_bool(0.3) {
+                    if let Some(v) = variants.iter_mut().find(|v| v.kind == VarKind::Unit) {
+                        v.other = true;
+                    }
+                }
+                Body::Enum { repr, variants }
             }
-            Body::Enum { repr, variants }
         }
     };
     // `rename_all` recases keys, so it only matters for shapes that emit keys.
@@ -777,7 +1200,9 @@ fn build_named_object(fields: &[FieldSpec], rule: RenameRule, rand: &mut Rand) -
         if field.skip {
             continue;
         }
-        if field.default.is_set() && rand.rng.gen_bool(0.5) {
+        // Under `full` (the encode oracle) every defaultable field is present, so
+        // the re-encoded value carries exactly these members.
+        if field.default.is_set() && !rand.full && rand.rng.gen_bool(0.5) {
             continue;
         }
         let key = field.input_key(rule, rand);
@@ -827,6 +1252,8 @@ fn build_struct_body(case: &Case, rand: &mut Rand) -> Node {
         Body::Unit => Node::Raw("{}".to_string()),
         Body::Enum { .. } => unreachable!("handled in build_node"),
         Body::Str(_) => unreachable!("str enums are checked by the dedicated arm, not sampled"),
+        Body::Version(_) => unreachable!("version families are checked by the dedicated arm"),
+        Body::Pod(_) => unreachable!("POD families are checked by the dedicated arm"),
     }
 }
 
@@ -864,6 +1291,11 @@ fn build_enum(case: &Case, repr: EnumRepr, variants: &[VariantSpec], rand: &mut 
             }
             Node::Object(members)
         }
+        // No tag wrapper: the chosen variant's content is the whole value. A unit
+        // variant is `null`, a newtype is its inner value, a struct is a bare
+        // object. Disjointness (see `gen_untagged_variants`) guarantees this value
+        // round-trips back to the same variant.
+        EnumRepr::Untagged => build_variant_content(v, field_rule, rand),
     }
 }
 
@@ -1086,6 +1518,7 @@ fn build_default_eq(case: &Case, seed: u64) -> Option<(String, String)> {
     let mut rand = Rand {
         rng: StdRng::seed_from_u64(mix64(seed ^ 0x5EED_0DEF_A017_C0DE)),
         steam: 95,
+        full: false,
     };
     let rule = case.struct_field_rule();
     let mut members = Vec::new();
@@ -1134,6 +1567,7 @@ fn build_validate_reject(case: &Case, seed: u64) -> Option<String> {
     let mut rand = Rand {
         rng: StdRng::seed_from_u64(mix64(seed ^ 0x5EED_BAD0_DEFA_17ED)),
         steam: 95,
+        full: false,
     };
     let rule = case.struct_field_rule();
     let mut members = Vec::new();
@@ -1171,6 +1605,9 @@ fn build_other_eq(case: &Case) -> Option<(String, String)> {
             EnumRepr::Internal | EnumRepr::Adjacent => {
                 render_members(&[(TAG.to_string(), json_string(tag))])
             }
+            // Untagged enums never carry an `other` variant, so `build_other_eq`
+            // returns above via the `?` before this closure is ever called.
+            EnumRepr::Untagged => unreachable!("untagged enums have no other variant"),
         }
     };
     Some((render(&known), render(unknown)))
@@ -1208,6 +1645,7 @@ pub fn sample(case: &Case, sample_seed: u64) -> Sample {
     let mut rand = Rand {
         rng: StdRng::seed_from_u64(mix64(sample_seed)),
         steam: 95,
+        full: false,
     };
     let node = build_node(case, &mut rand);
     // A separate RNG drives the transforms so the canonical value stays fixed
@@ -1245,9 +1683,59 @@ pub fn sample_json(case: &Case, sample_seed: u64) -> String {
     let mut rand = Rand {
         rng: StdRng::seed_from_u64(mix64(sample_seed)),
         steam: 95,
+        full: false,
     };
     let node = build_node(case, &mut rand);
     let mut out = String::new();
     render_canonical(&node, &mut out);
     out
+}
+
+/// Whether any field type in the case is (or contains) a float. The F64 sampler
+/// reuses the f32 generator, so a decoded `f64` re-encodes to a string that need
+/// not byte-match the input; such cases are excluded from the exact-string encode
+/// oracle (their encoding is still covered by the self-consistent round trip).
+fn case_has_float(case: &Case) -> bool {
+    fn ty_has_float(ty: Type) -> bool {
+        match ty {
+            Type::F32 | Type::F64 => true,
+            Type::Ref(t)
+            | Type::Slice(t)
+            | Type::Vec(t)
+            | Type::Box(t)
+            | Type::Cow(t)
+            | Type::Option(t)
+            | Type::Array(t, _) => ty_has_float(*t),
+            _ => false,
+        }
+    }
+    let any = |fields: &[FieldSpec]| fields.iter().any(|f| ty_has_float(f.ty));
+    match &case.body {
+        Body::Named(f) | Body::Tuple(f) => any(f),
+        Body::Enum { variants, .. } => variants.iter().any(|v| any(&v.fields)),
+        _ => false,
+    }
+}
+
+/// Build the encode-oracle input: a full canonical JSON object (every non-skip
+/// field present, canonical keys) that the re-encoded decoded value must
+/// byte-match. This is the absolute encode check the self-consistent round trip
+/// cannot make (a wrong-but-consistent encoding round-trips fine). `None` unless
+/// the case has both JSON directions and no float field (see [`case_has_float`]).
+pub fn sample_encode(case: &Case, sample_seed: u64) -> Option<String> {
+    if !case.traits.from_json || !case.traits.to_json {
+        return None;
+    }
+    if case_has_float(case) {
+        return None;
+    }
+    let mut rand = Rand {
+        rng: StdRng::seed_from_u64(mix64(sample_seed ^ 0xE5C0_DE17_5EED_1234)),
+        steam: 95,
+        full: true,
+    };
+    let node = build_node(case, &mut rand);
+    let mut out = String::new();
+    render_canonical(&node, &mut out);
+    Some(out)
 }

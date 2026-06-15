@@ -111,6 +111,7 @@ impl<'b, 'a> FieldFeatureGenerator<'b, 'a> {
                 let mut rand = crate::datagen::Rand {
                     rng: StdRng::seed_from_u64(value_seed),
                     steam: 100,
+                    full: false,
                 };
                 let mut foo = rand::distributions::Alphanumeric.sample_string(&mut rand.rng, 3);
                 while self.parent.used_names.contains(&foo) {

@@ -9,8 +9,8 @@ use std::fmt::Write;
 use proc_macro2::TokenStream;
 
 use crate::gen::{
-    Body, Case, DefaultSpec, FieldSpec, ValidateKind, VarKind, VariantSpec, DEFAULT_CONST,
-    VALIDATE_SENTINEL,
+    version_type_str, Body, Case, DefaultSpec, FieldSpec, PodFamily, ValidateKind, VarKind,
+    VariantSpec, VersionFamily, DEFAULT_CONST, VALIDATE_SENTINEL,
 };
 use crate::schema::Type;
 
@@ -27,6 +27,11 @@ pub(crate) const KIND_EQ: char = 'e';
 /// to error, not merely to avoid panicking). Used for the rejecting-validator
 /// inputs, where a decode that *accepts* the sentinel is itself the bug.
 pub(crate) const KIND_REJECT: char = 'r';
+/// `ENCODE` inputs carry a *full canonical* JSON object. The decoded value, when
+/// re-encoded with `to_json`, must byte-equal the input — an absolute encode check
+/// the self-consistent round trip cannot make. Only emitted for both-direction,
+/// float-free cases (see `gen::sample_encode`).
+pub(crate) const KIND_ENCODE: char = 'n';
 
 /// Counting global allocator prepended to every batch. The oracle measures the
 /// live-byte balance around each parse: it must return to its pre-parse value,
@@ -154,6 +159,17 @@ fn validator_defs() -> String {
 }
 
 fn emit_def(out: &mut String, case: &Case) {
+    // A version family emits several `#[jsony(Binary, version ...)]` structs with
+    // their own headers, so it bypasses the single-type definition below.
+    if let Body::Version(fam) = &case.body {
+        emit_version_defs(out, &case.name, fam);
+        return;
+    }
+    // A POD family emits its own `#[jsony(Binary, zerocopy)]` struct plus wrappers.
+    if let Body::Pod(fam) = &case.body {
+        emit_pod_defs(out, &case.name, fam);
+        return;
+    }
     let name = &case.name;
     let _ = writeln!(out, "#[derive(jsony::Jsony, PartialEq, Debug)]");
     let _ = writeln!(out, "#[jsony({})]", case.container_attr());
@@ -223,6 +239,8 @@ fn emit_def(out: &mut String, case: &Case) {
             }
             let _ = writeln!(out, "}}");
         }
+        Body::Version(_) => unreachable!("version families are emitted above"),
+        Body::Pod(_) => unreachable!("POD families are emitted above"),
     }
 }
 
@@ -269,9 +287,288 @@ fn emit_str_arm(out: &mut String, case: &Case, variants: &[crate::gen::StrVarian
     let _ = writeln!(out, "        }}");
 }
 
+/// `#[jsony(version = ..)]` field-attribute prefix for one version field. Base
+/// fields (`intro == 0`) carry no version attribute.
+fn version_field_attr(f: &crate::gen::VersionField) -> String {
+    if f.intro == 0 {
+        return String::new();
+    }
+    match &f.default {
+        Some(d) => format!("#[jsony(version = {}, default = {d})] ", f.intro),
+        None => format!("#[jsony(version = {})] ", f.intro),
+    }
+}
+
+/// Emit every schema struct of a version family: `{name}_S{idx}`, each deriving
+/// `#[jsony(Binary, version ...)]` and containing the field-plan fields with
+/// `intro <= schema.cur`. The min-windowed schema (`min > 0`) uses `version =
+/// M..`; the rest use the auto `version` (which resolves to their max field
+/// version, i.e. `schema.cur`).
+fn emit_version_defs(out: &mut String, name: &str, fam: &VersionFamily) {
+    for (idx, schema) in fam.schemas.iter().enumerate() {
+        let sname = format!("{name}_S{idx}");
+        let ver = if schema.min == 0 {
+            "version".to_string()
+        } else {
+            format!("version = {}..", schema.min)
+        };
+        let _ = writeln!(out, "#[derive(jsony::Jsony, PartialEq, Debug)]");
+        let _ = writeln!(out, "#[jsony(Binary, {ver})]");
+        let included = fam.fields.iter().enumerate().filter(|(_, f)| f.intro <= schema.cur);
+        if fam.tuple {
+            let _ = write!(out, "struct {sname}(");
+            for (_, f) in included {
+                let _ = write!(out, "{}{}, ", version_field_attr(f), version_type_str(f.ty));
+            }
+            let _ = writeln!(out, ");");
+        } else {
+            let _ = writeln!(out, "struct {sname} {{");
+            for (i, f) in included {
+                let _ = writeln!(
+                    out,
+                    "    {}f{i}: {},",
+                    version_field_attr(f),
+                    version_type_str(f.ty)
+                );
+            }
+            let _ = writeln!(out, "}}");
+        }
+    }
+}
+
+/// Build a literal for schema `sname`, including the field-plan fields with
+/// `intro <= cur`, each rendered by `value`.
+fn version_literal(
+    fam: &VersionFamily,
+    sname: &str,
+    cur: u16,
+    value: impl Fn(&crate::gen::VersionField, usize) -> String,
+) -> String {
+    let included = || fam.fields.iter().enumerate().filter(|(_, f)| f.intro <= cur);
+    if fam.tuple {
+        let mut s = format!("{sname}(");
+        for (i, f) in included() {
+            s.push_str(&value(f, i));
+            s.push_str(", ");
+        }
+        s.push(')');
+        s
+    } else {
+        let mut s = format!("{sname} {{ ");
+        for (i, f) in included() {
+            let _ = write!(s, "f{i}: {}, ", value(f, i));
+        }
+        s.push('}');
+        s
+    }
+}
+
+/// Emit the self-contained cross-version oracle for a version family. For every
+/// ordered pair of schemas `(a, b)`, encode `S{a}`'s sampled value and decode it
+/// as `S{b}`:
+///
+///   - When `a`'s version is inside `b`'s accepted window, the decode must
+///     succeed and equal `S{b}` with `a`'s fields carried and `b`-only fields
+///     filled from their declared defaults (an absolute default-fill check).
+///   - Otherwise the decode must error with a "version" message (the
+///     min/max-window rejection), not panic.
+///
+/// One trigger record fires the whole arm; no JSON inputs are consumed.
+fn emit_version_arm(out: &mut String, name: &str, fam: &VersionFamily) {
+    let _ = writeln!(out, "        {name:?} => {{");
+    let _ = writeln!(out, "            let before = LIVE.load(Ordering::Relaxed);");
+    for (a, sa) in fam.schemas.iter().enumerate() {
+        let va = sa.cur;
+        let enc = version_literal(fam, &format!("{name}_S{a}"), sa.cur, |f, _| f.value.clone());
+        for (b, sb) in fam.schemas.iter().enumerate() {
+            let _ = writeln!(out, "            {{");
+            let _ = writeln!(out, "                let bytes = jsony::to_binary(&{enc});");
+            if sb.min <= va && va <= sb.cur {
+                let want = version_literal(fam, &format!("{name}_S{b}"), sb.cur, |f, _| {
+                    if f.intro <= va {
+                        f.value.clone()
+                    } else {
+                        f.fill().to_string()
+                    }
+                });
+                let _ = writeln!(
+                    out,
+                    "                let got: {name}_S{b} = match jsony::from_binary(&bytes) {{ Ok(v) => v, Err(e) => return Err(format!(\"version S{a}->S{b}: {{e}}\")) }};"
+                );
+                // `want` may be a named struct literal; parenthesize it so it is
+                // not misparsed as the `if` block in condition position.
+                let _ = writeln!(
+                    out,
+                    "                if got != ({want}) {{ return Err(format!(\"version fill S{a}->S{b}: {{got:?}}\")); }}"
+                );
+            } else {
+                let _ = writeln!(
+                    out,
+                    "                match jsony::from_binary::<{name}_S{b}>(&bytes) {{ Ok(v) => {{ drop(v); return Err(format!(\"version S{a}->S{b}: out-of-window accepted\")); }} Err(e) => {{ let m = format!(\"{{e}}\"); if !m.contains(\"version\") {{ return Err(format!(\"version S{a}->S{b}: wrong error: {{m}}\")); }} }} }}"
+                );
+            }
+            let _ = writeln!(out, "            }}");
+        }
+    }
+    // Soundness: truncated and garbage versioned bytes must error without
+    // panicking or reading out of bounds (exercised under ASAN). The decode
+    // result is dropped in-scope so the leak check covers any partial-init drop.
+    let max_cur = fam.schemas.iter().map(|s| s.cur).max().unwrap_or(0);
+    let big = max_cur as usize;
+    let seed = version_literal(fam, &format!("{name}_S{big}"), max_cur, |f, _| f.value.clone());
+    let _ = writeln!(out, "            {{");
+    let _ = writeln!(out, "                let full = jsony::to_binary(&{seed});");
+    let _ = writeln!(
+        out,
+        "                for cut in [0, full.len()/4, full.len()/2, full.len().saturating_sub(1)] {{ let _ = jsony::from_binary::<{name}_S{big}>(&full[..cut.min(full.len())]); }}"
+    );
+    let _ = writeln!(
+        out,
+        "                for raw in [&[][..], &[255u8][..], &[255u8,0,0,0,0,0,0,0,0][..]] {{ let _ = jsony::from_binary::<{name}_S{big}>(raw); }}"
+    );
+    let _ = writeln!(out, "            }}");
+    let _ = writeln!(out, "            let after = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(
+        out,
+        "            if after != before {{ return Err(format!(\"leak: {{}} bytes (version {name})\", after - before)); }}"
+    );
+    let _ = writeln!(out, "            Ok(())");
+    let _ = writeln!(out, "        }}");
+}
+
+/// Emit a POD family's type definitions: the `#[jsony(Binary, zerocopy)]
+/// #[repr(C)]` struct, a `transparent` POD newtype over it, and a `transparent`
+/// newtype over `String` (a non-POD, used to assert `POD` is `false` there).
+fn emit_pod_defs(out: &mut String, name: &str, fam: &PodFamily) {
+    let _ = writeln!(out, "#[derive(jsony::Jsony, PartialEq, Debug, Clone, Copy)]");
+    let _ = writeln!(out, "#[jsony(Binary, zerocopy)]");
+    let _ = writeln!(out, "#[repr(C)]");
+    let _ = writeln!(out, "struct {name} {{");
+    for (i, f) in fam.fields.iter().enumerate() {
+        let _ = writeln!(out, "    f{i}: {},", type_str(f.ty));
+    }
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out, "#[derive(jsony::Jsony, PartialEq, Debug, Clone, Copy)]");
+    let _ = writeln!(out, "#[jsony(Binary, transparent)]");
+    let _ = writeln!(out, "#[repr(transparent)]");
+    let _ = writeln!(out, "struct {name}T({name});");
+    let _ = writeln!(out, "#[derive(jsony::Jsony)]");
+    let _ = writeln!(out, "#[jsony(Binary, transparent)]");
+    let _ = writeln!(out, "#[repr(transparent)]");
+    let _ = writeln!(out, "struct {name}N(String);");
+}
+
+/// A `{name} {{ f0: v0, .. }}` literal with each field set to `seed`-th sampled
+/// value (so two distinct instances can be built for a slice).
+fn pod_literal(name: &str, fam: &PodFamily, seed: usize) -> String {
+    let mut s = format!("{name} {{ ");
+    for (i, f) in fam.fields.iter().enumerate() {
+        // Vary the second instance's values so the slice carries distinct rows.
+        let v = if seed == 0 {
+            f.value.clone()
+        } else {
+            crate::gen::pod_value(f.ty, seed * 7 + i + 1)
+        };
+        let _ = write!(s, "f{i}: {v}, ");
+    }
+    s.push('}');
+    s
+}
+
+/// Emit the self-contained POD alignment oracle. Asserts the `POD` const-flags,
+/// a scalar and transparent round-trip, then encodes a two-row slice into an
+/// 8-aligned scratch at every byte offset `0..8` and decodes it as `&[T]`,
+/// `Cow<[T]>`, and `Vec<T>`:
+///
+///   - `&[T]` borrows (decodes `Ok`) exactly when the rows land aligned, errors
+///     otherwise; `Cow` is `Borrowed` iff aligned and `Owned` (a copy) otherwise;
+///     both, and `Vec`, must equal the input rows.
+///   - Across the offsets at least one aligned (borrow) placement must occur, and
+///     for alignment `> 1` at least one unaligned (copy) placement too.
+///
+/// One trigger record fires the whole arm; no JSON inputs are consumed.
+fn emit_pod_arm(out: &mut String, name: &str, fam: &PodFamily) {
+    let one = pod_literal(name, fam, 0);
+    let two = pod_literal(name, fam, 1);
+    let _ = writeln!(out, "        {name:?} => {{");
+    let _ = writeln!(out, "            let before = LIVE.load(Ordering::Relaxed);");
+    // POD const-flags: the struct and its transparent wrapper are POD; the
+    // transparent-over-String wrapper is not.
+    for ty in [format!("{name}"), format!("{name}T")] {
+        let _ = writeln!(
+            out,
+            "            if !<{ty} as jsony::FromBinary>::POD || !<{ty} as jsony::ToBinary>::POD {{ return Err(format!(\"{ty} POD flag false\")); }}"
+        );
+    }
+    let _ = writeln!(
+        out,
+        "            if <{name}N as jsony::FromBinary>::POD || <{name}N as jsony::ToBinary>::POD {{ return Err(format!(\"{name}N (non-POD) reported POD\")); }}"
+    );
+    // Scalar + transparent round-trip.
+    let _ = writeln!(out, "            let one = {one};");
+    let _ = writeln!(out, "            {{");
+    let _ = writeln!(out, "                let b = jsony::to_binary(&one);");
+    let _ = writeln!(
+        out,
+        "                let d: {name} = match jsony::from_binary(&b) {{ Ok(v) => v, Err(e) => return Err(format!(\"pod self decode: {{e}}\")) }};"
+    );
+    let _ = writeln!(out, "                if d != one {{ return Err(format!(\"pod self mismatch\")); }}");
+    let _ = writeln!(out, "                let tb = jsony::to_binary(&{name}T(one));");
+    let _ = writeln!(
+        out,
+        "                let td: {name}T = match jsony::from_binary(&tb) {{ Ok(v) => v, Err(e) => return Err(format!(\"pod transparent decode: {{e}}\")) }};"
+    );
+    let _ = writeln!(out, "                if td != {name}T(one) {{ return Err(format!(\"pod transparent mismatch\")); }}");
+    let _ = writeln!(out, "            }}");
+    // Slice alignment oracle.
+    let _ = writeln!(out, "            let inputs: &[{name}] = &[{one}, {two}];");
+    let _ = writeln!(out, "            let align = ::std::mem::align_of::<{name}>();");
+    let _ = writeln!(out, "            let mut storage = ::std::mem::MaybeUninit::<[u64; 256]>::uninit();");
+    let _ = writeln!(out, "            let base = storage.as_mut_ptr() as *mut u8;");
+    let _ = writeln!(out, "            let mut saw_borrow = false;");
+    let _ = writeln!(out, "            let mut saw_copy = false;");
+    let _ = writeln!(out, "            for off in 0..8usize {{");
+    let _ = writeln!(
+        out,
+        "                let region = unsafe {{ ::std::slice::from_raw_parts_mut(base.add(off) as *mut ::std::mem::MaybeUninit<u8>, 2048 - off) }};"
+    );
+    let _ = writeln!(out, "                let enc = jsony::to_binary_into(&inputs, region);");
+    let _ = writeln!(
+        out,
+        "                let slice_ok = match jsony::from_binary::<&[{name}]>(&enc) {{ Ok(s) => {{ if s != inputs {{ return Err(format!(\"pod aligned slice mismatch off={{off}}\")); }} true }} Err(_) => false }};"
+    );
+    let _ = writeln!(
+        out,
+        "                match jsony::from_binary::<::std::borrow::Cow<'_, [{name}]>>(&enc) {{ Ok(c) => {{ if &*c != inputs {{ return Err(format!(\"pod cow mismatch off={{off}}\")); }} let b = matches!(c, ::std::borrow::Cow::Borrowed(_)); if b != slice_ok {{ return Err(format!(\"pod cow/align disagree off={{off}}\")); }} }} Err(e) => return Err(format!(\"pod cow decode off={{off}}: {{e}}\")) }};"
+    );
+    let _ = writeln!(
+        out,
+        "                match jsony::from_binary::<Vec<{name}>>(&enc) {{ Ok(v) => {{ if v != inputs {{ return Err(format!(\"pod vec mismatch off={{off}}\")); }} }} Err(e) => return Err(format!(\"pod vec decode off={{off}}: {{e}}\")) }};"
+    );
+    let _ = writeln!(out, "                if slice_ok {{ saw_borrow = true; }} else {{ saw_copy = true; }}");
+    let _ = writeln!(out, "            }}");
+    let _ = writeln!(out, "            if !saw_borrow {{ return Err(format!(\"pod never borrowed an aligned slice ({name})\")); }}");
+    let _ = writeln!(out, "            if align > 1 && !saw_copy {{ return Err(format!(\"pod never hit the unaligned copy path ({name})\")); }}");
+    let _ = writeln!(out, "            let after = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(
+        out,
+        "            if after != before {{ return Err(format!(\"leak: {{}} bytes (pod {name})\", after - before)); }}"
+    );
+    let _ = writeln!(out, "            Ok(())");
+    let _ = writeln!(out, "        }}");
+}
+
 fn emit_arm(out: &mut String, case: &Case) {
     if let Body::Str(variants) = &case.body {
         emit_str_arm(out, case, variants);
+        return;
+    }
+    if let Body::Version(fam) = &case.body {
+        emit_version_arm(out, &case.name, fam);
+        return;
+    }
+    if let Body::Pod(fam) = &case.body {
+        emit_pod_arm(out, &case.name, fam);
         return;
     }
     let name = &case.name;
@@ -323,6 +620,22 @@ fn emit_arm(out: &mut String, case: &Case) {
             "                    if a != b {{ return Err(format!(\"equivalence mismatch: {{a:?}} != {{b:?}} a={{input}} b={{extra}}\")); }}"
         );
         let _ = writeln!(out, "                }}");
+        if can_encode {
+            // Absolute encode oracle: a full canonical input must re-encode to
+            // itself byte-for-byte. Catches encode bugs (wrong key order/casing,
+            // dropped/extra fields, wrong tag placement) the round trip misses.
+            let _ = writeln!(out, "                \"{KIND_ENCODE}\" => {{");
+            let _ = writeln!(
+                out,
+                "                    let v: {name} = match jsony::from_json(input) {{ Ok(v) => v, Err(e) => return Err(format!(\"encode-oracle decode: {{e}} json={{input}}\")) }};"
+            );
+            let _ = writeln!(out, "                    let s = jsony::to_json(&v);");
+            let _ = writeln!(
+                out,
+                "                    if s != input {{ return Err(format!(\"encode mismatch: got {{s}} want {{input}}\")); }}"
+            );
+            let _ = writeln!(out, "                }}");
+        }
     }
 
     // Positive path. Each binding lives inside this arm's scope so it drops

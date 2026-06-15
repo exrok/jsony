@@ -10,7 +10,7 @@ use rayon::prelude::*;
 
 use crate::compile::{Toolchain, ToolchainSpec, ASAN, THROUGHPUT};
 use crate::diag::{self, check_case};
-use crate::emit::{emit_batch, FIELD_SEP, KIND_BAD, KIND_EQ, KIND_OK, KIND_REJECT};
+use crate::emit::{emit_batch, FIELD_SEP, KIND_BAD, KIND_ENCODE, KIND_EQ, KIND_OK, KIND_REJECT};
 use crate::gen::{case_from_id, sample, sample_json, Body, Case};
 
 /// Cap on stored failure messages (all failures are still counted).
@@ -68,6 +68,20 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
             count += 1;
             continue;
         }
+        // A version family is binary-only and self-contained. One trigger record
+        // fires its cross-version oracle arm.
+        if let Body::Version(_) = &case.body {
+            record(&mut content, &case.name, KIND_OK, "ver", "");
+            count += 1;
+            continue;
+        }
+        // A POD family is binary-only and self-contained. One trigger record fires
+        // its alignment oracle arm.
+        if let Body::Pod(_) = &case.body {
+            record(&mut content, &case.name, KIND_OK, "pod", "");
+            count += 1;
+            continue;
+        }
         // A ToJson-only case (none generated yet) has no decoder, so the derived
         // decode-oriented inputs would never run; emit only canonical inputs.
         let derive_inputs = case.traits.from_json;
@@ -78,6 +92,14 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
                 record(&mut content, &case.name, KIND_OK, &s.canonical, "");
                 count += 1;
                 if k < eq_seeds {
+                    // Absolute encode oracle (once per case): a full canonical
+                    // input must re-encode to itself byte-for-byte.
+                    if k == 0 {
+                        if let Some(enc) = crate::gen::sample_encode(case, seed) {
+                            record(&mut content, &case.name, KIND_ENCODE, &enc, "");
+                            count += 1;
+                        }
+                    }
                     // Skip records that are byte-identical to the canonical input
                     // (shapes with no reorderable object, e.g. newtypes).
                     if s.permuted != s.canonical {

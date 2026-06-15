@@ -11,6 +11,10 @@ use crate::schema::{ItemKind, Struct, Type};
 pub struct Rand {
     pub rng: StdRng,
     pub steam: i64,
+    /// When set, the JSON sampler emits a *full canonical* object: every non-skip
+    /// field present, under its canonical key (no alias, no default omission). Used
+    /// by the encode oracle, where the re-encoded value must byte-match the input.
+    pub full: bool,
 }
 
 impl Rand {
@@ -141,6 +145,7 @@ impl<'b> Type<'b> {
         let mut rand = Rand {
             rng: StdRng::seed_from_u64(seed),
             steam: 100,
+            full: false,
         };
         match self {
             Type::U8 => splat!(out; [#Literal::u8_unsuffixed(rand.rng.gen())]),
