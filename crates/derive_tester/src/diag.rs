@@ -624,26 +624,20 @@ pub fn catalog() -> Vec<DiagCase> {
     ));
 
     // 20. `validate` function with the wrong signature (returns `bool`, not
-    //     `Result<(), String>`). The ideal error points at the validator in the
-    //     attribute; the macro currently raises the obligation at the generated
-    //     `emplace_json_for_validate_attribute` call, whose span is the derive
-    //     path. This is the same qualified-path/obligation-span limitation as
-    //     `field_missing_tojson`, deferred for the same reason.
-    out.push(
-        case(
-            "validate_wrong_signature",
-            src(
-                "fn bad_check<T>(_v: &T) -> bool { true }\n",
-                "#[derive(jsony::Jsony)]\n#[jsony(FromJson)]\nstruct Probe { #[jsony(validate = bad_check)] a: u32 }",
-            ),
-            vec![Expect::within("Result", "validate = bad_check")],
-        )
-        .known(
-            "validate signature mismatch surfaces as a trait obligation on the \
-             emplace helper call, which lands on the derive path; same \
-             qualified-path/obligation-span limitation as field_missing_tojson",
+    //     `Result<(), String>`). The error points at the validator in the
+    //     attribute. The generated `emplace_json_for_validate_attribute` call now
+    //     carries the validator's span on its helper ident and on the leading `&`
+    //     of the closure argument, so the signature-mismatch obligation blames the
+    //     `validate = ..` binding. (A second where-clause obligation lands on the
+    //     derive path, acceptable under the per-issue rule.)
+    out.push(case(
+        "validate_wrong_signature",
+        src(
+            "fn bad_check<T>(_v: &T) -> bool { true }\n",
+            "#[derive(jsony::Jsony)]\n#[jsony(FromJson)]\nstruct Probe { #[jsony(validate = bad_check)] a: u32 }",
         ),
-    );
+        vec![Expect::within("Result", "validate = bad_check")],
+    ));
 
     // 21. Two `#[jsony(other)]` variants. The macro owns this span and points it
     //     at the second offending variant.
@@ -692,28 +686,21 @@ pub fn catalog() -> Vec<DiagCase> {
         vec![Expect::within("only supported with flatten", "pairs: Vec")],
     ));
 
-    // 25. `ToStr`/`FromStr` on an enum with a data-carrying variant. The message is
-    //     correct, but the whole-enum check is raised at the derive entry point, so
-    //     its span lands on the derive path rather than the offending variant. Same
-    //     class of span limitation as `field_missing_tojson`: deferred-by-cost.
-    out.push(
-        case(
-            "tostr_data_variant",
-            src(
-                "",
-                "#[derive(jsony::Jsony)]\n#[jsony(ToStr, FromStr)]\nenum Probe { A(u32), B }",
-            ),
-            vec![Expect::within(
-                "must not have any tuple or struct",
-                "A(u32)",
-            )],
-        )
-        .known(
-            "the FromStr/ToStr data-variant check is raised at the derive entry \
-             point, so its primary span lands on the derive path rather than the \
-             offending variant; the message itself is correct",
+    // 25. `ToStr`/`FromStr` on an enum with a data-carrying variant. The
+    //     whole-enum check now spans its error on the first data-carrying variant,
+    //     so the error points at the offending variant rather than the derive
+    //     entry point.
+    out.push(case(
+        "tostr_data_variant",
+        src(
+            "",
+            "#[derive(jsony::Jsony)]\n#[jsony(ToStr, FromStr)]\nenum Probe { A(u32), B }",
         ),
-    );
+        vec![Expect::within(
+            "must not have any tuple or struct",
+            "A(u32)",
+        )],
+    ));
 
     // 26. A field `#[jsony(version = N)]` without a container `version` attribute.
     //     The macro owns this span and points it at the offending field version.
@@ -803,47 +790,34 @@ pub fn catalog() -> Vec<DiagCase> {
         vec![Expect::within("Only one flatten", "second")],
     ));
 
-    // 31b. `via = Iterator` on a non-iterable field type (`u32`). The ideal error
-    //      points at the offending field; the macro emits `<&u32>::iter()` in the
-    //      generated encode, so rustc's "no method named `iter`" obligation lands
-    //      on the derive path with no field-pointing error. Same span class as
-    //      `field_missing_tojson` but without a compensating correct-location error.
-    out.push(
-        case(
-            "via_on_non_iterable",
-            src(
-                "",
-                "#[derive(jsony::Jsony)]\n#[jsony(ToJson)]\nstruct Probe { #[jsony(flatten, via = Iterator)] bad: u32 }",
-            ),
-            vec![Expect::within("iter", "bad: u32")],
-        )
-        .known(
-            "via=Iterator over a non-iterable type surfaces as a `no method named \
-             iter` obligation on the generated encode call, whose span is the \
-             derive path; no error points at the offending field",
+    // 31b. `via = Iterator` on a non-iterable field type (`u32`). The generated
+    //      encode emits `(..).iter()` with the `iter` call spanned on the field
+    //      type, so rustc's "no method named `iter`" error blames the field rather
+    //      than the derive path.
+    out.push(case(
+        "via_on_non_iterable",
+        src(
+            "",
+            "#[derive(jsony::Jsony)]\n#[jsony(ToJson)]\nstruct Probe { #[jsony(flatten, via = Iterator)] bad: u32 }",
         ),
-    );
+        vec![Expect::within("iter", "bad: u32")],
+    ));
 
     // 31c. A `with` module whose `decode_json`/`encode_json` have the wrong
-    //      signature. The ideal points at the `with = ..` attribute; the generated
-    //      call site raises a "type mismatch in function arguments" obligation on
-    //      the derive path instead. Same qualified-path class as
-    //      `validate_wrong_signature`.
-    out.push(
-        case(
-            "with_wrong_signature",
-            src(
-                "mod badwith {\n    pub fn decode_json(_x: i32) -> i32 { 0 }\n    pub fn encode_json(_v: &u32, _o: &mut jsony::TextWriter) {}\n}\n",
-                "#[derive(jsony::Jsony)]\n#[jsony(Json)]\nstruct Probe { #[jsony(with = badwith)] a: u32 }",
-            ),
-            vec![Expect::within("mismatch", "with = badwith")],
-        )
-        .known(
-            "a with-module signature mismatch surfaces as a `type mismatch in \
-             function arguments` obligation on the generated call, whose span is \
-             the derive path rather than the with attribute",
+    //      signature. The generated `emplace_json_for_with_attribute` call now
+    //      carries the `with` path's span on its helper ident and on the leading
+    //      `&` of the function argument, so the "type mismatch in function
+    //      arguments" obligation blames the `with = ..` binding. (A second
+    //      where-clause obligation lands on the derive path, acceptable under the
+    //      per-issue rule.)
+    out.push(case(
+        "with_wrong_signature",
+        src(
+            "mod badwith {\n    pub fn decode_json(_x: i32) -> i32 { 0 }\n    pub fn encode_json(_v: &u32, _o: &mut jsony::TextWriter) {}\n}\n",
+            "#[derive(jsony::Jsony)]\n#[jsony(Json)]\nstruct Probe { #[jsony(with = badwith)] a: u32 }",
         ),
-    );
+        vec![Expect::within("mismatch", "with = badwith")],
+    ));
 
     // 32. `#[jsony(flatten)]` over a type that does not derive `Flattenable`. The
     //     `#[diagnostic::on_unimplemented]` on `FromJsonFieldVisitor` names

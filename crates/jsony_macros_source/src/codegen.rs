@@ -492,29 +492,52 @@ impl Ctx<'_> {
     }
 }
 
+/// Span of a user token slice, taken from its final token (e.g. a `with`/
+/// `validate` value or a field type). Used to retarget an obligation raised on a
+/// generated helper call so it blames the user's tokens rather than the
+/// `#[derive(..)]` entry point.
+fn attr_span(tokens: &[TokenTree]) -> Span {
+    tokens
+        .last()
+        .map(TokenTree::span)
+        .unwrap_or_else(Span::call_site)
+}
+
+/// An identifier carrying an explicit span. Newly generated idents default to
+/// `mixed_site`, which surfaces obligations at the derive entry point. Giving the
+/// ident a user token's span routes the obligation onto that token instead.
+fn spanned_ident(name: &str, span: Span) -> TokenTree {
+    TokenTree::Ident(Ident::new(name, span))
+}
+
+/// A punctuation token carrying an explicit span. Used to respan the leading
+/// tokens of a generated argument expression (e.g. the `&` of `&closure`) so a
+/// closure-signature obligation blames the user's attribute, not the derive.
+fn spanned_punct(ch: char, spacing: Spacing, span: Span) -> TokenTree {
+    let mut punct = Punct::new(ch, spacing);
+    punct.set_span(span);
+    TokenTree::Punct(punct)
+}
+
 /// A method-name token (e.g. `decode_json`) carrying the span of the `with`
 /// path's final segment. When the user's `with` module is missing that method,
 /// rustc blames the path in the attribute rather than the `#[derive(..)]` entry
 /// point, which is where a generated ident's default span would otherwise land.
 fn with_method(path: &[TokenTree], method: &'static str) -> TokenTree {
-    let span = path
-        .last()
-        .map(TokenTree::span)
-        .unwrap_or_else(Span::call_site);
-    TokenTree::Ident(Ident::new(method, span))
+    spanned_ident(method, attr_span(path))
 }
 
 fn schema_field_decode(out: &mut RustWriter, ctx: &Ctx, field: &Field) {
     if let Some(with) = field.with(FROM_JSON) {
         splat! { out;
-           [~&ctx.crate_path]::__internal::emplace_json_for_with_attribute::<&mut ::jsony::parser::Parser<#[#: &ctx.lifetime]>, [~field.ty], _>(
-               &[~with]::[@ with_method(with, "decode_json")]
+           [~&ctx.crate_path]::__internal::[@ spanned_ident("emplace_json_for_with_attribute", attr_span(with))]::<&mut ::jsony::parser::Parser<#[#: &ctx.lifetime]>, [~field.ty], _>(
+               [@ spanned_punct('&', Spacing::Alone, attr_span(with))][~with]::[@ with_method(with, "decode_json")]
            )
         }
     } else if let Some(with) = field.validate(FROM_JSON) {
         splat! { out;
-           [~&ctx.crate_path]::__internal::emplace_json_for_validate_attribute::<[~field.ty], _>(
-               &([~with])
+           [~&ctx.crate_path]::__internal::[@ spanned_ident("emplace_json_for_validate_attribute", attr_span(with))]::<[~field.ty], _>(
+               [@ spanned_punct('&', Spacing::Alone, attr_span(with))][~with]
            )
         }
     } else {
@@ -731,9 +754,9 @@ fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
                 // Wrap the `with` module's decode_json into an emplace function,
                 // the same way the multi-field path and the struct schema do.
                 splat!(out;
-                    [~&ctx.crate_path]::__internal::emplace_json_for_with_attribute::<
+                    [~&ctx.crate_path]::__internal::[@ spanned_ident("emplace_json_for_with_attribute", attr_span(with))]::<
                         &mut ::jsony::parser::Parser<#[#: &ctx.lifetime]>, [~field.ty], _
-                    >(&[~with]::[@ with_method(with, "decode_json")])(
+                    >([@ spanned_punct('&', Spacing::Alone, attr_span(with))][~with]::[@ with_method(with, "decode_json")])(
                         [place(out)], parser
                     )
                 );
@@ -765,9 +788,9 @@ fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
                                     // emplace function, the same way the struct schema
                                     // and the tuple-variant decode do.
                                     splat!(out;
-                                        [~&ctx.crate_path]::__internal::emplace_json_for_with_attribute::<
+                                        [~&ctx.crate_path]::__internal::[@ spanned_ident("emplace_json_for_with_attribute", attr_span(with))]::<
                                             &mut ::jsony::parser::Parser<#[#: &ctx.lifetime]>, [~field.ty], _
-                                        >(&[~with]::[@ with_method(with, "decode_json")])
+                                        >([@ spanned_punct('&', Spacing::Alone, attr_span(with))][~with]::[@ with_method(with, "decode_json")])
                                     )
                                 } else {
                                     splat!(out; < [~field.ty] as ::jsony::FromJson<#[#: &ctx.lifetime]> >::emplace_from_json)
@@ -941,12 +964,15 @@ fn inner_struct_to_json(
             }
             if let Via::Iterator = field.via(TO_JSON) {
                 if flattened {
+                    // Span the `iter` call on the field type so a non-iterable
+                    // type's "no method named `iter`" error blames the field
+                    // rather than the derive entry point.
                     splat!(out;
                         for (key, value) in ([if on_self {
                             splat!(out; &self.[#: field.name])
                         } else {
                             splat!(out; [#: &ctx.temp[i]])
-                        }]).iter() {
+                        }]).[@ spanned_ident("iter", attr_span(field.ty))]() {
                             let _: ::jsony::json::AlwaysString = key.encode_json__jsony(out);
                             out.push_colon();
                             value.encode_json__jsony(out);
@@ -2212,11 +2238,23 @@ fn handle_tuple_struct(output: &mut RustWriter, target: &DeriveTargetInner, fiel
     }
 }
 
+/// Span of the first data-carrying (tuple or struct) variant, for blaming the
+/// `ToStr`/`FromStr` whole-enum check on the offending variant rather than the
+/// derive entry point. Falls back to call_site when the defect is a tag
+/// configuration with no data variant.
+fn first_data_variant_span(variants: &[EnumVariant]) -> Span {
+    variants
+        .iter()
+        .find(|v| !matches!(v.kind, EnumKind::None))
+        .map(|v| v.name.span())
+        .unwrap_or_else(Span::call_site)
+}
+
 fn enum_to_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     let target = &ctx.target;
     let any_generics = !target.generics.is_empty();
     if target.enum_flags != (ENUM_CONTAINS_UNIT_VARIANT | ENUM_HAS_EXTERNAL_TAG) {
-        throw!("FromStr enum must not have any tuple or struct variants nor a tag configuration")
+        throw!("ToStr enum must not have any tuple or struct variants nor a tag configuration" @ first_data_variant_span(variants))
     }
     splat! {
         out;
@@ -2240,7 +2278,7 @@ fn enum_to_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
 fn enum_from_str(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
     let target = &ctx.target;
     if target.enum_flags != (ENUM_CONTAINS_UNIT_VARIANT | ENUM_HAS_EXTERNAL_TAG) {
-        throw!("FromStr enum must not have any tuple or struct variants nor a tag configuration")
+        throw!("FromStr enum must not have any tuple or struct variants nor a tag configuration" @ first_data_variant_span(variants))
     }
     let any_generics = !target.generics.is_empty();
     splat! {
