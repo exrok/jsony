@@ -581,7 +581,7 @@ pub fn extract_derive_target<'a>(
             } {
                 TokenTree::Group(_) => Error::msg("Unexpected group"),
                 TokenTree::Ident(next_ident) => {
-                    if ident_eq(ident, "const") {
+                    if !ident_eq(ident, "const") {
                         Error::msg_ctx("unexpected ident", &(&next_ident))
                     }
                     (GenericKind::Const, next_ident, false)
@@ -665,6 +665,7 @@ pub fn extract_derive_target<'a>(
         }
         let from = toks.as_slice();
         let mut depth = 0i32;
+        let mut locked = false;
         loop {
             let tok = match (toks).next() {
                 Some(t) => t,
@@ -681,17 +682,23 @@ pub fn extract_derive_target<'a>(
                                 &[]
                             };
                             keep = false;
+                            locked = match generic.kind {
+                                GenericKind::Const => true,
+                                _ => false,
+                            };
                         }
                     }
                     b'<' => depth += 1,
                     b'>' => {
                         depth -= 1;
                         if depth < 0 {
-                            generic.bounds = if keep {
-                                &from[..(from.len() - toks.len()) - 1]
-                            } else {
-                                &[]
-                            };
+                            if !locked {
+                                generic.bounds = if keep {
+                                    &from[..(from.len() - toks.len()) - 1]
+                                } else {
+                                    &[]
+                                };
+                            }
                             break 'parsing_generics;
                         }
                     }
@@ -699,11 +706,13 @@ pub fn extract_derive_target<'a>(
                 }
             }
         }
-        generic.bounds = if keep {
-            &from[..(from.len() - toks.len()) - 1]
-        } else {
-            &[]
-        };
+        if !locked {
+            generic.bounds = if keep {
+                &from[..(from.len() - toks.len()) - 1]
+            } else {
+                &[]
+            };
+        }
     }
     match match (toks).next() {
         Some(t) => t,

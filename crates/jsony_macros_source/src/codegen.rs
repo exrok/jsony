@@ -126,6 +126,11 @@ macro_rules! token_stream { ($d:tt; $($tt:tt)*) => {{
 struct GenericBoundFormatting {
     lifetimes: bool,
     bounds: bool,
+    // Declaration position for const generics: emit the `const` keyword and the
+    // const type (`const N: usize`). Type-argument position emits bare `N`.
+    // Orthogonal to `bounds`, which gates type-param trait bounds, because a type
+    // alias declaration needs const types but not type bounds (`type_alias_bounds`).
+    const_decl: bool,
 }
 fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBoundFormatting) {
     let mut first = true;
@@ -138,17 +143,21 @@ fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBound
         } else {
             append_tok!(,buffer);
         }
-        match generic.kind {
+        let emit_bounds = match generic.kind {
             GenericKind::Lifetime => {
                 append_tok!(#buffer);
+                false
             }
-            GenericKind::Type => (),
+            GenericKind::Type => fmt.bounds,
             GenericKind::Const => {
-                append_tok!(const buffer);
+                if fmt.const_decl {
+                    append_tok!(const buffer);
+                }
+                fmt.const_decl
             }
-        }
+        };
         buffer.buf.push(generic.ident.clone().into());
-        if fmt.bounds && !generic.bounds.is_empty() {
+        if emit_bounds && !generic.bounds.is_empty() {
             append_tok!(: buffer);
             for tok in generic.bounds {
                 buffer.buf.push(tok.clone());
@@ -184,17 +193,34 @@ fn emit_generic_args(out: &mut RustWriter, generics: &[Generic]) {
     splat!(out; [?(!generics.is_empty()) < [fmt_generics(out, generics, USE)] >]);
 }
 
+/// Emit `<'a, T, const N: usize>` for a `type __TEMP<…>` alias declaration
+/// (ALIAS_DEF form: lifetimes + names + const types, no type-param bounds).
+fn emit_generic_params(out: &mut RustWriter, generics: &[Generic]) {
+    splat!(out; [?(!generics.is_empty()) < [fmt_generics(out, generics, ALIAS_DEF)] >]);
+}
+
 const DEAD_USE: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: false,
     bounds: false,
+    const_decl: false,
 };
 const USE: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: true,
     bounds: false,
+    const_decl: false,
 };
 const DEF: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: true,
     bounds: true,
+    const_decl: true,
+};
+// Type alias declaration (`type __TEMP<…>`): declares const types
+// (`const N: usize`) but omits type-param trait bounds (a type alias must not
+// carry them, `type_alias_bounds`).
+const ALIAS_DEF: GenericBoundFormatting = GenericBoundFormatting {
+    lifetimes: true,
+    bounds: false,
+    const_decl: true,
 };
 
 fn bodyless_impl_from(
@@ -653,6 +679,7 @@ fn struct_schema(
             GenericBoundFormatting {
                 lifetimes: false,
                 bounds: false,
+                const_decl: false,
             },
         );
         append_tok!(> out);
@@ -1560,7 +1587,7 @@ fn enum_variant_from_json_struct(
     // keeps the large schema/decode token sequence from being generated twice.
     splat! {
         out;
-        type __TEMP[emit_generic_args(out, &used_generics)] = ([for (field in &ordered_fields) { [~field.ty], }]);
+        type __TEMP[emit_generic_params(out, &used_generics)] = ([for (field in &ordered_fields) { [~field.ty], }]);
         let schema = ::jsony::__internal::ObjectSchema{
             inner: const { &[struct_schema(out, ctx, &ordered_fields, Some((&temp_ident, &used_generics)), field_rename)]},
             phantom: ::std::marker::PhantomData,

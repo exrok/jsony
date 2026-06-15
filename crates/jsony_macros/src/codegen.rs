@@ -39,6 +39,7 @@ fn tt_append_blit(output: &mut RustWriter, chr: &str) {
 struct GenericBoundFormatting {
     lifetimes: bool,
     bounds: bool,
+    const_decl: bool,
 }
 fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBoundFormatting) {
     let mut first = true;
@@ -56,17 +57,21 @@ fn fmt_generics(buffer: &mut RustWriter, generics: &[Generic], fmt: GenericBound
         } else {
             buffer.blit_punct(13);
         }
-        match generic.kind {
+        let emit_bounds = match generic.kind {
             GenericKind::Lifetime => {
                 buffer.blit_punct(7);
+                false
             }
-            GenericKind::Type => (),
+            GenericKind::Type => fmt.bounds,
             GenericKind::Const => {
-                buffer.blit_ident(179);
+                if fmt.const_decl {
+                    buffer.blit_ident(179);
+                }
+                fmt.const_decl
             }
-        }
+        };
         buffer.buf.push(generic.ident.clone().into());
-        if fmt.bounds && !generic.bounds.is_empty() {
+        if emit_bounds && !generic.bounds.is_empty() {
             buffer.blit_punct(9);
             for tok in generic.bounds {
                 buffer.buf.push(tok.clone());
@@ -105,17 +110,36 @@ fn emit_generic_args(out: &mut RustWriter, generics: &[Generic]) {
         };
     };
 }
+/// Emit `<'a, T, const N: usize>` for a `type __TEMP<…>` alias declaration
+/// (ALIAS_DEF form: lifetimes + names + const types, no type-param bounds).
+fn emit_generic_params(out: &mut RustWriter, generics: &[Generic]) {
+    {
+        if !generics.is_empty() {
+            out.blit_punct(3);
+            fmt_generics(out, generics, ALIAS_DEF);
+            out.blit_punct(2);
+        };
+    };
+}
 const DEAD_USE: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: false,
     bounds: false,
+    const_decl: false,
 };
 const USE: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: true,
     bounds: false,
+    const_decl: false,
 };
 const DEF: GenericBoundFormatting = GenericBoundFormatting {
     lifetimes: true,
     bounds: true,
+    const_decl: true,
+};
+const ALIAS_DEF: GenericBoundFormatting = GenericBoundFormatting {
+    lifetimes: true,
+    bounds: false,
+    const_decl: true,
 };
 fn bodyless_impl_from(
     output: &mut RustWriter,
@@ -817,6 +841,7 @@ fn struct_schema(
             GenericBoundFormatting {
                 lifetimes: false,
                 bounds: false,
+                const_decl: false,
             },
         );
         out.blit_punct(2);
@@ -2149,7 +2174,7 @@ fn enum_variant_from_json_struct(
     }
     {
         out.blit(733, 2);
-        emit_generic_args(out, &used_generics);
+        emit_generic_params(out, &used_generics);
         out.blit_punct(5);
         {
             let at = out.buf.len();

@@ -277,16 +277,29 @@ pub fn valid() -> Vec<Case> {
     ));
 
     // --- const generics ---
-    // `<const N: usize>` (valid Rust) is REJECTED: the condition at
-    // ast.rs `extract_derive_target` is inverted (`if ident_eq(ident,"const")
-    // { throw }`), so `const N` throws while a nonsensical two-ident param is
-    // accepted *as* a const generic. The rejection is driven in `errors()`; the
-    // `<A B>` quirk below drives the `GenericKind::Const` codegen branch
-    // (`fmt_generics`), which is otherwise unreachable from valid syntax. See
-    // docs/known-issues.md.
+    // `<const N: usize>` is supported. These drive the `GenericKind::Const`
+    // codegen branch (`fmt_generics`) across declaration position (`impl<…>`,
+    // `type __TEMP<…>`) and type-argument position (`Type<N>`, `offset_of`). A
+    // nonsensical two-ident param such as `<A B>` is rejected in `errors()`.
     out.push(ok(
-        "const_generic_quirk",
-        "#[derive(jsony::Jsony)] #[jsony(Json)] struct CGQ<A B> { a: u32 }",
+        "const_generic",
+        "#[derive(jsony::Jsony)] #[jsony(Json)] struct CG<const N: usize> { a: u32 }",
+    ));
+    out.push(ok(
+        "const_generic_in_field",
+        "#[derive(jsony::Jsony)] #[jsony(Json)] struct CG2<const N: usize> { a: [u32; N] }",
+    ));
+    out.push(ok(
+        "const_generic_default",
+        "#[derive(jsony::Jsony)] #[jsony(Json)] struct CG3<const N: usize = 4> { a: u32 }",
+    ));
+    out.push(ok(
+        "const_generic_mixed",
+        "#[derive(jsony::Jsony)] #[jsony(Json)] struct CG4<'a, T, const N: usize> { t: T, s: &'a str, a: [u32; N] }",
+    ));
+    out.push(ok(
+        "const_generic_enum_struct_variant",
+        "#[derive(jsony::Jsony)] #[jsony(Json)] enum CGE<const N: usize> { V { a: [u32; N] } }",
     ));
 
     // --- Empty tuple struct ToJson (FromJson rejects it; ToJson is fine) ---
@@ -732,12 +745,12 @@ pub fn errors() -> Vec<Case> {
     ));
 
     // --- structural parse (ast.rs extract_derive_target) ---
-    // Valid const-generic syntax is rejected (inverted condition); drives the
-    // `unexpected ident` throw. See docs/known-issues.md.
+    // A two-ident generic param that is not `const N` is nonsensical and
+    // rejected with `unexpected ident` (valid `const N: usize` is in `valid()`).
     out.push(err(
-        "const_generic_rejected",
+        "two_ident_generic_rejected",
         "unexpected ident",
-        "#[derive(jsony::Jsony)] #[jsony(Json)] struct CG<const N: usize> { a: u32 }",
+        "#[derive(jsony::Jsony)] #[jsony(Json)] struct CGQ<A B> { a: u32 }",
     ));
     out.push(err(
         "empty_body",

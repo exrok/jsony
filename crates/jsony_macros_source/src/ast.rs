@@ -653,7 +653,7 @@ pub fn extract_derive_target<'a>(
             TokenTree::Ident(ident) => match next!(toks) {
                 TokenTree::Group(_) => throw!("Unexpected group"),
                 TokenTree::Ident(next_ident) => {
-                    if ident_eq(ident, "const") {
+                    if !ident_eq(ident, "const") {
                         throw!("unexpected ident", &next_ident)
                     }
                     (GenericKind::Const, next_ident, false)
@@ -740,6 +740,12 @@ pub fn extract_derive_target<'a>(
         }
         let from = toks.as_slice();
         let mut depth = 0i32;
+        // A const generic stores its type (the tokens after `:`) in `bounds`.
+        // When a default follows (`const N: usize = 4`) the `=` branch sets
+        // `keep = false`, which would otherwise let the trailing reassignments
+        // clobber the type back to empty. `locked` retains the captured type and
+        // drops the default, which an impl header could not carry anyway.
+        let mut locked = false;
         loop {
             let tok = next!(toks);
             if let TokenTree::Punct(p) = &tok {
@@ -753,17 +759,20 @@ pub fn extract_derive_target<'a>(
                                 &[]
                             };
                             keep = false;
+                            locked = matches!(generic.kind, GenericKind::Const);
                         }
                     }
                     b'<' => depth += 1,
                     b'>' => {
                         depth -= 1;
                         if depth < 0 {
-                            generic.bounds = if keep {
-                                &from[..(from.len() - toks.len()) - 1]
-                            } else {
-                                &[]
-                            };
+                            if !locked {
+                                generic.bounds = if keep {
+                                    &from[..(from.len() - toks.len()) - 1]
+                                } else {
+                                    &[]
+                                };
+                            }
                             break 'parsing_generics;
                         }
                     }
@@ -771,11 +780,13 @@ pub fn extract_derive_target<'a>(
                 }
             }
         }
-        generic.bounds = if keep {
-            &from[..(from.len() - toks.len()) - 1]
-        } else {
-            &[]
-        };
+        if !locked {
+            generic.bounds = if keep {
+                &from[..(from.len() - toks.len()) - 1]
+            } else {
+                &[]
+            };
+        }
     }
     match next!(toks) {
         TokenTree::Group(group) => {
