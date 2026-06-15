@@ -730,28 +730,19 @@ pub fn catalog() -> Vec<DiagCase> {
         )],
     ));
 
-    // 27. A field version greater than the container version. The message is
-    //     correct, but the check is raised with no span (`Error::msg`), so its
-    //     primary span lands on the derive path rather than the offending field.
-    //     Same span limitation as `field_missing_tojson`: deferred-by-cost.
-    out.push(
-        case(
-            "field_version_exceeds_container",
-            src(
-                "",
-                "#[derive(jsony::Jsony)]\n#[jsony(Binary, version = 1)]\nstruct Probe { a: u32, #[jsony(version = 2)] b: u32 }",
-            ),
-            vec![Expect::within(
-                "greater than container version",
-                "version = 2",
-            )],
-        )
-        .known(
-            "the field-version-exceeds-container check uses Error::msg with no \
-             span, so its primary span lands on the derive path rather than the \
-             offending field version; the message itself is correct",
+    // 27. A field version greater than the container version. The macro owns this
+    //     span and points it at the offending field version.
+    out.push(case(
+        "field_version_exceeds_container",
+        src(
+            "",
+            "#[derive(jsony::Jsony)]\n#[jsony(Binary, version = 1)]\nstruct Probe { a: u32, #[jsony(version = 2)] b: u32 }",
         ),
-    );
+        vec![Expect::within(
+            "greater than container version",
+            "version = 2",
+        )],
+    ));
 
     // 28. `zerocopy` with a non-POD field. The ideal error points at the offending
     //     field; the POD const-assert is an E0080 const-eval panic whose span is
@@ -772,24 +763,16 @@ pub fn catalog() -> Vec<DiagCase> {
         ),
     );
 
-    // 29. `zerocopy` without `repr(C)`. The macro owns this message; the ideal
-    //     points at the missing repr / the `zerocopy` attribute. Currently the
-    //     error originates at the derive macro, so it lands on the derive path.
-    out.push(
-        case(
-            "zerocopy_missing_repr_c",
-            src(
-                "",
-                "#[derive(jsony::Jsony)]\n#[jsony(Binary, zerocopy)]\nstruct Probe { a: u32, b: u32 }",
-            ),
-            vec![Expect::within("repr(transparent) or repr(C)", "zerocopy")],
-        )
-        .known(
-            "the repr(C)/repr(transparent) requirement error originates at the \
-             derive macro, so its primary span lands on the derive path rather \
-             than the `zerocopy` attribute; the message itself is correct",
+    // 29. `zerocopy` without `repr(C)`. The macro owns this message and points it
+    //     at the `zerocopy` attribute that demands the repr.
+    out.push(case(
+        "zerocopy_missing_repr_c",
+        src(
+            "",
+            "#[derive(jsony::Jsony)]\n#[jsony(Binary, zerocopy)]\nstruct Probe { a: u32, b: u32 }",
         ),
-    );
+        vec![Expect::within("repr(transparent) or repr(C)", "zerocopy")],
+    ));
 
     // 30. `zerocopy` over a struct with implicit padding (`u8` then `u32`). The
     //     ideal points at the gap; the E0080 const-eval panic's span is the derive

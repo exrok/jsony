@@ -482,6 +482,35 @@ fn untagged_all_struct_variants() {
 }
 
 #[test]
+fn untagged_unit_variant() {
+    // An untagged unit variant matches JSON `null` (serde semantics): it decodes
+    // from `null` and encodes to `null`, and a non-`null` value falls through to
+    // the next variant instead of being shadowed.
+    #[derive(Jsony, Debug, PartialEq)]
+    #[jsony(Json, untagged)]
+    enum Untagged {
+        Num(u32),
+        Nothing,
+        Flag(bool),
+    }
+
+    assert_json_eq!(null, Untagged::Nothing);
+    assert_json_eq!(7, Untagged::Num(7));
+    assert_json_eq!(true, Untagged::Flag(true));
+
+    // The unit variant declared first must still let later variants be reached.
+    #[derive(Jsony, Debug, PartialEq)]
+    #[jsony(Json, untagged)]
+    enum UnitFirst {
+        Nothing,
+        Num(u32),
+    }
+
+    assert_json_eq!(null, UnitFirst::Nothing);
+    assert_json_eq!(5, UnitFirst::Num(5));
+}
+
+#[test]
 fn skip() {
     #[derive(Jsony, PartialEq, Debug)]
     #[jsony(Json)]

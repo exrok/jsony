@@ -155,6 +155,8 @@ pub struct DeriveTargetInner<'a> {
     pub to_str: bool,
     pub from_str: bool,
     pub pod: bool,
+    /// Span of the `zerocopy` attribute, for blaming `repr` errors on it.
+    pub pod_span: Option<Span>,
     pub rename_all: RenameRule,
     pub rename_all_fields: RenameRule,
     pub enum_flags: EnumFlag,
@@ -384,6 +386,7 @@ fn parse_container_attr(
         }
         "zerocopy" => {
             target.pod = true;
+            target.pod_span = Some(attr.span());
         }
         "ignore_tag_adjacent_fields" => {
             target.ignore_tag_adjacent_fields = true;
@@ -1054,6 +1057,7 @@ pub fn scan_fields<'a>(target: &mut DeriveTargetInner<'a>, fields: &mut Vec<Fiel
     }
 
     let mut max_version = target.min_version;
+    let mut max_version_span: Option<Span> = None;
     for field in fields {
         if let Some(version) = field.attr.version() {
             if let Ok(num) = version.to_string().parse::<u16>() {
@@ -1062,6 +1066,7 @@ pub fn scan_fields<'a>(target: &mut DeriveTargetInner<'a>, fields: &mut Vec<Fiel
                 }
                 if max_version < num {
                     max_version = num;
+                    max_version_span = Some(version.span());
                 }
             } else {
                 throw!("Expected a version number between 0-65534" @ version.span())
@@ -1093,6 +1098,9 @@ pub fn scan_fields<'a>(target: &mut DeriveTargetInner<'a>, fields: &mut Vec<Fiel
         if version == u16::MAX {
             target.version = Some(max_version);
         } else if max_version > version {
+            if let Some(span) = max_version_span {
+                throw!("Field version is greater than container version" @ span)
+            }
             throw!("Field version is greater than container version")
         }
     }

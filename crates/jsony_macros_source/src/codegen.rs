@@ -1411,7 +1411,14 @@ fn enum_variant_to_json(
             enum_variant_to_json_struct(out, ctx, variant, text);
         }
         EnumKind::None => {
-            variant_name_json(ctx, variant, text);
+            // Untagged unit variants encode as `null` (serde semantics) so they
+            // round-trip with the untagged decoder, which matches `null`. Every
+            // other tag mode encodes the variant name.
+            if let Tag::Untagged = ctx.target.tag {
+                text.push_str("null");
+            } else {
+                variant_name_json(ctx, variant, text);
+            }
             splat! {
                 out;
                 out.push_str([@Literal::string(&text).into()]);
@@ -1612,23 +1619,42 @@ fn enum_variant_from_json(out: &mut RustWriter, ctx: &Ctx, variant: &EnumVariant
             }
             enum_variant_from_json_struct(out, ctx, variant, untagged);
         }
-        EnumKind::None => splat! {
-            out;
-            [
-                if let Tag::Inline(..) = ctx.target.tag {
-                    if ctx.target.content.is_none() {
-                        splat!{
-                            out;
-                            if let Err(err) = parser.skip_value() {
-                                return Err(err);
-                            }
+        EnumKind::None => {
+            if untagged {
+                // An untagged unit variant matches JSON `null` (serde semantics).
+                // Peek without consuming so a non-`null` value is left intact for
+                // the next variant's `restore_for_retry`. Only `null` consumes the
+                // value and succeeds.
+                splat! {
+                    out;
+                    if let Ok(::jsony::parser::Peek::Null) = parser.peek() {
+                        if let Err(err) = parser.discard_seen_null() {
+                            return Err(err);
                         }
+                        dst.cast::<[ctx.target_type(out)]>().write([#: &ctx.target.name]::[#: variant.name]);
+                        break #success;
                     }
                 }
-            ]
-            dst.cast::<[ctx.target_type(out)]>().write([#: &ctx.target.name]::[#: variant.name]);
-            [?(untagged || ctx.target.ignore_tag_adjacent_fields) break #success]
-        },
+            } else {
+                splat! {
+                    out;
+                    [
+                        if let Tag::Inline(..) = ctx.target.tag {
+                            if ctx.target.content.is_none() {
+                                splat!{
+                                    out;
+                                    if let Err(err) = parser.skip_value() {
+                                        return Err(err);
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                    dst.cast::<[ctx.target_type(out)]>().write([#: &ctx.target.name]::[#: variant.name]);
+                    [?(ctx.target.ignore_tag_adjacent_fields) break #success]
+                }
+            }
+        }
     };
     out.tt_group(Delimiter::Brace, start);
 }
@@ -1759,28 +1785,19 @@ fn enum_from_json(out: &mut RustWriter, ctx: &Ctx, variants: &[EnumVariant]) {
             let outer = out.buf.len();
             splat!(out; let snapshot = parser.snapshot(); #success:);
             let start = out.buf.len();
-            'always_succeed: {
-                for (i, variant) in variants.iter().enumerate() {
-                    if let EnumKind::None = variant.kind {
-                        splat!(
-                            out;
-                            dst.cast::<[ctx.target_type(out)]>().write([#: &ctx.target.name]::[#: variant.name]);
-                        );
-                        break 'always_succeed;
-                    }
-                    splat!(
-                        out;
-                        [?(i != 0) parser.restore_for_retry(&snapshot); ]
-                        [enum_variant_from_json(out, ctx, variant, true)]
-                    )
-                }
+            for (i, variant) in variants.iter().enumerate() {
                 splat!(
                     out;
-                    return Err(&::jsony::json::DecodeError{
-                        message: [@Literal::string("Untagged enum didn't match any variant").into()]
-                    })
+                    [?(i != 0) parser.restore_for_retry(&snapshot); ]
+                    [enum_variant_from_json(out, ctx, variant, true)]
                 )
             }
+            splat!(
+                out;
+                return Err(&::jsony::json::DecodeError{
+                    message: [@Literal::string("Untagged enum didn't match any variant").into()]
+                })
+            );
             out.tt_group(Delimiter::Brace, start);
             splat!(out; Ok(()));
             let ts = out.split_off_stream(outer);
@@ -1956,6 +1973,9 @@ fn handle_pod_binary_any_struct(out: &mut RustWriter, ctx: &Ctx<'_>, fields: &[F
         throw!("Pod derive doesn't support generics or lifetimes yet.");
     }
     if !matches!(ctx.target.repr, ast::Repr::Transparent | ast::Repr::C) {
+        if let Some(span) = ctx.target.pod_span {
+            throw!("Pod type must be either repr(transparent) or repr(C)" @ span)
+        }
         throw!("Pod type must be either repr(transparent) or repr(C)");
     }
     splat!(out;
@@ -2382,6 +2402,7 @@ pub fn inner_derive(stream: TokenStream) -> TokenStream {
         to_json: false,
         to_str: false,
         pod: false,
+        pod_span: None,
         from_str: false,
         enum_flags: 0,
         content: None,

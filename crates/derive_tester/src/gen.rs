@@ -667,9 +667,11 @@ fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> Va
 /// two variants can match the same JSON. Disjointness is guaranteed by
 /// construction, independent of declaration order:
 ///
-///   - At most one variant per JSON scalar kind (`null` / `bool` / `number` /
-///     `string` / `array`). Each scalar-kind newtype carries a fixed,
-///     non-`Option` type so its JSON kind is fixed.
+///   - At most one unit variant, owning the `null` JSON kind (an untagged unit
+///     variant decodes from / encodes to `null`).
+///   - At most one scalar-newtype variant per remaining JSON kind (`bool` /
+///     `number` / `string` / `array`). Each carries a fixed, non-`Option` type
+///     so its JSON kind is fixed.
 ///   - Struct variants get globally-unique field names (prefixed with a
 ///     per-variant counter) and a required anchor field, so an object encoded
 ///     for one variant is missing every other variant's required key and carries
@@ -685,15 +687,13 @@ fn gen_untagged_variants(rng: &mut StdRng) -> Vec<VariantSpec> {
         Type::Vec(&Type::U32), // array kind
     ];
     let mut protos: Vec<(VarKind, Vec<FieldSpec>)> = Vec::new();
-    // NOTE: unit variants are deliberately excluded. jsony's untagged decode
-    // (codegen.rs ~1762) writes a unit variant *unconditionally without consuming
-    // input* and stops generating subsequent variants, so a unit variant neither
-    // matches `null` (the value is left as trailing input) nor lets any later
-    // variant be reached. The correct behavior (serde-style) is unit <-> `null`,
-    // consumed; this is a known jsony gap, surfaced by this harness. Until it is
-    // fixed, untagged enums here use only struct + scalar-newtype variants, whose
-    // disjoint key sets / JSON kinds decode unambiguously.
-    //
+    // At most one unit variant, owning the `null` JSON kind: an untagged unit
+    // variant decodes from `null` and encodes to `null`. Two unit variants would
+    // both match `null` and break disjointness. The scalar slots are non-`Option`
+    // and struct variants require an object, so nothing else claims `null`.
+    if rng.gen_bool(0.5) {
+        protos.push((VarKind::Unit, Vec::new()));
+    }
     // A random subset of the scalar-kind newtypes, each at most once.
     for ty in SCALAR_SLOTS {
         if rng.gen_bool(0.5) {
@@ -731,8 +731,7 @@ fn gen_untagged_variants(rng: &mut StdRng) -> Vec<VariantSpec> {
         // variant would have no required key and match any object (untagged skips
         // unknown keys), shadowing later variants. A required unique anchor per
         // variant is what makes the disjointness reasoning hold.
-        const ANCHOR_TYPES: &[Type<'static>] =
-            &[Type::U32, Type::I64, Type::Bool, Type::String];
+        const ANCHOR_TYPES: &[Type<'static>] = &[Type::U32, Type::I64, Type::Bool, Type::String];
         fields[0].ty = *ANCHOR_TYPES.choose(rng).unwrap();
         fields[0].skip = false;
         fields[0].default = DefaultSpec::None;

@@ -1399,6 +1399,9 @@ impl<'j> Parser<'j> {
     pub fn peek(&mut self) -> JsonResult<Peek> {
         self.at.peek()
     }
+    pub fn discard_seen_null(&mut self) -> JsonResult<()> {
+        self.at.discard_seen_null()
+    }
     /// # Safety
     /// Parser must be at a valid stream typically this enforced by
     /// calling the function immediately after `Parser::peak(..) == Peek::String`

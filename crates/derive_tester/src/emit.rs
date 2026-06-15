@@ -314,7 +314,11 @@ fn emit_version_defs(out: &mut String, name: &str, fam: &VersionFamily) {
         };
         let _ = writeln!(out, "#[derive(jsony::Jsony, PartialEq, Debug)]");
         let _ = writeln!(out, "#[jsony(Binary, {ver})]");
-        let included = fam.fields.iter().enumerate().filter(|(_, f)| f.intro <= schema.cur);
+        let included = fam
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.intro <= schema.cur);
         if fam.tuple {
             let _ = write!(out, "struct {sname}(");
             for (_, f) in included {
@@ -344,7 +348,12 @@ fn version_literal(
     cur: u16,
     value: impl Fn(&crate::gen::VersionField, usize) -> String,
 ) -> String {
-    let included = || fam.fields.iter().enumerate().filter(|(_, f)| f.intro <= cur);
+    let included = || {
+        fam.fields
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.intro <= cur)
+    };
     if fam.tuple {
         let mut s = format!("{sname}(");
         for (i, f) in included() {
@@ -376,7 +385,10 @@ fn version_literal(
 /// One trigger record fires the whole arm; no JSON inputs are consumed.
 fn emit_version_arm(out: &mut String, name: &str, fam: &VersionFamily) {
     let _ = writeln!(out, "        {name:?} => {{");
-    let _ = writeln!(out, "            let before = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(
+        out,
+        "            let before = LIVE.load(Ordering::Relaxed);"
+    );
     for (a, sa) in fam.schemas.iter().enumerate() {
         let va = sa.cur;
         let enc = version_literal(fam, &format!("{name}_S{a}"), sa.cur, |f, _| f.value.clone());
@@ -415,7 +427,9 @@ fn emit_version_arm(out: &mut String, name: &str, fam: &VersionFamily) {
     // result is dropped in-scope so the leak check covers any partial-init drop.
     let max_cur = fam.schemas.iter().map(|s| s.cur).max().unwrap_or(0);
     let big = max_cur as usize;
-    let seed = version_literal(fam, &format!("{name}_S{big}"), max_cur, |f, _| f.value.clone());
+    let seed = version_literal(fam, &format!("{name}_S{big}"), max_cur, |f, _| {
+        f.value.clone()
+    });
     let _ = writeln!(out, "            {{");
     let _ = writeln!(out, "                let full = jsony::to_binary(&{seed});");
     let _ = writeln!(
@@ -440,7 +454,10 @@ fn emit_version_arm(out: &mut String, name: &str, fam: &VersionFamily) {
 /// #[repr(C)]` struct, a `transparent` POD newtype over it, and a `transparent`
 /// newtype over `String` (a non-POD, used to assert `POD` is `false` there).
 fn emit_pod_defs(out: &mut String, name: &str, fam: &PodFamily) {
-    let _ = writeln!(out, "#[derive(jsony::Jsony, PartialEq, Debug, Clone, Copy)]");
+    let _ = writeln!(
+        out,
+        "#[derive(jsony::Jsony, PartialEq, Debug, Clone, Copy)]"
+    );
     let _ = writeln!(out, "#[jsony(Binary, zerocopy)]");
     let _ = writeln!(out, "#[repr(C)]");
     let _ = writeln!(out, "struct {name} {{");
@@ -448,7 +465,10 @@ fn emit_pod_defs(out: &mut String, name: &str, fam: &PodFamily) {
         let _ = writeln!(out, "    f{i}: {},", type_str(f.ty));
     }
     let _ = writeln!(out, "}}");
-    let _ = writeln!(out, "#[derive(jsony::Jsony, PartialEq, Debug, Clone, Copy)]");
+    let _ = writeln!(
+        out,
+        "#[derive(jsony::Jsony, PartialEq, Debug, Clone, Copy)]"
+    );
     let _ = writeln!(out, "#[jsony(Binary, transparent)]");
     let _ = writeln!(out, "#[repr(transparent)]");
     let _ = writeln!(out, "struct {name}T({name});");
@@ -491,7 +511,10 @@ fn emit_pod_arm(out: &mut String, name: &str, fam: &PodFamily) {
     let one = pod_literal(name, fam, 0);
     let two = pod_literal(name, fam, 1);
     let _ = writeln!(out, "        {name:?} => {{");
-    let _ = writeln!(out, "            let before = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(
+        out,
+        "            let before = LIVE.load(Ordering::Relaxed);"
+    );
     // POD const-flags: the struct and its transparent wrapper are POD; the
     // transparent-over-String wrapper is not.
     for ty in [format!("{name}"), format!("{name}T")] {
@@ -512,8 +535,14 @@ fn emit_pod_arm(out: &mut String, name: &str, fam: &PodFamily) {
         out,
         "                let d: {name} = match jsony::from_binary(&b) {{ Ok(v) => v, Err(e) => return Err(format!(\"pod self decode: {{e}}\")) }};"
     );
-    let _ = writeln!(out, "                if d != one {{ return Err(format!(\"pod self mismatch\")); }}");
-    let _ = writeln!(out, "                let tb = jsony::to_binary(&{name}T(one));");
+    let _ = writeln!(
+        out,
+        "                if d != one {{ return Err(format!(\"pod self mismatch\")); }}"
+    );
+    let _ = writeln!(
+        out,
+        "                let tb = jsony::to_binary(&{name}T(one));"
+    );
     let _ = writeln!(
         out,
         "                let td: {name}T = match jsony::from_binary(&tb) {{ Ok(v) => v, Err(e) => return Err(format!(\"pod transparent decode: {{e}}\")) }};"
@@ -522,9 +551,18 @@ fn emit_pod_arm(out: &mut String, name: &str, fam: &PodFamily) {
     let _ = writeln!(out, "            }}");
     // Slice alignment oracle.
     let _ = writeln!(out, "            let inputs: &[{name}] = &[{one}, {two}];");
-    let _ = writeln!(out, "            let align = ::std::mem::align_of::<{name}>();");
-    let _ = writeln!(out, "            let mut storage = ::std::mem::MaybeUninit::<[u64; 256]>::uninit();");
-    let _ = writeln!(out, "            let base = storage.as_mut_ptr() as *mut u8;");
+    let _ = writeln!(
+        out,
+        "            let align = ::std::mem::align_of::<{name}>();"
+    );
+    let _ = writeln!(
+        out,
+        "            let mut storage = ::std::mem::MaybeUninit::<[u64; 256]>::uninit();"
+    );
+    let _ = writeln!(
+        out,
+        "            let base = storage.as_mut_ptr() as *mut u8;"
+    );
     let _ = writeln!(out, "            let mut saw_borrow = false;");
     let _ = writeln!(out, "            let mut saw_copy = false;");
     let _ = writeln!(out, "            for off in 0..8usize {{");
@@ -532,7 +570,10 @@ fn emit_pod_arm(out: &mut String, name: &str, fam: &PodFamily) {
         out,
         "                let region = unsafe {{ ::std::slice::from_raw_parts_mut(base.add(off) as *mut ::std::mem::MaybeUninit<u8>, 2048 - off) }};"
     );
-    let _ = writeln!(out, "                let enc = jsony::to_binary_into(&inputs, region);");
+    let _ = writeln!(
+        out,
+        "                let enc = jsony::to_binary_into(&inputs, region);"
+    );
     let _ = writeln!(
         out,
         "                let slice_ok = match jsony::from_binary::<&[{name}]>(&enc) {{ Ok(s) => {{ if s != inputs {{ return Err(format!(\"pod aligned slice mismatch off={{off}}\")); }} true }} Err(_) => false }};"
@@ -545,7 +586,10 @@ fn emit_pod_arm(out: &mut String, name: &str, fam: &PodFamily) {
         out,
         "                match jsony::from_binary::<Vec<{name}>>(&enc) {{ Ok(v) => {{ if v != inputs {{ return Err(format!(\"pod vec mismatch off={{off}}\")); }} }} Err(e) => return Err(format!(\"pod vec decode off={{off}}: {{e}}\")) }};"
     );
-    let _ = writeln!(out, "                if slice_ok {{ saw_borrow = true; }} else {{ saw_copy = true; }}");
+    let _ = writeln!(
+        out,
+        "                if slice_ok {{ saw_borrow = true; }} else {{ saw_copy = true; }}"
+    );
     let _ = writeln!(out, "            }}");
     let _ = writeln!(out, "            if !saw_borrow {{ return Err(format!(\"pod never borrowed an aligned slice ({name})\")); }}");
     let _ = writeln!(out, "            if align > 1 && !saw_copy {{ return Err(format!(\"pod never hit the unaligned copy path ({name})\")); }}");
