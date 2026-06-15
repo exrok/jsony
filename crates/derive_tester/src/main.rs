@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use derive_tester::run::{self, DiagReport, Report};
+use derive_tester::run::{self, DiagReport, ExpandReport, Report};
 
 fn report(r: &Report) {
     println!(
@@ -20,6 +20,20 @@ fn report(r: &Report) {
             } else {
                 String::new()
             }
+        );
+        std::process::exit(1);
+    }
+}
+
+fn expand_report(r: &ExpandReport) {
+    println!(
+        "derive_tester expand: {} types -> {} derive items expanded, {} bytes generated",
+        r.types, r.items, r.output_bytes
+    );
+    if r.errors > 0 {
+        eprintln!(
+            "{} item(s) expanded to compile_error! (harness/codegen bug)",
+            r.errors
         );
         std::process::exit(1);
     }
@@ -59,6 +73,21 @@ fn main() -> Result<()> {
         let id: u64 = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(0);
         let samples: u32 = args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(4);
         print!("{}", run::emit_case_source(id, samples));
+        return Ok(());
+    }
+
+    // `expand [count]` drives the macro source crate directly, in-process, over
+    // `count` generated types. It compiles nothing: run it under
+    // `cargo +nightly llvm-cov` to quantify which codegen paths the generated
+    // types reach. Reports on its own path. `DT_SEED` pins the id band.
+    if mode == "expand" {
+        let count: u64 = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(1000);
+        let seed: Option<u64> = std::env::var("DT_SEED")
+            .ok()
+            .map(|s| s.parse())
+            .transpose()?;
+        let r = run::expand(count, seed)?;
+        expand_report(&r);
         return Ok(());
     }
 
@@ -104,7 +133,7 @@ fn main() -> Result<()> {
             seed,
         )?,
         other => {
-            bail!("unknown mode: {other} (expected `quick`, `run`/`sound`/`asan <count> [samples] [batch]`, `diag [gen_count]`, or `case <id>`)")
+            bail!("unknown mode: {other} (expected `quick`, `run`/`sound`/`asan <count> [samples] [batch]`, `diag [gen_count]`, `expand [count]`, or `case <id>`)")
         }
     };
     report(&r);

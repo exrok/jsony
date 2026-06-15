@@ -282,12 +282,18 @@ fn binary_hash_collections_break_on_eof_lengths() {
 
 #[test]
 fn binary_btree_collections_roundtrip() {
-    let map: BTreeMap<u32, String> =
-        [(3, "c".to_owned()), (1, "a".to_owned()), (2, "b".to_owned())]
-            .into_iter()
-            .collect();
+    let map: BTreeMap<u32, String> = [
+        (3, "c".to_owned()),
+        (1, "a".to_owned()),
+        (2, "b".to_owned()),
+    ]
+    .into_iter()
+    .collect();
     let bytes = jsony::to_binary(&map);
-    assert_eq!(jsony::from_binary::<BTreeMap<u32, String>>(&bytes).unwrap(), map);
+    assert_eq!(
+        jsony::from_binary::<BTreeMap<u32, String>>(&bytes).unwrap(),
+        map
+    );
 
     let set: BTreeSet<i64> = [5, -1, 3, -1].into_iter().collect();
     let bytes = jsony::to_binary(&set);

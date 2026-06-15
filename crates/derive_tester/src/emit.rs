@@ -285,7 +285,12 @@ fn emit_def(out: &mut String, case: &Case) {
             // The flatten field is declared last, so its inlined keys follow the
             // regular fields in encode order.
             if let Some(fl) = &case.flatten {
-                let _ = writeln!(out, "    #[jsony(flatten)] {}: {},", fl.field, flatten_type(fl));
+                let _ = writeln!(
+                    out,
+                    "    #[jsony(flatten)] {}: {},",
+                    fl.field,
+                    flatten_type(fl)
+                );
             }
             // The skip_if field (mutually exclusive with flatten) is likewise last.
             if let Some(sk) = &case.skip_if {
@@ -738,7 +743,10 @@ fn emit_via_defs(out: &mut String, name: &str) {
 fn emit_via_arm(out: &mut String, name: &str, fam: &ViaFamily) {
     let expected = via_expected(fam);
     let _ = writeln!(out, "        {name:?} => {{");
-    let _ = writeln!(out, "            let before = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(
+        out,
+        "            let before = LIVE.load(Ordering::Relaxed);"
+    );
     // The value and its encoding own heap allocations (the pair strings), so they
     // are scoped to drop before the leak check below.
     let _ = writeln!(out, "            {{");
@@ -816,7 +824,10 @@ fn emit_helper_defs(out: &mut String, name: &str, kind: HelperKind) {
 /// leak check. One trigger record fires the whole arm.
 fn emit_helper_arm(out: &mut String, name: &str, kind: HelperKind) {
     let _ = writeln!(out, "        {name:?} => {{");
-    let _ = writeln!(out, "            let before = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(
+        out,
+        "            let before = LIVE.load(Ordering::Relaxed);"
+    );
     let _ = writeln!(out, "            {{");
     match kind {
         HelperKind::ObjVecString => {
@@ -868,7 +879,10 @@ fn emit_helper_arm(out: &mut String, name: &str, kind: HelperKind) {
                 out,
                 "                let d: {name}<'_> = match jsony::from_json(&s) {{ Ok(v) => v, Err(e) => return Err(format!(\"owned_cow json decode: {{e}}\")) }};"
             );
-            let _ = writeln!(out, "                if d != v {{ return Err(format!(\"owned_cow json mismatch\")); }}");
+            let _ = writeln!(
+                out,
+                "                if d != v {{ return Err(format!(\"owned_cow json mismatch\")); }}"
+            );
             let _ = writeln!(out, "                let b = jsony::to_binary(&v);");
             let _ = writeln!(
                 out,
@@ -1058,6 +1072,18 @@ fn emit_arm(out: &mut String, case: &Case) {
     );
     let _ = writeln!(out, "            Ok(())");
     let _ = writeln!(out, "        }}");
+}
+
+/// The standalone type definition(s) for one case: exactly the items carrying
+/// `#[derive(jsony::Jsony)]`, with none of the batch preamble (allocator,
+/// validators, helper modules). A case can expand to several items (a flatten
+/// companion, the schema structs of a version family, the three POD wrappers).
+/// Used by `run::expand` to drive the derive in-process, so the source needs to
+/// tokenize but never has to type-check or link.
+pub(crate) fn case_source(case: &Case) -> String {
+    let mut out = String::new();
+    emit_def(&mut out, case);
+    out
 }
 
 /// Build the full batch source for the given cases.

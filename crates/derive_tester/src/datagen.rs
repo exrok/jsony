@@ -154,10 +154,7 @@ impl<'a> Struct<'a> {
 /// non-negative. Distinct across `idx` so multi-entry maps keep distinct keys.
 fn map_key_int(k: &Type, idx: usize) -> i64 {
     let i = idx as i64;
-    let signed = matches!(
-        k,
-        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-    );
+    let signed = matches!(k, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128);
     if signed && idx % 2 == 0 {
         -(i + 1)
     } else {
@@ -176,8 +173,16 @@ fn write_map_key(k: &Type, idx: usize, out: &mut TextWriter) {
             format!("m_{idx}").as_str().encode_json__jsony(out);
             out.push_colon();
         }
-        Type::U8 | Type::I8 | Type::U16 | Type::I16 | Type::U32 | Type::I32 | Type::U64
-        | Type::I64 | Type::U128 | Type::I128 => {
+        Type::U8
+        | Type::I8
+        | Type::U16
+        | Type::I16
+        | Type::U32
+        | Type::I32
+        | Type::U64
+        | Type::I64
+        | Type::U128
+        | Type::I128 => {
             let mut buffer = itoa::Buffer::new();
             out.push_str("\"");
             out.push_str(buffer.format(map_key_int(k, idx)));

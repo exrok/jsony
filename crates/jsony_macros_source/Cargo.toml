@@ -3,6 +3,17 @@ name = "jsony_macros_source"
 version = "0.0.0"
 edition = "2021"
 
+# Both targets share the module files. The `bin` is the preprocessor's input
+# (`cargo expand --bin`); the `lib` lets a harness drive the derive in-process
+# for coverage (see crates/derive_tester `expand` mode).
+[lib]
+name = "jsony_macros_source"
+path = "src/lib.rs"
+
+[[bin]]
+name = "jsony_macros_source"
+path = "src/main.rs"
+
 [dependencies]
 proc-macro2 = { version = "1.0.86", default-features = false }
 

@@ -461,9 +461,7 @@ impl FlattenSpec {
     fn has_float(&self) -> bool {
         match &self.kind {
             FlattenKind::Map(ty) => ty_has_float_pub(*ty),
-            FlattenKind::Companion { fields, .. } => {
-                fields.iter().any(|f| ty_has_float_pub(f.ty))
-            }
+            FlattenKind::Companion { fields, .. } => fields.iter().any(|f| ty_has_float_pub(f.ty)),
         }
     }
 }
@@ -1362,9 +1360,8 @@ pub fn case_from_id(id: u64) -> Case {
                 }
             } else {
                 let n = rng.gen_range(1..4);
-                let mut variants: Vec<VariantSpec> = (0..n)
-                    .map(|i| gen_variant(&mut rng, i, repr))
-                    .collect();
+                let mut variants: Vec<VariantSpec> =
+                    (0..n).map(|i| gen_variant(&mut rng, i, repr)).collect();
                 // Optionally designate one unit variant the FromJson catch-all `other`.
                 // Requires another variant to remain (a meaningful enum keeps at least
                 // one concrete arm), so only when there are at least two variants.
@@ -1969,7 +1966,10 @@ fn build_default_eq(case: &Case, seed: u64) -> Option<(String, String)> {
         members.extend(flatten_members(fl, &mut rand));
     }
     if let Some(wp) = &case.with_pair {
-        members.push((rule.apply_to_field(&wp.name), format!("\"{}\"", rand.rng.gen::<u32>())));
+        members.push((
+            rule.apply_to_field(&wp.name),
+            format!("\"{}\"", rand.rng.gen::<u32>()),
+        ));
     }
     let present = render_members(&members);
     members.remove(
@@ -2026,7 +2026,10 @@ fn build_validate_reject(case: &Case, seed: u64) -> Option<String> {
         members.extend(flatten_members(fl, &mut rand));
     }
     if let Some(wp) = &case.with_pair {
-        members.push((rule.apply_to_field(&wp.name), format!("\"{}\"", rand.rng.gen::<u32>())));
+        members.push((
+            rule.apply_to_field(&wp.name),
+            format!("\"{}\"", rand.rng.gen::<u32>()),
+        ));
     }
     Some(render_members(&members))
 }

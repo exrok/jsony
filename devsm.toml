@@ -32,6 +32,14 @@ pwd = "."
 cmd = ["cargo", "run", "-p", "derive_tester", "--release", "--", "quick"]
 require = ["build-jsony-macros"]
 
+# Macro-source coverage: drives `jsony_macros_source`'s derive in-process over
+# generated types (the `expand` mode, no compiler subprocess) and reports
+# branch coverage scoped to the macro-source package. Pass a count as the first
+# script arg (default 1000); `lines` as the second prints uncovered line numbers.
+[action.derive-tester-coverage]
+pwd = "."
+cmd = ["./crates/derive_tester/coverage.sh", "1000", "summary"]
+
 # Larger round-trip sweep (well-formed inputs only).
 [action.derive-tester-full]
 pwd = "."

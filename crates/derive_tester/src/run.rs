@@ -464,6 +464,49 @@ pub fn diag(gen_count: u64, seed: Option<u64>) -> Result<DiagReport> {
     Ok(report)
 }
 
+// --- Direct macro-source driving (coverage) ---
+
+#[derive(Default)]
+pub struct ExpandReport {
+    /// Cases generated (one per id in the band).
+    pub types: u64,
+    /// `#[derive(Jsony)]` items handed to the derive (a case can emit several).
+    pub items: u64,
+    /// Items that expanded to a `compile_error!`. Must be zero: a well-formed
+    /// generated type the derive rejects is a bug in the harness or the codegen.
+    pub errors: u64,
+    /// Total byte length of the generated token streams, summed to keep the
+    /// optimizer from eliding the expansion.
+    pub output_bytes: u64,
+}
+
+/// Drive `jsony_macros_source`'s derive directly, in-process, over `count`
+/// generated cases. No compiler subprocess: each case's type definition is built
+/// as source, tokenized, and expanded by [`jsony_macros_source::expand_str`]. Run
+/// this binary under `cargo +nightly llvm-cov` to measure which codegen paths the
+/// generated types reach. `seed` pins the id band exactly like [`sweep`].
+pub fn expand(count: u64, seed: Option<u64>) -> Result<ExpandReport> {
+    let ids = band(seed, count);
+    let (items, errors, output_bytes) = (ids.start..ids.end)
+        .into_par_iter()
+        .map(|id| {
+            let case = case_from_id(id);
+            let src = crate::emit::case_source(&case);
+            let stats = jsony_macros_source::expand_str(&src);
+            (stats.items, stats.errors, stats.output_bytes)
+        })
+        .reduce(
+            || (0u64, 0u64, 0u64),
+            |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2),
+        );
+    Ok(ExpandReport {
+        types: count,
+        items,
+        errors,
+        output_bytes,
+    })
+}
+
 /// Emit the standalone source for a single case id, plus its sampled inputs as a
 /// trailing comment block, for inspection and reproduction. Includes the
 /// truncated soundness inputs.

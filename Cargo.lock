@@ -122,6 +122,7 @@ dependencies = [
  "bumpalo",
  "itoa",
  "jsony",
+ "jsony_macros_source",
  "proc-macro2 1.0.86",
  "rand",
  "rayon",

@@ -17,6 +17,11 @@ path = "src/main.rs"
 proc-macro2 = { path = "./proc-macro2" }
 # jsony "0.1" resolves to the local crate via the workspace [patch.crates-io].
 jsony = "0.1"
+# The derive macro *source*, driven in-process by the `expand` mode so a coverage
+# tool can measure which codegen paths the generated types exercise. Crosses the
+# boundary only as `&str -> ExpandStats`, so its `proc-macro2` need not match the
+# vendored fork above.
+jsony_macros_source = { path = "../jsony_macros_source" }
 bumpalo = "3.16.0"
 rand = { version = "0.8.5", features = ["small_rng"] }
 itoa = "1.0"
