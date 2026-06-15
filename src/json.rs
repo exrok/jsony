@@ -19,7 +19,7 @@
 //!
 //! ```
 use crate::{
-    parser::InnerParser, text::FromText, text_writer::TextWriter, FromJson, RawJson, ToJson,
+    FromJson, RawJson, ToJson, parser::InnerParser, text::FromText, text_writer::TextWriter,
 };
 use std::{
     alloc::Layout,
@@ -47,9 +47,14 @@ impl<'a, 'b> ParserWithBorrowedKey<'a, 'b> {
         Self { key, parser }
     }
     pub fn key(&self) -> &str {
+        // SAFETY: `ParserWithBorrowedKey` is constructed only by `new`, whose
+        // caller promises that `key` remains valid for this borrow.
         unsafe { &*self.key }
     }
     pub(crate) fn key_with_inner_parser<'c>(&'c mut self) -> (&'c str, &'c mut InnerParser<'a>) {
+        // SAFETY: same constructor invariant as `key`; returning `&mut
+        // InnerParser` is tied to `&mut self`, so it cannot alias another parser
+        // borrow through this wrapper.
         (unsafe { &*self.key }, &mut self.parser.at)
     }
     pub(crate) fn parser<'c>(&'c self) -> &'c Parser<'a> {
@@ -92,16 +97,26 @@ impl<'a> FieldVisitor<'a> for FuncFieldVisitor<'a> {
         &mut self,
         borrowed: ParserWithBorrowedKey<'a, '_>,
     ) -> Result<(), &'static DecodeError> {
+        // SAFETY: `ptr` was supplied with this visitor and remains the same
+        // destination for all visits. The visit function is the matching
+        // type-erased callback for that destination.
         unsafe { (self.visit)(self.ptr, borrowed) }
     }
     fn complete(&mut self) -> Result<(), &'static DecodeError> {
         Ok(())
     }
     unsafe fn destroy(&mut self) {
+        // SAFETY: `destroy` may be called at most once by the `FieldVisitor`
+        // contract, and `drop` matches the destination initialized by the
+        // visitor constructor.
         unsafe { (self.drop)(self.ptr) }
     }
 }
 
+// SAFETY: the visitor constructor writes an empty map into caller-provided
+// storage before any visit callback can observe it. `complete` for
+// `FuncFieldVisitor` always succeeds, so the trait's initialization guarantee is
+// satisfied; `destroy` drops that initialized map at most once on error.
 unsafe impl<'a, K, T> FromJsonFieldVisitor<'a> for BTreeMap<K, T>
 where
     K: FromText<'a> + Ord + Eq,
@@ -110,11 +125,18 @@ where
     type Visitor = FuncFieldVisitor<'a>;
 
     unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Visitor {
-        ptr.cast::<Self>().write(Self::new());
+        // SAFETY: the caller provides writable storage for `Self`; the visitor
+        // initializes the map before any visit callback can access it.
+        unsafe {
+            ptr.cast::<Self>().write(Self::new());
+        }
         // this common pattern can be generalized safely once we get safe transmute
         FuncFieldVisitor {
             visit: |ptr, mut borrowed| {
-                let map = &mut *ptr.cast::<Self>().as_ptr();
+                // SAFETY: `new_field_visitor` initialized `ptr` as `Self`, and
+                // visitor callbacks are invoked with unique access to the
+                // destination being decoded.
+                let map = unsafe { &mut *ptr.cast::<Self>().as_ptr() };
                 let (key, at) = borrowed.key_with_inner_parser();
                 let key = K::from_text(&mut at.ctx, key)?;
                 let value = T::decode_json(borrowed.into_parser())?;
@@ -123,13 +145,20 @@ where
             },
             drop: |ptr| {
                 let map = ptr.cast::<Self>();
-                std::ptr::drop_in_place(map.as_ptr());
+                // SAFETY: the visitor constructor initialized `ptr` as `Self`,
+                // and `destroy` is called at most once on the error path.
+                unsafe {
+                    std::ptr::drop_in_place(map.as_ptr());
+                }
             },
             ptr,
         }
     }
 }
 
+// SAFETY: same visitor invariant as `BTreeMap`: storage is initialized with an
+// empty map before callbacks run, and the type-erased destroy callback drops it
+// at most once if object decoding fails.
 unsafe impl<'a, K, T> FromJsonFieldVisitor<'a> for HashMap<K, T>
 where
     K: FromText<'a> + Hash + Eq,
@@ -138,11 +167,18 @@ where
     type Visitor = FuncFieldVisitor<'a>;
 
     unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Visitor {
-        ptr.cast::<Self>().write(Self::new());
+        // SAFETY: the caller provides writable storage for `Self`; the visitor
+        // initializes the map before any visit callback can access it.
+        unsafe {
+            ptr.cast::<Self>().write(Self::new());
+        }
         // this common pattern can be generalized safely once we get safe transmute
         FuncFieldVisitor {
             visit: |ptr, mut borrowed| {
-                let map = &mut *ptr.cast::<Self>().as_ptr();
+                // SAFETY: `new_field_visitor` initialized `ptr` as `Self`, and
+                // visitor callbacks are invoked with unique access to the
+                // destination being decoded.
+                let map = unsafe { &mut *ptr.cast::<Self>().as_ptr() };
                 let (field, at) = borrowed.key_with_inner_parser();
                 let key = K::from_text(&mut at.ctx, field)?;
                 let value = T::decode_json(borrowed.into_parser())?;
@@ -151,13 +187,20 @@ where
             },
             drop: |ptr| {
                 let map = ptr.cast::<Self>();
-                std::ptr::drop_in_place(map.as_ptr());
+                // SAFETY: the visitor constructor initialized `ptr` as `Self`,
+                // and `destroy` is called at most once on the error path.
+                unsafe {
+                    std::ptr::drop_in_place(map.as_ptr());
+                }
             },
             ptr,
         }
     }
 }
 
+// SAFETY: the visitor constructor initializes the destination as an empty Vec
+// before any pushed entry; `complete` therefore returns only after `Self` is
+// initialized, and `destroy` drops the Vec at most once on error.
 unsafe impl<'a, K, T> FromJsonFieldVisitor<'a> for Vec<(K, T)>
 where
     K: FromText<'a>,
@@ -166,11 +209,18 @@ where
     type Visitor = FuncFieldVisitor<'a>;
 
     unsafe fn new_field_visitor(ptr: NonNull<()>, _parser: &Parser<'a>) -> Self::Visitor {
-        ptr.cast::<Self>().write(Self::new());
+        // SAFETY: the caller provides writable storage for `Self`; the visitor
+        // initializes the Vec before any visit callback can access it.
+        unsafe {
+            ptr.cast::<Self>().write(Self::new());
+        }
         // this common pattern can be generalized safely once we get safe transmute
         FuncFieldVisitor {
             visit: |ptr, mut borrowed| {
-                let map = &mut *ptr.cast::<Self>().as_ptr();
+                // SAFETY: `new_field_visitor` initialized `ptr` as `Self`, and
+                // visitor callbacks are invoked with unique access to the
+                // destination being decoded.
+                let map = unsafe { &mut *ptr.cast::<Self>().as_ptr() };
                 let (field, at) = borrowed.key_with_inner_parser();
                 let key = K::from_text(&mut at.ctx, field)?;
                 let value = T::decode_json(borrowed.into_parser())?;
@@ -179,7 +229,11 @@ where
             },
             drop: |ptr| {
                 let map = ptr.cast::<Self>();
-                std::ptr::drop_in_place(map.as_ptr());
+                // SAFETY: the visitor constructor initialized `ptr` as `Self`,
+                // and `destroy` is called at most once on the error path.
+                unsafe {
+                    std::ptr::drop_in_place(map.as_ptr());
+                }
             },
             ptr,
         }
@@ -224,6 +278,9 @@ static STRING_CONTAINS_INVALID_ESCAPE_LITERALS: DecodeError = DecodeError {
 macro_rules! direct_impl_integer_decode {
     ($($ty:ty),*) => {
         $(
+            // SAFETY: on success the parsed numeric value is written exactly
+            // once into caller-provided `$ty` storage. On parse or parser
+            // failure, this returns `Err` before initializing `dest`.
             unsafe impl<'a> FromJson<'a> for $ty {
                 unsafe fn emplace_from_json(
                     dest: NonNull<()>,
@@ -232,7 +289,11 @@ macro_rules! direct_impl_integer_decode {
                     match parser.at.consume_numeric_literal() {
                         Ok(value) => {
                             if let Ok(numeric) = value.parse::<$ty>() {
-                                dest.cast::<$ty>().write(numeric);
+                                // SAFETY: `FromJson::emplace_from_json` callers
+                                // provide writable storage for the target type.
+                                unsafe {
+                                    dest.cast::<$ty>().write(numeric);
+                                }
                                 return Ok(());
                             }
                             Err(&INVALID_NUMERIC_LITERAL)
@@ -249,6 +310,9 @@ direct_impl_integer_decode! {
     i128, u128, u64, i64, f32, f64, u32, i32, u16, i16, u8, i8, isize, usize
 }
 
+// SAFETY: on success the parsed string is converted through `Path::new(...).into()`
+// and written exactly once into caller-provided `Box<Path>` storage. Errors
+// return before initializing `dest`.
 unsafe impl<'a> FromJson<'a> for Box<std::path::Path> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -256,14 +320,21 @@ unsafe impl<'a> FromJson<'a> for Box<std::path::Path> {
     ) -> Result<(), &'static DecodeError> {
         match parser.at.take_string(&mut parser.scratch) {
             Ok(string) => {
-                dest.cast::<Box<std::path::Path>>()
-                    .write(std::path::Path::new(string).into());
+                // SAFETY: `FromJson::emplace_from_json` callers provide
+                // writable storage for the target type.
+                unsafe {
+                    dest.cast::<Box<std::path::Path>>()
+                        .write(std::path::Path::new(string).into());
+                }
                 Ok(())
             }
             Err(err) => Err(err),
         }
     }
 }
+// SAFETY: on success the parsed string is converted to a `PathBuf` and written
+// exactly once into caller-provided storage. Parser errors return before
+// initializing `dest`.
 unsafe impl<'a> FromJson<'a> for PathBuf {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -271,13 +342,20 @@ unsafe impl<'a> FromJson<'a> for PathBuf {
     ) -> Result<(), &'static DecodeError> {
         match parser.at.take_string(&mut parser.scratch) {
             Ok(string) => {
-                dest.cast::<PathBuf>().write(PathBuf::from(string));
+                // SAFETY: `dest` is writable storage for `PathBuf` by the
+                // trait method contract.
+                unsafe {
+                    dest.cast::<PathBuf>().write(PathBuf::from(string));
+                }
                 Ok(())
             }
             Err(err) => Err(err),
         }
     }
 }
+// SAFETY: `take_borrowed_string` returns a valid `&'a str` borrowed from the
+// parser input. On success it is written exactly once into caller-provided
+// storage; errors return before initialization.
 unsafe impl<'a> FromJson<'a> for &'a str {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -285,7 +363,11 @@ unsafe impl<'a> FromJson<'a> for &'a str {
     ) -> Result<(), &'static DecodeError> {
         match parser.take_borrowed_string() {
             Ok(raw_str) => {
-                dest.cast::<&str>().write(raw_str);
+                // SAFETY: `dest` is writable storage for `&str` by the trait
+                // method contract.
+                unsafe {
+                    dest.cast::<&str>().write(raw_str);
+                }
                 Ok(())
             }
             Err(err) => Err(err),
@@ -293,6 +375,9 @@ unsafe impl<'a> FromJson<'a> for &'a str {
     }
 }
 
+// SAFETY: `take_string` returns valid UTF-8, which is copied into an owned
+// `String` and written exactly once on success. Errors return before
+// initializing `dest`.
 unsafe impl<'a> FromJson<'a> for String {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -300,7 +385,11 @@ unsafe impl<'a> FromJson<'a> for String {
     ) -> Result<(), &'static DecodeError> {
         match parser.take_string() {
             Ok(raw_str) => {
-                dest.cast::<String>().write(String::from(raw_str));
+                // SAFETY: `dest` is writable storage for `String` by the trait
+                // method contract.
+                unsafe {
+                    dest.cast::<String>().write(String::from(raw_str));
+                }
                 Ok(())
             }
             Err(err) => Err(err),
@@ -308,34 +397,55 @@ unsafe impl<'a> FromJson<'a> for String {
     }
 }
 
+// SAFETY: `Vec<T>::decode_json` either returns a fully initialized Vec whose
+// elements satisfy `T: FromJson`, or an error. Only the success path writes the
+// resulting boxed slice into `dest`.
 unsafe impl<'a, T: FromJson<'a>> FromJson<'a> for Box<[T]> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
         match <Vec<T> as FromJson<'a>>::decode_json(parser) {
-            Ok(value) => unsafe { dest.cast::<Box<[T]>>().write(value.into_boxed_slice()) },
+            Ok(value) => {
+                // SAFETY: `dest` is writable storage for `Box<[T]>` by the
+                // trait method contract.
+                unsafe { dest.cast::<Box<[T]>>().write(value.into_boxed_slice()) }
+            }
             Err(err) => return Err(err),
         }
         Ok(())
     }
 }
 
+// SAFETY: the uninitialized Box supplies writable storage for `T`; the value is
+// assumed initialized only after `T::emplace_from_json` returns `Ok`. The
+// outer `dest` is written only after that success.
 unsafe impl<'a, T: Sized + FromJson<'a>> FromJson<'a> for Box<T> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
         let mut raw = Box::<T>::new_uninit();
-        <T as FromJson<'a>>::emplace_from_json(
-            NonNull::new_unchecked(raw.as_mut_ptr()).cast(),
-            parser,
-        )?;
-        dest.cast::<Box<T>>().write(raw.assume_init());
+        // SAFETY: `raw` provides valid uninitialized storage for `T`; on
+        // success `T::emplace_from_json` initializes it.
+        unsafe {
+            <T as FromJson<'a>>::emplace_from_json(
+                NonNull::new_unchecked(raw.as_mut_ptr()).cast(),
+                parser,
+            )?;
+        }
+        // SAFETY: the emplace call above succeeded, so `raw` is initialized,
+        // and `dest` is writable storage for `Box<T>`.
+        unsafe {
+            dest.cast::<Box<T>>().write(raw.assume_init());
+        }
         Ok(())
     }
 }
 
+// SAFETY: `take_string` returns valid UTF-8, which is converted to an owned
+// `Box<str>` and written exactly once on success. Errors return before
+// initializing `dest`.
 unsafe impl<'a> FromJson<'a> for Box<str> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -343,7 +453,11 @@ unsafe impl<'a> FromJson<'a> for Box<str> {
     ) -> Result<(), &'static DecodeError> {
         match parser.take_string() {
             Ok(raw_str) => {
-                dest.cast::<Box<str>>().write(raw_str.into());
+                // SAFETY: `dest` is writable storage for `Box<str>` by the
+                // trait method contract.
+                unsafe {
+                    dest.cast::<Box<str>>().write(raw_str.into());
+                }
                 Ok(())
             }
             Err(err) => Err(err),
@@ -351,6 +465,9 @@ unsafe impl<'a> FromJson<'a> for Box<str> {
     }
 }
 
+// SAFETY: `take_cow_string` returns a valid borrowed or owned `Cow<'a, str>`.
+// The destination is written exactly once on success and left uninitialized on
+// parser errors.
 unsafe impl<'a> FromJson<'a> for Cow<'a, str> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -358,7 +475,11 @@ unsafe impl<'a> FromJson<'a> for Cow<'a, str> {
     ) -> Result<(), &'static DecodeError> {
         match parser.take_cow_string() {
             Ok(raw_str) => {
-                dest.cast::<Cow<str>>().write(raw_str);
+                // SAFETY: `dest` is writable storage for `Cow<str>` by the
+                // trait method contract.
+                unsafe {
+                    dest.cast::<Cow<str>>().write(raw_str);
+                }
                 Ok(())
             }
             Err(err) => Err(err),
@@ -399,6 +520,10 @@ unsafe fn zero_sized_type_erased_decode_vec<'de>(
             Err(err) => break 'failure Err(err),
         };
         while value.is_some() {
+            // SAFETY: `dangling` is aligned as requested by the caller for the
+            // zero-sized element type. ZST emplace functions may form references
+            // to the destination, so alignment still matters; no bytes are
+            // actually written.
             unsafe {
                 if let Err(err) = emplace_from_json(NonNull::new_unchecked(dangling).cast(), parser)
                 {
@@ -424,7 +549,11 @@ unsafe fn type_erased_decode_vec<'de>(
     parser: &mut Parser<'de>,
 ) -> ((*mut u8, usize, usize), Result<(), &'static DecodeError>) {
     if layout.size() == 0 {
-        return zero_sized_type_erased_decode_vec(layout.align(), emplace_from_json, parser);
+        // SAFETY: the same `layout`/emplace pairing required by this function
+        // is forwarded to the ZST-specialized helper.
+        return unsafe {
+            zero_sized_type_erased_decode_vec(layout.align(), emplace_from_json, parser)
+        };
     }
     let max_cap = MAX_SIZE / layout.size();
     let mut ptr: *mut u8 = std::ptr::without_provenance_mut(layout.align());
@@ -436,6 +565,10 @@ unsafe fn type_erased_decode_vec<'de>(
             Err(err) => break 'failure Err(err),
         };
         while value.is_some() {
+            // SAFETY: allocation/reallocation uses `layout` and a capacity that
+            // is bounded so `layout.size() * capacity <= MAX_SIZE`. `len` is
+            // incremented only after a successful emplace, preserving the
+            // initialized-prefix invariant for the returned raw Vec parts.
             unsafe {
                 if len == capacity {
                     if capacity == 0 {
@@ -490,19 +623,33 @@ unsafe fn type_erased_decode_vec<'de>(
     ((ptr, len, capacity), value)
 }
 
+// SAFETY: `type_erased_decode_vec` returns raw Vec parts for `T` with exactly
+// `len` initialized elements. Constructing the Vec transfers cleanup of that
+// prefix to safe Vec drop; `dest` is written only when decoding succeeded.
 unsafe impl<'de, T: FromJson<'de>> FromJson<'de> for Vec<T> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        let ((ptr, len, cap), result) = type_erased_decode_vec(
-            Layout::new::<T>(),
-            <T as FromJson<'de>>::emplace_from_json,
-            parser,
-        );
-        let vec = Vec::from_raw_parts(ptr as *mut T, len, cap);
+        // SAFETY: `Layout::new::<T>()` matches `T::emplace_from_json`. The
+        // helper returns raw Vec parts whose initialized prefix is exactly
+        // `len`, even on error.
+        let ((ptr, len, cap), result) = unsafe {
+            type_erased_decode_vec(
+                Layout::new::<T>(),
+                <T as FromJson<'de>>::emplace_from_json,
+                parser,
+            )
+        };
+        // SAFETY: raw parts came from `type_erased_decode_vec` for `T`, with
+        // `len` initialized elements and `cap` matching the allocation.
+        let vec = unsafe { Vec::from_raw_parts(ptr as *mut T, len, cap) };
         if result.is_ok() {
-            dest.cast::<Vec<T>>().write(vec);
+            // SAFETY: `dest` is writable storage for `Vec<T>` by the trait
+            // method contract.
+            unsafe {
+                dest.cast::<Vec<T>>().write(vec);
+            }
             Ok(())
         } else {
             result
@@ -510,18 +657,29 @@ unsafe impl<'de, T: FromJson<'de>> FromJson<'de> for Vec<T> {
     }
 }
 
+// SAFETY: the map is initialized in `dest` before object decoding begins. On
+// decode failure it is dropped before returning `Err`; on success it remains in
+// `dest`, satisfying `FromJson`'s initialization contract.
 unsafe impl<'de, K: FromJson<'de> + Ord, V: FromJson<'de>> FromJson<'de> for BTreeMap<K, V> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        dest.cast::<BTreeMap<K, V>>().write(BTreeMap::new());
-        let map = &mut *dest.cast::<BTreeMap<K, V>>().as_ptr();
+        // SAFETY: `dest` is writable storage for `BTreeMap<K, V>` by the trait
+        // method contract.
+        unsafe {
+            dest.cast::<BTreeMap<K, V>>().write(BTreeMap::new());
+        }
+        // SAFETY: the map was initialized immediately above, and this method
+        // has exclusive access to the destination until it returns.
+        let map = unsafe { &mut *dest.cast::<BTreeMap<K, V>>().as_ptr() };
         let result = parser.decode_object_sequence(|k, v| {
             map.insert(k, v);
             Ok(())
         });
         if result.is_err() {
+            // SAFETY: the map was initialized before decoding began and has not
+            // been moved out on this error path.
             unsafe {
                 std::ptr::drop_in_place(dest.cast::<BTreeMap<K, V>>().as_ptr());
             }
@@ -529,18 +687,28 @@ unsafe impl<'de, K: FromJson<'de> + Ord, V: FromJson<'de>> FromJson<'de> for BTr
         result
     }
 }
+// SAFETY: the set is initialized in `dest` before decoding begins. On failure
+// it is dropped before returning `Err`; on success it remains initialized.
 unsafe impl<'de, K: FromJson<'de> + Ord> FromJson<'de> for BTreeSet<K> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        dest.cast::<BTreeSet<K>>().write(BTreeSet::new());
-        let map = &mut *dest.cast::<BTreeSet<K>>().as_ptr();
+        // SAFETY: `dest` is writable storage for `BTreeSet<K>` by the trait
+        // method contract.
+        unsafe {
+            dest.cast::<BTreeSet<K>>().write(BTreeSet::new());
+        }
+        // SAFETY: the set was initialized immediately above, and this method
+        // has exclusive access to the destination until it returns.
+        let map = unsafe { &mut *dest.cast::<BTreeSet<K>>().as_ptr() };
         let result = parser.decode_array_sequence(|k| {
             map.insert(k);
             Ok(())
         });
         if result.is_err() {
+            // SAFETY: the set was initialized before decoding began and has not
+            // been moved out on this error path.
             unsafe {
                 std::ptr::drop_in_place(dest.cast::<BTreeSet<K>>().as_ptr());
             }
@@ -548,6 +716,8 @@ unsafe impl<'de, K: FromJson<'de> + Ord> FromJson<'de> for BTreeSet<K> {
         result
     }
 }
+// SAFETY: the set is initialized in `dest` before decoding begins. On failure
+// it is dropped before returning `Err`; on success it remains initialized.
 unsafe impl<'de, K: FromJson<'de> + Eq + Hash, S: Default + BuildHasher + 'de> FromJson<'de>
     for HashSet<K, S>
 {
@@ -555,13 +725,21 @@ unsafe impl<'de, K: FromJson<'de> + Eq + Hash, S: Default + BuildHasher + 'de> F
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        dest.cast::<HashSet<K, S>>().write(HashSet::default());
-        let map = &mut *dest.cast::<HashSet<K, S>>().as_ptr();
+        // SAFETY: `dest` is writable storage for `HashSet<K, S>` by the trait
+        // method contract.
+        unsafe {
+            dest.cast::<HashSet<K, S>>().write(HashSet::default());
+        }
+        // SAFETY: the set was initialized immediately above, and this method
+        // has exclusive access to the destination until it returns.
+        let map = unsafe { &mut *dest.cast::<HashSet<K, S>>().as_ptr() };
         let result = parser.decode_array_sequence(|k| {
             map.insert(k);
             Ok(())
         });
         if result.is_err() {
+            // SAFETY: the set was initialized before decoding began and has not
+            // been moved out on this error path.
             unsafe {
                 std::ptr::drop_in_place(dest.cast::<HashSet<K, S>>().as_ptr());
             }
@@ -570,6 +748,9 @@ unsafe impl<'de, K: FromJson<'de> + Eq + Hash, S: Default + BuildHasher + 'de> F
     }
 }
 
+// SAFETY: the map is initialized in `dest` before object decoding begins. On
+// decode failure it is dropped before returning `Err`; on success it remains in
+// `dest`, satisfying `FromJson`'s initialization contract.
 unsafe impl<'de, K: FromJson<'de> + Eq + Hash, V: FromJson<'de>, S: Default + BuildHasher + 'de>
     FromJson<'de> for HashMap<K, V, S>
 {
@@ -577,13 +758,21 @@ unsafe impl<'de, K: FromJson<'de> + Eq + Hash, V: FromJson<'de>, S: Default + Bu
         dest: NonNull<()>,
         parser: &mut Parser<'de>,
     ) -> Result<(), &'static DecodeError> {
-        dest.cast::<HashMap<K, V, S>>().write(HashMap::default());
-        let map = &mut *dest.cast::<HashMap<K, V, S>>().as_ptr();
+        // SAFETY: `dest` is writable storage for `HashMap<K, V, S>` by the
+        // trait method contract.
+        unsafe {
+            dest.cast::<HashMap<K, V, S>>().write(HashMap::default());
+        }
+        // SAFETY: the map was initialized immediately above, and this method
+        // has exclusive access to the destination until it returns.
+        let map = unsafe { &mut *dest.cast::<HashMap<K, V, S>>().as_ptr() };
         let result = parser.decode_object_sequence(|k, v| {
             map.insert(k, v);
             Ok(())
         });
         if result.is_err() {
+            // SAFETY: the map was initialized before decoding began and has not
+            // been moved out on this error path.
             unsafe {
                 std::ptr::drop_in_place(dest.cast::<HashMap<K, V, S>>().as_ptr());
             }
@@ -592,6 +781,9 @@ unsafe impl<'de, K: FromJson<'de> + Eq + Hash, V: FromJson<'de>, S: Default + Bu
     }
 }
 
+// SAFETY: this writes `None` immediately for JSON null. For non-null input it
+// uses `MaybeUninit<T>` and constructs `Some(T)` only after `T` was initialized
+// successfully, leaving `dest` uninitialized on errors.
 unsafe impl<'a, T: FromJson<'a>> FromJson<'a> for Option<T> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -602,17 +794,27 @@ unsafe impl<'a, T: FromJson<'a>> FromJson<'a> for Option<T> {
                 if let Err(err) = parser.at.discard_seen_null() {
                     return Err(err);
                 }
-                dest.cast::<Option<T>>().write(None);
+                // SAFETY: `dest` is writable storage for `Option<T>` by the
+                // trait method contract.
+                unsafe {
+                    dest.cast::<Option<T>>().write(None);
+                }
                 Ok(())
             }
             Ok(_) => {
                 let mut value = std::mem::MaybeUninit::<T>::uninit();
-                if let Err(err) =
+                // SAFETY: `value` is valid uninitialized storage for `T`; on
+                // success the emplace call initializes it.
+                if let Err(err) = unsafe {
                     T::emplace_from_json(NonNull::new_unchecked(value.as_mut_ptr()).cast(), parser)
-                {
+                } {
                     return Err(err);
                 };
-                dest.cast::<Option<T>>().write(Some(value.assume_init()));
+                // SAFETY: the emplace call succeeded, so `value` is
+                // initialized, and `dest` is writable storage for `Option<T>`.
+                unsafe {
+                    dest.cast::<Option<T>>().write(Some(value.assume_init()));
+                }
                 Ok(())
             }
             Err(err) => Err(err),
@@ -620,6 +822,8 @@ unsafe impl<'a, T: FromJson<'a>> FromJson<'a> for Option<T> {
     }
 }
 
+// SAFETY: only the true/false token paths write a valid `bool` into `dest`.
+// Invalid input returns an error before initialization.
 unsafe impl<'a> FromJson<'a> for bool {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -628,12 +832,20 @@ unsafe impl<'a> FromJson<'a> for bool {
         match parser.at.peek() {
             Ok(Peek::True) => {
                 parser.at.discard_seen_true()?;
-                dest.cast::<bool>().write(true);
+                // SAFETY: `dest` is writable storage for `bool` by the trait
+                // method contract.
+                unsafe {
+                    dest.cast::<bool>().write(true);
+                }
                 Ok(())
             }
             Ok(Peek::False) => {
                 parser.at.discard_seen_false()?;
-                dest.cast::<bool>().write(false);
+                // SAFETY: `dest` is writable storage for `bool` by the trait
+                // method contract.
+                unsafe {
+                    dest.cast::<bool>().write(false);
+                }
                 Ok(())
             }
             _ => Err(&DecodeError {
@@ -643,6 +855,9 @@ unsafe impl<'a> FromJson<'a> for bool {
     }
 }
 
+// SAFETY: the string parser returns valid UTF-8, and this impl accepts exactly
+// one Unicode scalar value before writing a valid `char` into `dest`. Errors
+// return before initialization.
 unsafe impl<'a> FromJson<'a> for char {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -658,7 +873,11 @@ unsafe impl<'a> FromJson<'a> for char {
                     });
                 }
                 if let Some(ch) = ch {
-                    dest.cast::<char>().write(ch);
+                    // SAFETY: `dest` is writable storage for `char` by the
+                    // trait method contract.
+                    unsafe {
+                        dest.cast::<char>().write(ch);
+                    }
                     return Ok(());
                 }
                 Err(&STRING_CONTAINS_INVALID_ESCAPE_LITERALS)
@@ -680,8 +899,13 @@ unsafe fn decode_into_array<'de>(
     let mut initialized = 0;
     let err = 'error: {
         for i in 0..n {
-            let current = dest.byte_add(i * size);
-            if let Err(err) = decode(current, parser) {
+            // SAFETY: the caller supplies `dest` as storage for an array of
+            // `n` elements of byte size `size`; `i < n`, so this is the slot for
+            // the next uninitialized element.
+            let current = unsafe { dest.byte_add(i * size) };
+            // SAFETY: `current` is valid writable storage for the element type
+            // expected by `decode`.
+            if let Err(err) = unsafe { decode(current, parser) } {
                 break 'error Err(err);
             }
             initialized += 1;
@@ -705,7 +929,9 @@ unsafe fn decode_into_array<'de>(
     };
     if let Some(drop_func) = drop_func {
         for i in 0..initialized {
-            drop_func(dest.byte_add(i * size));
+            // SAFETY: only the first `initialized` elements have successfully
+            // been decoded and therefore require dropping.
+            drop_func(unsafe { dest.byte_add(i * size) });
         }
     }
     err
@@ -715,20 +941,30 @@ static ARRAY_LENGTH_MISMATCH: DecodeError = DecodeError {
     message: "Array length mismatch",
 };
 
+// SAFETY: this impl uses the safe `decode_json` path. It returns a boxed
+// `RawJson` only after `skip_value` has delimited a valid slice of the parser's
+// UTF-8 input.
 unsafe impl FromJson<'_> for Box<RawJson> {
     fn decode_json(parser: &mut Parser<'_>) -> Result<Self, &'static DecodeError> {
         let start = parser.at.index;
         parser.at.skip_value()?;
+        // SAFETY: parser input is UTF-8, and parser indices are advanced only to
+        // ASCII token boundaries or through validated UTF-8 string contents.
         let raw =
             unsafe { std::str::from_utf8_unchecked(&parser.at.ctx.input[start..parser.at.index]) };
         Ok(RawJson::new_boxed_unchecked(raw.into()))
     }
 }
 
+// SAFETY: this impl uses the safe `decode_json` path. It returns a borrowed
+// `RawJson` tied to the parser input only after `skip_value` has delimited a
+// valid slice of that UTF-8 input.
 unsafe impl<'de> FromJson<'de> for &'de RawJson {
     fn decode_json(parser: &mut Parser<'de>) -> Result<Self, &'static DecodeError> {
         let start = parser.at.index;
         parser.at.skip_value()?;
+        // SAFETY: parser input is UTF-8, and parser indices are advanced only to
+        // ASCII token boundaries or through validated UTF-8 string contents.
         let raw =
             unsafe { std::str::from_utf8_unchecked(&parser.at.ctx.input[start..parser.at.index]) };
         Ok(RawJson::new_unchecked(raw))
@@ -762,6 +998,9 @@ impl ToJson for RawJson {
     }
 }
 
+// SAFETY: `()` is zero-sized, so no bytes need to be written for initialization.
+// Returning `Ok` only after seeing an empty JSON array satisfies the trait
+// contract.
 unsafe impl<'de> FromJson<'de> for () {
     unsafe fn emplace_from_json(
         _dest: NonNull<()>,
@@ -775,6 +1014,9 @@ unsafe impl<'de> FromJson<'de> for () {
     }
 }
 
+// SAFETY: field 0 is decoded into the corresponding tuple offset. On later
+// length/error failure, the initialized field is dropped before returning
+// `Err`; on success the tuple storage is fully initialized.
 unsafe impl<'de, T0: FromJson<'de>> FromJson<'de> for (T0,) {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -784,65 +1026,22 @@ unsafe impl<'de, T0: FromJson<'de>> FromJson<'de> for (T0,) {
         if value.is_none() {
             return Err(&ARRAY_LENGTH_MISMATCH);
         }
-        <T0 as FromJson<'de>>::emplace_from_json(
-            dest.byte_add(std::mem::offset_of!(Self, 0)),
-            parser,
-        )?;
+        // SAFETY: `dest` is storage for `Self`; field 0's offset is in bounds
+        // and currently uninitialized.
+        unsafe {
+            <T0 as FromJson<'de>>::emplace_from_json(
+                dest.byte_add(std::mem::offset_of!(Self, 0)),
+                parser,
+            )?;
+        }
         let error = match parser.at.array_step() {
             Ok(None) => return Ok(()),
             Ok(Some(_)) => &ARRAY_LENGTH_MISMATCH,
             Err(err) => err,
         };
-        std::ptr::drop_in_place(
-            dest.byte_add(std::mem::offset_of!(Self, 0))
-                .cast::<T0>()
-                .as_ptr(),
-        );
-        Err(error)
-    }
-}
-
-// todo should add more tuples
-unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>> FromJson<'de> for (T0, T1) {
-    unsafe fn emplace_from_json(
-        dest: NonNull<()>,
-        parser: &mut Parser<'de>,
-    ) -> Result<(), &'static DecodeError> {
-        if parser.at.enter_array()?.is_none() {
-            return Err(&ARRAY_LENGTH_MISMATCH);
-        }
-        let error: &'static DecodeError;
-        't0: {
-            if let Err(err) = <T0 as FromJson<'de>>::emplace_from_json(
-                dest.byte_add(std::mem::offset_of!(Self, 0)),
-                parser,
-            ) {
-                error = err;
-                break 't0;
-            }
-            't1: {
-                if let Err(err) = parser.at.array_step_expecting_more() {
-                    error = err;
-                    break 't1;
-                }
-                if let Err(err) = <T1 as FromJson<'de>>::emplace_from_json(
-                    dest.byte_add(std::mem::offset_of!(Self, 1)),
-                    parser,
-                ) {
-                    error = err;
-                    break 't1;
-                }
-                match parser.at.array_step() {
-                    Ok(None) => return Ok(()),
-                    Ok(Some(_)) => error = &ARRAY_LENGTH_MISMATCH,
-                    Err(err) => error = err,
-                }
-                std::ptr::drop_in_place(
-                    dest.byte_add(std::mem::offset_of!(Self, 1))
-                        .cast::<T1>()
-                        .as_ptr(),
-                );
-            }
+        // SAFETY: field 0 was initialized successfully above and has not been
+        // moved out.
+        unsafe {
             std::ptr::drop_in_place(
                 dest.byte_add(std::mem::offset_of!(Self, 0))
                     .cast::<T0>()
@@ -853,6 +1052,79 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>> FromJson<'de> for (T0, T1
     }
 }
 
+// todo should add more tuples
+// SAFETY: tuple fields are decoded in order into their `offset_of!` locations.
+// Each initialized prefix is dropped on later errors; success returns only after
+// all fields are initialized and the array length matches.
+unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>> FromJson<'de> for (T0, T1) {
+    unsafe fn emplace_from_json(
+        dest: NonNull<()>,
+        parser: &mut Parser<'de>,
+    ) -> Result<(), &'static DecodeError> {
+        if parser.at.enter_array()?.is_none() {
+            return Err(&ARRAY_LENGTH_MISMATCH);
+        }
+        let error: &'static DecodeError;
+        't0: {
+            // SAFETY: `dest` is storage for `Self`; field 0's offset is in
+            // bounds and currently uninitialized.
+            if let Err(err) = unsafe {
+                <T0 as FromJson<'de>>::emplace_from_json(
+                    dest.byte_add(std::mem::offset_of!(Self, 0)),
+                    parser,
+                )
+            } {
+                error = err;
+                break 't0;
+            }
+            't1: {
+                if let Err(err) = parser.at.array_step_expecting_more() {
+                    error = err;
+                    break 't1;
+                }
+                // SAFETY: field 1's offset is in bounds and field 1 is
+                // currently uninitialized.
+                if let Err(err) = unsafe {
+                    <T1 as FromJson<'de>>::emplace_from_json(
+                        dest.byte_add(std::mem::offset_of!(Self, 1)),
+                        parser,
+                    )
+                } {
+                    error = err;
+                    break 't1;
+                }
+                match parser.at.array_step() {
+                    Ok(None) => return Ok(()),
+                    Ok(Some(_)) => error = &ARRAY_LENGTH_MISMATCH,
+                    Err(err) => error = err,
+                }
+                // SAFETY: field 1 was initialized successfully and has not
+                // been moved out.
+                unsafe {
+                    std::ptr::drop_in_place(
+                        dest.byte_add(std::mem::offset_of!(Self, 1))
+                            .cast::<T1>()
+                            .as_ptr(),
+                    );
+                }
+            }
+            // SAFETY: field 0 was initialized successfully and has not been
+            // moved out.
+            unsafe {
+                std::ptr::drop_in_place(
+                    dest.byte_add(std::mem::offset_of!(Self, 0))
+                        .cast::<T0>()
+                        .as_ptr(),
+                );
+            }
+        }
+        Err(error)
+    }
+}
+
+// SAFETY: tuple fields are decoded in order into their `offset_of!` locations.
+// Each initialized prefix is dropped on later errors; success returns only after
+// all fields are initialized and the array length matches.
 unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>, T2: FromJson<'de>> FromJson<'de>
     for (T0, T1, T2)
 {
@@ -865,10 +1137,14 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>, T2: FromJson<'de>> FromJs
         }
         let error: &'static DecodeError;
         't0: {
-            if let Err(err) = <T0 as FromJson<'de>>::emplace_from_json(
-                dest.byte_add(std::mem::offset_of!(Self, 0)),
-                parser,
-            ) {
+            // SAFETY: `dest` is storage for `Self`; field 0's offset is in
+            // bounds and currently uninitialized.
+            if let Err(err) = unsafe {
+                <T0 as FromJson<'de>>::emplace_from_json(
+                    dest.byte_add(std::mem::offset_of!(Self, 0)),
+                    parser,
+                )
+            } {
                 error = err;
                 break 't0;
             }
@@ -877,10 +1153,14 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>, T2: FromJson<'de>> FromJs
                     error = err;
                     break 't1;
                 }
-                if let Err(err) = <T1 as FromJson<'de>>::emplace_from_json(
-                    dest.byte_add(std::mem::offset_of!(Self, 1)),
-                    parser,
-                ) {
+                // SAFETY: field 1's offset is in bounds and field 1 is
+                // currently uninitialized.
+                if let Err(err) = unsafe {
+                    <T1 as FromJson<'de>>::emplace_from_json(
+                        dest.byte_add(std::mem::offset_of!(Self, 1)),
+                        parser,
+                    )
+                } {
                     error = err;
                     break 't1;
                 }
@@ -889,10 +1169,14 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>, T2: FromJson<'de>> FromJs
                         error = err;
                         break 't2;
                     }
-                    if let Err(err) = <T2 as FromJson<'de>>::emplace_from_json(
-                        dest.byte_add(std::mem::offset_of!(Self, 2)),
-                        parser,
-                    ) {
+                    // SAFETY: field 2's offset is in bounds and field 2 is
+                    // currently uninitialized.
+                    if let Err(err) = unsafe {
+                        <T2 as FromJson<'de>>::emplace_from_json(
+                            dest.byte_add(std::mem::offset_of!(Self, 2)),
+                            parser,
+                        )
+                    } {
                         error = err;
                         break 't2;
                     }
@@ -901,23 +1185,35 @@ unsafe impl<'de, T0: FromJson<'de>, T1: FromJson<'de>, T2: FromJson<'de>> FromJs
                         Ok(Some(_)) => error = &ARRAY_LENGTH_MISMATCH,
                         Err(err) => error = err,
                     }
+                    // SAFETY: field 2 was initialized successfully and has not
+                    // been moved out.
+                    unsafe {
+                        std::ptr::drop_in_place(
+                            dest.byte_add(std::mem::offset_of!(Self, 2))
+                                .cast::<T2>()
+                                .as_ptr(),
+                        );
+                    }
+                }
+                // SAFETY: field 1 was initialized successfully and has not
+                // been moved out.
+                unsafe {
                     std::ptr::drop_in_place(
-                        dest.byte_add(std::mem::offset_of!(Self, 2))
-                            .cast::<T2>()
+                        dest.byte_add(std::mem::offset_of!(Self, 1))
+                            .cast::<T1>()
                             .as_ptr(),
                     );
                 }
+            }
+            // SAFETY: field 0 was initialized successfully and has not been
+            // moved out.
+            unsafe {
                 std::ptr::drop_in_place(
-                    dest.byte_add(std::mem::offset_of!(Self, 1))
-                        .cast::<T1>()
+                    dest.byte_add(std::mem::offset_of!(Self, 0))
+                        .cast::<T0>()
                         .as_ptr(),
                 );
             }
-            std::ptr::drop_in_place(
-                dest.byte_add(std::mem::offset_of!(Self, 0))
-                    .cast::<T0>()
-                    .as_ptr(),
-            );
         }
         Err(error)
     }
@@ -945,13 +1241,20 @@ pub unsafe fn dyn_tuple_decode<'a>(
     let mut complete = 0;
     let error = 'with_error: {
         if let Some((offset, decode_fn)) = field_iter.next() {
-            decode_fn(dest.byte_add(*offset), parser)?;
+            // SAFETY: the caller provides `dest` as storage for the tuple
+            // described by `fields`; this offset is the next uninitialized
+            // tuple field.
+            unsafe {
+                decode_fn(dest.byte_add(*offset), parser)?;
+            }
             complete += 1;
             for (offset, decode_fn) in field_iter {
                 if let Err(err) = parser.at.array_step_expecting_more() {
                     break 'with_error err;
                 }
-                if let Err(err) = decode_fn(dest.byte_add(*offset), parser) {
+                // SAFETY: fields are decoded in order, and this offset belongs
+                // to the next uninitialized tuple field.
+                if let Err(err) = unsafe { decode_fn(dest.byte_add(*offset), parser) } {
                     break 'with_error err;
                 }
                 complete += 1;
@@ -964,7 +1267,11 @@ pub unsafe fn dyn_tuple_decode<'a>(
         }
     };
     for ((offset, _), drop_fn) in fields.iter().zip(drops).take(complete) {
-        drop_fn(dest.byte_add(*offset));
+        // SAFETY: only the first `complete` tuple fields were successfully
+        // initialized and need to be dropped on this error path.
+        unsafe {
+            drop_fn(dest.byte_add(*offset));
+        }
     }
     Err(error)
 }
@@ -972,6 +1279,9 @@ pub unsafe fn dyn_tuple_decode<'a>(
 macro_rules! tuple_impls {
     ($({$($field:literal : $tn: tt),*}),*) => {
         $(
+        // SAFETY: generated tuple impls pass the exact field offsets and drop
+        // callbacks for `Self` into `dyn_tuple_decode`, which initializes
+        // fields in order and drops only the initialized prefix on error.
         unsafe impl<'de, $($tn: FromJson<'de>),*>
             FromJson<'de> for ($($tn),*)
         {
@@ -979,17 +1289,26 @@ macro_rules! tuple_impls {
                 dest: NonNull<()>,
                 parser: &mut Parser<'de>,
             ) -> Result<(), &'static DecodeError> {
-                dyn_tuple_decode(
-                    dest,
-                    parser,
-                    &[
-                        $((
-                            std::mem::offset_of!(Self, $field),
-                            $tn::emplace_from_json
-                        )),*
-                    ],
-                    &[$(|ptr| std::ptr::drop_in_place(ptr.cast::<$tn>().as_ptr())),*],
-                )
+                // SAFETY: `dest` is writable storage for this tuple type; the
+                // generated offsets and drop callbacks correspond exactly to
+                // the tuple fields.
+                unsafe {
+                    dyn_tuple_decode(
+                        dest,
+                        parser,
+                        &[
+                            $((
+                                std::mem::offset_of!(Self, $field),
+                                $tn::emplace_from_json
+                            )),*
+                        ],
+                        &[$(|ptr| {
+                            // SAFETY: `dyn_tuple_decode` calls this drop
+                            // callback only for fields it initialized.
+                            std::ptr::drop_in_place(ptr.cast::<$tn>().as_ptr())
+                        }),*],
+                    )
+                }
             }
         }
         )*
@@ -1005,6 +1324,10 @@ tuple_impls! {
     {0: T0, 1: T1, 2: T2, 3: T3, 4: T4, 5: T5, 6: T6, 7: T7, 8: T8}
 }
 
+// SAFETY: non-empty arrays are initialized element-by-element by
+// `decode_into_array`, which drops only the initialized prefix on error and
+// returns `Ok` only after exactly `N` elements were decoded. The zero-length
+// case is initialized without writes because `[T; 0]` has no elements.
 unsafe impl<'de, T: FromJson<'de>, const N: usize> FromJson<'de> for [T; N] {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -1019,18 +1342,27 @@ unsafe impl<'de, T: FromJson<'de>, const N: usize> FromJson<'de> for [T; N] {
                 }),
             };
         }
-        decode_into_array(
-            dest,
-            parser,
-            size_of::<T>(),
-            N,
-            T::emplace_from_json,
-            if std::mem::needs_drop::<T>() {
-                Some(|ptr: NonNull<()>| std::ptr::drop_in_place(ptr.cast::<T>().as_ptr()))
-            } else {
-                None
-            },
-        )
+        // SAFETY: `dest` is writable storage for `[T; N]`; `decode_into_array`
+        // uses `size_of::<T>()`, decodes exactly `N` elements, and drops only
+        // the initialized prefix on error.
+        unsafe {
+            decode_into_array(
+                dest,
+                parser,
+                size_of::<T>(),
+                N,
+                T::emplace_from_json,
+                if std::mem::needs_drop::<T>() {
+                    Some(|ptr: NonNull<()>| {
+                        // SAFETY: `decode_into_array` calls this only for
+                        // elements it initialized.
+                        std::ptr::drop_in_place(ptr.cast::<T>().as_ptr())
+                    })
+                } else {
+                    None
+                },
+            )
+        }
     }
 }
 
@@ -1059,6 +1391,7 @@ impl JsonKeyKind for AlwaysString {
 
 impl JsonKeyKind for AlwaysNumber {
     fn key_prefix(output: &mut TextWriter) {
+        // SAFETY: `b'"'` is ASCII and therefore valid UTF-8.
         unsafe {
             output.push_unchecked_ascii(b'"');
         }
@@ -1205,6 +1538,8 @@ impl ToJson for str {
             }
 
             if start < i {
+                // SAFETY: this byte range is a subslice of `self`, which is
+                // valid UTF-8.
                 unsafe {
                     output.push_unchecked_utf8(&bytes[start..i]);
                 }
@@ -1233,18 +1568,24 @@ impl ToJson for str {
                         HEX_DIGITS[(byte >> 4) as usize],
                         HEX_DIGITS[(byte & 0xF) as usize],
                     ];
+                    // SAFETY: JSON escape literals are ASCII and therefore
+                    // valid UTF-8.
                     unsafe {
                         output.push_unchecked_utf8(bytes);
                     }
                     continue;
                 }
             };
+            // SAFETY: all short escape literals are ASCII and therefore valid
+            // UTF-8.
             unsafe {
                 output.push_unchecked_utf8(s);
             }
         }
 
         if start != bytes.len() {
+            // SAFETY: this byte range is a subslice of `self`, which is valid
+            // UTF-8.
             unsafe {
                 output.push_unchecked_utf8(&bytes[start..]);
             }
@@ -1423,6 +1764,7 @@ impl ToJson for bool {
 }
 
 /// JSON Array Helper for constructing a JSON array in a TextWriter.
+#[repr(transparent)]
 pub struct ArrayWriter<'a, 'b> {
     writer: &'a mut TextWriter<'b>,
 }
@@ -1444,6 +1786,9 @@ impl<'a, 'b> ArrayWriter<'a, 'b> {
     /// Useful, when you want the internals of an array with the opening and closing brackets,.
     /// useful when flattening an array.
     pub fn non_terminating<'k>(value: &'k mut &'a mut TextWriter<'b>) -> &'k mut Self {
+        // SAFETY: `ArrayWriter` is `repr(transparent)` over exactly this
+        // `&mut TextWriter` field. The returned borrow is tied to `value`, so it
+        // cannot outlive or alias the mutable borrow of the field storage.
         unsafe { std::mem::transmute(value) }
     }
 
@@ -1495,6 +1840,7 @@ impl<'a, 'b> ArrayWriter<'a, 'b> {
 }
 
 /// JSON Object Helper for constructing a JSON Object in a TextWriter.
+#[repr(transparent)]
 pub struct ObjectWriter<'a, 'b> {
     writer: &'a mut TextWriter<'b>,
 }
@@ -1509,6 +1855,9 @@ impl<'a, 'b> ObjectWriter<'a, 'b> {
         ObjectWriter { writer }
     }
     pub fn non_terminating<'k>(value: &'k mut &'a mut TextWriter<'b>) -> &'k mut Self {
+        // SAFETY: `ObjectWriter` is `repr(transparent)` over exactly this
+        // `&mut TextWriter` field. The returned borrow is tied to `value`, so it
+        // cannot outlive or alias the mutable borrow of the field storage.
         unsafe { std::mem::transmute(value) }
     }
     #[doc(hidden)]
@@ -1539,6 +1888,7 @@ impl<'a, 'b> ObjectWriter<'a, 'b> {
         }
     }
 }
+#[repr(transparent)]
 pub struct ValueWriter<'a, 'b> {
     writer: &'a mut TextWriter<'b>,
 }
@@ -1580,6 +1930,10 @@ impl<'a, 'b> ValueWriter<'a, 'b> {
         ValueWriter { writer }
     }
     pub fn into_inner(self) -> &'a mut TextWriter<'b> {
+        // SAFETY: `ValueWriter` is `repr(transparent)` over `&mut TextWriter`,
+        // so the bit representation is exactly the inner reference. Consuming
+        // `self` intentionally suppresses `Drop`, preventing the placeholder
+        // `null` from being written after the caller supplies a real value.
         unsafe { std::mem::transmute(self) }
     }
     pub fn value<Kind: JsonValueKind>(

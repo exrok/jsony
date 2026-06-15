@@ -2,8 +2,8 @@
 //! the existing soundness suite does not, relying on a counting type plus
 //! miri's allocation-leak detection.
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
 use jsony::Jsony;
 

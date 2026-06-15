@@ -70,7 +70,7 @@ mod rewriter;
 mod strings;
 pub mod text;
 mod text_writer;
-pub use rewriter::{prettify, PrettifyConfig};
+pub use rewriter::{PrettifyConfig, prettify};
 
 mod third_party;
 
@@ -96,7 +96,7 @@ pub use jsony_macros::array;
 
 pub use byte_writer::IntoByteWriter;
 #[cfg(feature = "macros")]
-pub use jsony_macros::{object, Jsony};
+pub use jsony_macros::{Jsony, object};
 pub use text_writer::IntoTextWriter;
 
 /// A trait for parsing a value from a compact binary representation.
@@ -220,7 +220,11 @@ pub unsafe trait FromJson<'a>: Sized + 'a {
     ) -> Result<(), &'static DecodeError> {
         match Self::decode_json(parser) {
             Ok(value) => {
-                dest.cast::<Self>().write(value);
+                // SAFETY: the caller of `emplace_from_json` guarantees `dest`
+                // is valid writable storage for `Self`.
+                unsafe {
+                    dest.cast::<Self>().write(value);
+                }
                 Ok(())
             }
             Err(err) => Err(err),
@@ -243,11 +247,16 @@ pub unsafe trait FromJson<'a>: Sized + 'a {
     #[inline]
     fn decode_json(parser: &mut Parser<'a>) -> Result<Self, &'static DecodeError> {
         let mut value = std::mem::MaybeUninit::<Self>::uninit();
+        // SAFETY: `value.as_mut_ptr()` is non-null, correctly aligned storage
+        // for `Self`. By the `FromJson` contract, `emplace_from_json`
+        // initializes it exactly when it returns `Ok(())`.
         if let Err(err) = unsafe {
             Self::emplace_from_json(NonNull::new_unchecked(value.as_mut_ptr()).cast(), parser)
         } {
             Err(err)
         } else {
+            // SAFETY: the successful `emplace_from_json` call initialized
+            // `value` per the trait contract.
             Ok(unsafe { value.assume_init() })
         }
     }
@@ -287,8 +296,15 @@ impl RawJson {
 impl RawJson {
     pub(crate) fn new_unchecked(raw: &str) -> &RawJson {
         if raw.is_empty() {
+            // SAFETY: `RawJson` is `repr(transparent)` over `str`, and the
+            // string literal is valid for the returned lifetime. The caller is
+            // responsible for the semantic invariant that the text is JSON;
+            // empty input is normalized to the valid JSON literal `null`.
             unsafe { &*("null" as *const str as *const RawJson) }
         } else {
+            // SAFETY: `RawJson` is `repr(transparent)` over `str`, so a `str`
+            // reference has the same layout. JSON validity is this unchecked
+            // constructor's semantic precondition.
             unsafe { &*(raw as *const str as *const RawJson) }
         }
     }
@@ -296,6 +312,10 @@ impl RawJson {
         if raw.is_empty() {
             Self::new_boxed_unchecked("null".into())
         } else {
+            // SAFETY: `RawJson` is `repr(transparent)` over `str`, so the boxed
+            // allocation layout and metadata are identical to `Box<str>`.
+            // `Box::into_raw` transfers ownership and `Box::from_raw` rebuilds
+            // it with the transparent wrapper type.
             unsafe { Box::from_raw(Box::into_raw(raw) as *mut RawJson) }
         }
     }
@@ -311,6 +331,8 @@ impl std::ops::Deref for RawJson {
     type Target = MaybeJson;
 
     fn deref(&self) -> &Self::Target {
+        // SAFETY: both `RawJson` and `MaybeJson` are `repr(transparent)` over
+        // `str`, so their reference layouts are identical.
         unsafe { &*(self as *const RawJson as *const MaybeJson) }
     }
 }
@@ -597,14 +619,22 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
         let mut parser = Parser::new(json, config);
         #[cfg(not(feature = "json_comments"))]
         if config.allow_comments {
-            panic!("jsony: 'json_comments' feature is not enabled but is required for `allow_comments`.")
+            panic!(
+                "jsony: 'json_comments' feature is not enabled but is required for `allow_comments`."
+            )
         }
+        // SAFETY: the caller supplied `value` as writable storage for the type
+        // expected by `func`; `func` follows the `FromJson::emplace_from_json`
+        // initialization contract.
         match unsafe { func(value, &mut parser) } {
             Ok(()) => Ok(config.allow_trailing_data || parser.at.eat_whitespace().is_none()),
             Err(err) => Err(JsonError::extract(err, &mut parser)),
         }
     }
     let mut value = std::mem::MaybeUninit::<T>::uninit();
+    // SAFETY: `value` is valid uninitialized storage for `T`; the passed
+    // emplace function initializes it if and only if `inner_from_json` returns
+    // `Ok(_)`.
     match unsafe {
         inner_from_json(
             NonNull::new_unchecked(value.as_mut_ptr()).cast(),
@@ -613,8 +643,12 @@ pub fn from_json_with_config<'a, T: FromJson<'a>>(
             config,
         )
     } {
+        // SAFETY: `inner_from_json` returned success, so `value` was initialized.
         Ok(true) => Ok(unsafe { value.assume_init() }),
         Ok(false) => {
+            // SAFETY: `inner_from_json` returned success from the emplace
+            // function, so `value` is initialized even though trailing data made
+            // the full parse fail.
             unsafe {
                 value.assume_init_drop();
             }

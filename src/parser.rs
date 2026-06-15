@@ -195,15 +195,19 @@ fn extract_numeric_literal(
             b'0'..=b'9' | b'+' | b'-' | b'.' | b'e' | b'E' => {}
             _ => {
                 return Ok((
+                    // SAFETY: the loop only accepts ASCII number literal
+                    // bytes. ASCII is valid UTF-8, including the empty slice.
                     unsafe { std::str::from_utf8_unchecked(&bytes[mark..index]) },
                     index,
-                ))
+                ));
             }
         }
         index += 1;
     }
 
     Ok((
+        // SAFETY: the loop only accepts ASCII number literal bytes. ASCII is
+        // valid UTF-8, including the empty slice.
         unsafe { std::str::from_utf8_unchecked(&bytes[mark..index]) },
         index,
     ))
@@ -302,6 +306,9 @@ impl<'j> InnerParser<'j> {
                     if self.config.recursion_limit < 0 {
                         return Err(&RECURSION_LIMIT_EXCEEDED);
                     }
+                    // SAFETY: `eat_whitespace` just observed the opening quote
+                    // at `self.index`, satisfying `read_seen_object_key`'s
+                    // parser-position precondition.
                     unsafe { self.read_seen_object_key(scratch).map(Some) }
                 }
                 b'}' => {
@@ -388,6 +395,8 @@ impl<'j> InnerParser<'j> {
         if let Some(next) = self.eat_whitespace() {
             if next == b':' {
                 self.index += 1;
+                // SAFETY: unquoted keys accepted above are restricted to ASCII
+                // identifier bytes, so the slice is valid UTF-8.
                 Ok(unsafe { std::str::from_utf8_unchecked(&self.ctx.input[start..end]) })
             } else {
                 Err(&EXPECTED_COLON)
@@ -485,6 +494,8 @@ impl<'j> InnerParser<'j> {
                 b',' => {
                     self.index += 1;
                     match self.eat_whitespace() {
+                        // SAFETY: `eat_whitespace` just observed the opening
+                        // quote at `self.index`.
                         Some(b'"') => unsafe { self.read_seen_object_key(scratch).map(Some) },
                         Some(b'}') => {
                             if self.config.allow_trailing_commas {
@@ -517,13 +528,15 @@ impl<'j> InnerParser<'j> {
         }
     }
     pub fn try_zerocopy(&self, text: &str) -> Option<&'j str> {
-        // todo
-        unsafe {
-            if self.ctx.input.as_ptr_range().contains(&text.as_ptr()) {
-                Some(&*(text as *const str))
-            } else {
-                None
-            }
+        if self.ctx.input.as_ptr_range().contains(&text.as_ptr()) {
+            // SAFETY: `text` is already a valid `str` reference. If its start
+            // address lies inside `self.ctx.input`, safe Rust cannot make it
+            // point into a different live allocation that overlaps this range.
+            // The allocation backing `ctx.input` is borrowed for `'j`, so
+            // reusing `text`'s fat pointer with lifetime `'j` is memory-safe.
+            Some(unsafe { &*(text as *const str) })
+        } else {
+            None
         }
     }
 
@@ -553,7 +566,9 @@ impl<'j> InnerParser<'j> {
             let contains_backslash = chars_backslash.wrapping_sub(ONE_BYTES) & !chars_backslash;
             let masked = (contains_ctrl | contains_quote | contains_backslash) & (ONE_BYTES << 7);
             if masked != 0 {
-                // SAFETY: chunk is in-bounds for slice
+                // SAFETY: `chunk` is produced by `rest.chunks_exact`, and
+                // `rest` is a subslice of `self.ctx.input`, so both pointers are
+                // into the same allocation and `chunk.as_ptr()` is in bounds.
                 self.index = unsafe { chunk.as_ptr().offset_from(self.ctx.input.as_ptr()) }
                     as usize
                     + masked.trailing_zeros() as usize / 8;
@@ -611,6 +626,9 @@ impl<'j> InnerParser<'j> {
     where
         'j: 'k,
     {
+        // SAFETY: callers of `read_seen_object_key` ensure `self.index` points
+        // at an opening quote. The same scratch/input lifetime constraints are
+        // forwarded to `read_seen_string`.
         let key = unsafe { self.read_seen_string(scratch)? };
 
         if let Some(next) = self.eat_whitespace() {
@@ -660,10 +678,14 @@ impl<'j> InnerParser<'j> {
             if self.index == self.ctx.input.len() {
                 return Err(&EOF_WHILE_PARSING_STRING);
             }
-            // match unsafe { self.ctx.data.get_unchecked(self.indexl } {
             match self.ctx.input[self.index] {
                 b'"' => {
                     if scratch.is_empty() {
+                        // SAFETY: `self.ctx.input` came from `&str`. `start` is
+                        // after an ASCII quote or escape sequence, and
+                        // `skip_to_escape` stopped on an ASCII quote; ASCII
+                        // bytes cannot occur inside a multibyte UTF-8 codepoint,
+                        // so both bounds are char boundaries.
                         let output = unsafe {
                             std::str::from_utf8_unchecked(&self.ctx.input[start..self.index])
                         };
@@ -672,6 +694,9 @@ impl<'j> InnerParser<'j> {
                     } else {
                         scratch.extend_from_slice(&self.ctx.input[start..self.index]);
                         self.index += 1;
+                        // SAFETY: scratch is cleared before parsing this
+                        // string, then receives only valid UTF-8 subslices from
+                        // the input and valid UTF-8 emitted by `parse_escape`.
                         return Ok(unsafe { std::str::from_utf8_unchecked(&*scratch) });
                     }
                 }
@@ -686,7 +711,7 @@ impl<'j> InnerParser<'j> {
                         Err(()) => {
                             return Err(&DecodeError {
                                 message: "Invalid escape",
-                            })
+                            });
                         }
                     }
                     continue;
@@ -694,7 +719,7 @@ impl<'j> InnerParser<'j> {
                 _ => {
                     return Err(&DecodeError {
                         message: "Control character detected in json",
-                    })
+                    });
                 }
             }
         }
@@ -1033,7 +1058,7 @@ impl<'j> InnerParser<'j> {
             Ok(None) => {
                 return Err(&DecodeError {
                     message: "Missing tag field",
-                })
+                });
             }
             Err(err) => return Err(err),
         };
@@ -1091,6 +1116,8 @@ impl<'j> InnerParser<'j> {
         if self.peek()? != Peek::String {
             return Err(&EXPECTED_STRING);
         }
+        // SAFETY: the `peek` check above leaves `self.index` at an opening
+        // quote.
         unsafe { self.read_seen_string(scratch) }
     }
     pub fn tag_query_next_object<'k, 's: 'k>(
@@ -1111,7 +1138,7 @@ impl<'j> InnerParser<'j> {
             Ok(None) => {
                 return Err(&DecodeError {
                     message: "Missing tag field",
-                })
+                });
             }
             Err(err) => return Err(err),
         };
@@ -1192,6 +1219,10 @@ impl<'j> Parser<'j> {
         &mut self,
         mut func: impl FnMut(K, V) -> Result<(), &'static DecodeError>,
     ) -> Result<(), &'static DecodeError> {
+        // SAFETY: `key_temp` and `value_temp` are valid uninitialized storage
+        // for `K` and `V`. The helper returns `drop_key = true` only when the
+        // key slot is initialized and has not been moved into `func`; the value
+        // slot is either moved with the key or left uninitialized on errors.
         unsafe {
             let mut key_temp = MaybeUninit::<K>::uninit();
             let mut value_temp = MaybeUninit::<V>::uninit();
@@ -1200,6 +1231,9 @@ impl<'j> Parser<'j> {
                 NonNull::new_unchecked(value_temp.as_mut_ptr()).cast(),
                 K::emplace_from_json,
                 V::emplace_from_json,
+                // SAFETY: the helper calls this closure only after both slots
+                // have been initialized. Each slot is read exactly once here,
+                // transferring ownership into the user callback.
                 &mut |key, value| func(key.cast::<K>().read(), value.cast::<V>().read()),
             );
             if drop_key {
@@ -1228,13 +1262,20 @@ impl<'j> Parser<'j> {
             Err(err) => return (false, Err(err)),
         }
         loop {
-            match key_from_json(key_ptr, self) {
+            // SAFETY: the caller supplied `key_ptr` as valid writable storage
+            // for the key type accepted by `key_from_json`. On `Ok`, that slot
+            // is initialized; on `Err`, the `FromJson` contract leaves it
+            // uninitialized.
+            match unsafe { key_from_json(key_ptr, self) } {
                 Ok(()) => (),
                 Err(err) => {
                     if std::ptr::addr_eq(err, &EXPECTED_NUMBER_BUT_FOUND_STRING) {
                         debug_assert_eq!(self.at.ctx.input[self.at.index], b'"');
                         self.at.index += 1;
-                        match key_from_json(key_ptr, self) {
+                        // SAFETY: same key slot as above; this retry happens
+                        // only after the first call returned before
+                        // initializing the slot.
+                        match unsafe { key_from_json(key_ptr, self) } {
                             Ok(()) => {
                                 if self.at.ctx.input.get(self.at.index) != Some(&b'"') {
                                     return (
@@ -1254,7 +1295,11 @@ impl<'j> Parser<'j> {
             if let Err(err) = self.at.discard_colon() {
                 return (true, Err(err));
             }
-            match val_from_json(val_ptr, self) {
+            // SAFETY: the caller supplied `val_ptr` as valid writable storage
+            // for the value type accepted by `val_from_json`. If this fails,
+            // only the key slot is initialized, which is signaled by
+            // `drop_key = true`.
+            match unsafe { val_from_json(val_ptr, self) } {
                 Ok(()) => (),
                 Err(err) => return (true, Err(err)),
             };
@@ -1357,12 +1402,13 @@ impl<'j> Parser<'j> {
     }
 
     pub fn try_zerocopy(&self, text: &str) -> Option<&'j str> {
-        unsafe {
-            if self.at.ctx.input.as_ptr_range().contains(&text.as_ptr()) {
-                Some(&*(text as *const str))
-            } else {
-                None
-            }
+        if self.at.ctx.input.as_ptr_range().contains(&text.as_ptr()) {
+            // SAFETY: same invariant as `InnerParser::try_zerocopy`: `text` is
+            // valid, its start lies inside the input allocation borrowed for
+            // `'j`, and safe Rust cannot provide an overlapping live allocation.
+            Some(unsafe { &*(text as *const str) })
+        } else {
+            None
         }
     }
 
@@ -1406,6 +1452,9 @@ impl<'j> Parser<'j> {
     /// Parser must be at a valid stream typically this enforced by
     /// calling the function immediately after `Parser::peak(..) == Peek::String`
     pub unsafe fn read_seen_string(&mut self) -> JsonResult<&str> {
+        // SAFETY: the caller guarantees `self.at.index` points at an opening
+        // quote. `self.scratch` is the parser-owned scratch buffer used for any
+        // escaped output.
         unsafe { self.at.read_seen_string(&mut self.scratch) }
     }
 

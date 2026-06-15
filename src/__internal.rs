@@ -20,6 +20,8 @@ pub struct DynamicFieldDecoder<'a> {
 
 /// helper function used for writing the default value from the Jsony derive macros
 pub unsafe fn default_default<T: Default>(ptr: ::std::ptr::NonNull<()>) -> UnsafeReturn {
+    // SAFETY: the caller supplies writable storage for a `T` field. This helper
+    // writes exactly one initialized `T` into that location.
     unsafe {
         (ptr.as_ptr() as *mut T).write(T::default());
     }
@@ -29,20 +31,33 @@ pub unsafe fn default_default<T: Default>(ptr: ::std::ptr::NonNull<()>) -> Unsaf
 pub const unsafe fn erase<'a>(
     input: unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>,
 ) -> for<'b> unsafe fn(NonNull<()>, &mut Parser<'b>) -> Result<(), &'static DecodeError> {
+    // SAFETY: this only erases the parser lifetime in the function pointer type.
+    // The returned function remains unsafe to call; callers must ensure it is
+    // invoked only with a parser/input lifetime compatible with the original
+    // `input` function.
     unsafe { std::mem::transmute(input) }
 }
 
 type Foo = for<'b> unsafe fn(NonNull<()>, &mut Parser<'b>) -> Result<(), &'static DecodeError>;
 #[inline(always)]
 pub const unsafe fn erased_emplace_from_json<'a, T: crate::FromJson<'a>>() -> Foo {
-    std::mem::transmute(
-        <T as crate::FromJson<'a>>::emplace_from_json
-            as unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>,
-    )
+    // SAFETY: this erases the concrete parser lifetime from `T`'s emplace
+    // function so generated static schemas can store it. The resulting function
+    // pointer is still unsafe to call; the schema decoder must only call it with
+    // the same input lifetime used to instantiate `T: FromJson<'a>`.
+    unsafe {
+        std::mem::transmute(
+            <T as crate::FromJson<'a>>::emplace_from_json
+                as unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>,
+        )
+    }
 }
 
 pub unsafe fn erased_drop_in_place<M: Sized>(ptr: NonNull<()>) {
-    std::ptr::drop_in_place(ptr.as_ptr() as *mut M);
+    // SAFETY: the caller guarantees `ptr` points to an initialized `M`.
+    unsafe {
+        std::ptr::drop_in_place(ptr.as_ptr() as *mut M);
+    }
 }
 
 #[doc(hidden)]
@@ -56,7 +71,9 @@ impl<'a, F: FieldVisitor<'a>> FieldVisitor<'a> for SkipFieldVisitor<F> {
         self.visitor.complete()
     }
     unsafe fn destroy(&mut self) {
-        self.visitor.destroy()
+        // SAFETY: `SkipFieldVisitor::destroy` has the same single-call
+        // contract as the wrapped visitor's `destroy`.
+        unsafe { self.visitor.destroy() }
     }
     fn visit(
         &mut self,
@@ -84,6 +101,10 @@ impl<'a> FieldVisitor<'a> for DynamicFieldDecoder<'a> {
             .enumerate()
         {
             if self.bitset & (1 << i) == 0 {
+                // SAFETY: `destination` is the base of the object being
+                // decoded, `field.offset` comes from the schema for that
+                // object, and the bitset shows this field has not yet been
+                // initialized.
                 unsafe {
                     emplace_default(self.destination.byte_add(field.offset));
                 }
@@ -94,7 +115,12 @@ impl<'a> FieldVisitor<'a> for DynamicFieldDecoder<'a> {
     unsafe fn destroy(&mut self) {
         for (i, field) in self.schema.fields().iter().enumerate() {
             if self.bitset & (1 << i) != 0 {
-                (self.schema.inner.drops[i])(self.destination.byte_add(field.offset));
+                // SAFETY: the bitset records only fields successfully
+                // initialized by this decoder, and `field.offset` points to the
+                // corresponding field storage inside `destination`.
+                unsafe {
+                    (self.schema.inner.drops[i])(self.destination.byte_add(field.offset));
+                }
             }
         }
     }
@@ -128,6 +154,10 @@ impl<'a> FieldVisitor<'a> for DynamicFieldDecoder<'a> {
                 }
                 return Err(&DUPLICATE_FIELD);
             }
+            // SAFETY: `destination + field.offset` is the uninitialized storage
+            // for this schema field, and `field.decode` is the matching
+            // generated emplace function. Duplicate fields are rejected before
+            // this call, so the destination field is not already initialized.
             if let Err(err) =
                 unsafe { (field.decode)(self.destination.byte_add(field.offset), parser) }
             {
@@ -185,6 +215,10 @@ pub struct ObjectSchema<'a> {
 
 impl<'a> ObjectSchema<'a> {
     pub fn fields(&self) -> &[Field<'a>] {
+        // SAFETY: schemas store field descriptors in static memory. Generated
+        // schema construction erases the parser lifetime from each decode
+        // function; callers of those functions remain unsafe and must uphold
+        // the lifetime compatibility required by the schema.
         unsafe {
             #[allow(clippy::unnecessary_cast, reason = "clippy false positive")]
             std::slice::from_raw_parts(
@@ -258,9 +292,13 @@ impl<'a> ObjectSchema<'a> {
                                         break 'error &DUPLICATE_FIELD;
                                     }
 
-                                    if let Err(err) =
+                                    // SAFETY: the caller provides `dest` as
+                                    // writable storage for the object described
+                                    // by this schema. This field has not been
+                                    // seen yet, so its slot is uninitialized.
+                                    if let Err(err) = unsafe {
                                         (field.decode)(dest.byte_add(field.offset), parser)
-                                    {
+                                    } {
                                         if let JsonParentContext::None = parser.parent_context {
                                             parser.parent_context =
                                                 JsonParentContext::ObjectKey(field.name);
@@ -271,8 +309,10 @@ impl<'a> ObjectSchema<'a> {
                                     break 'next;
                                 }
                                 if let Some(ref mut unused_processor) = unused {
-                                    // Safety: Safe since the `key` was provided by the same parses and still
-                                    // valid here (since it compiles and wasn't casted to a pointer earlier).
+                                    // SAFETY: `key` was returned by this parser
+                                    // for the current object step and remains
+                                    // live until the parser advances to the
+                                    // next key below.
                                     let borrowed =
                                         unsafe { ParserWithBorrowedKey::new(key, parser) };
                                     if let Err(err) = unused_processor.visit(borrowed) {
@@ -281,6 +321,8 @@ impl<'a> ObjectSchema<'a> {
                                     break 'next;
                                 }
                                 if let Some(vis) = parser.visit_unused_field {
+                                    // SAFETY: same key lifetime argument as the
+                                    // unused-field visitor path above.
                                     vis(unsafe { ParserWithBorrowedKey::new(key, parser) });
                                 }
                             }
@@ -323,7 +365,12 @@ impl<'a> ObjectSchema<'a> {
                 self.inner.defaults.iter().zip(self.fields()).enumerate()
             {
                 if bitset & (1 << i) == 0 {
-                    emplace_default(dest.byte_add(field.offset));
+                    // SAFETY: fields missing from `bitset` have not been
+                    // initialized, and defaults are paired with the first
+                    // fields in schema order by generated schema construction.
+                    unsafe {
+                        emplace_default(dest.byte_add(field.offset));
+                    }
                 }
             }
             return Ok(());
@@ -331,11 +378,17 @@ impl<'a> ObjectSchema<'a> {
 
         for (i, (drop, field)) in self.inner.drops.iter().zip(self.fields()).enumerate() {
             if bitset & (1 << i) != 0 {
-                drop(dest.byte_add(field.offset));
+                // SAFETY: the bitset records exactly the fields initialized
+                // before the decode error.
+                unsafe {
+                    drop(dest.byte_add(field.offset));
+                }
             }
         }
         if let Some(visitor) = unused {
-            visitor.destroy()
+            // SAFETY: the visitor has not completed successfully and is being
+            // destroyed exactly once on the error path.
+            unsafe { visitor.destroy() }
         }
         Err(error)
     }
@@ -366,8 +419,11 @@ impl<'a> ObjectSchema<'a> {
 
                                     break 'with_next_key &DUPLICATE_FIELD;
                                 }
+                                // SAFETY: the caller provides `dest` as storage
+                                // for the object described by this schema. This
+                                // field is not marked initialized in `bitset`.
                                 if let Err(err) =
-                                    (field.decode)(dest.byte_add(field.offset), parser)
+                                    unsafe { (field.decode)(dest.byte_add(field.offset), parser) }
                                 {
                                     if let JsonParentContext::None = parser.parent_context {
                                         parser.parent_context =
@@ -380,8 +436,9 @@ impl<'a> ObjectSchema<'a> {
                             }
 
                             if let Some(ref mut unused_processor) = unused {
-                                // Safety: Safe since the `key` was provided by the same parses and still
-                                // valid here (since it compiles and wasn't casted to a pointer earlier).
+                                // SAFETY: `key` was returned by this parser for
+                                // the current object step and remains live
+                                // until the parser advances to the next key.
                                 let borrowed = unsafe { ParserWithBorrowedKey::new(key, parser) };
                                 if let Err(err) = unused_processor.visit(borrowed) {
                                     break 'with_next_key err;
@@ -390,6 +447,8 @@ impl<'a> ObjectSchema<'a> {
                             }
 
                             if let Some(vis) = parser.visit_unused_field {
+                                // SAFETY: same key lifetime argument as the
+                                // unused-field visitor path above.
                                 vis(unsafe { ParserWithBorrowedKey::new(key, parser) });
                             }
 
@@ -431,7 +490,12 @@ impl<'a> ObjectSchema<'a> {
                 self.inner.defaults.iter().zip(self.fields()).enumerate()
             {
                 if bitset & (1 << i) == 0 {
-                    emplace_default(dest.byte_add(field.offset));
+                    // SAFETY: fields missing from `bitset` have not been
+                    // initialized, and defaults are paired with the first
+                    // fields in schema order by generated schema construction.
+                    unsafe {
+                        emplace_default(dest.byte_add(field.offset));
+                    }
                 }
             }
             return Ok(());
@@ -439,11 +503,17 @@ impl<'a> ObjectSchema<'a> {
 
         for (i, (drop, field)) in self.inner.drops.iter().zip(self.fields()).enumerate() {
             if bitset & (1 << i) != 0 {
-                drop(dest.byte_add(field.offset));
+                // SAFETY: the bitset records exactly the fields initialized
+                // before the decode error.
+                unsafe {
+                    drop(dest.byte_add(field.offset));
+                }
             }
         }
         if let Some(visitor) = unused {
-            visitor.destroy()
+            // SAFETY: the visitor has not completed successfully and is being
+            // destroyed exactly once on the error path.
+            unsafe { visitor.destroy() }
         }
         Err(error)
     }
@@ -458,20 +528,28 @@ where
     F: Fn(P) -> Result<T, &'static DecodeError>,
 {
     const { assert!(std::mem::size_of::<F>() == 0) }
-    let func: unsafe fn(dest: NonNull<()>, parser: P) -> Result<(), &'static DecodeError> = unsafe {
+    let func: unsafe fn(dest: NonNull<()>, parser: P) -> Result<(), &'static DecodeError> =
         |dest: NonNull<()>, parser: P| -> Result<(), &'static DecodeError> {
-            // safety: from above assert F is ZST.
-            let func = std::mem::transmute_copy::<(), F>(&());
+            // SAFETY: the const assertion above proves `F` is zero-sized, so
+            // constructing it from `()` reads no bytes and creates the function
+            // item/closure value represented by `F`.
+            let func = unsafe { std::mem::transmute_copy::<(), F>(&()) };
             match func(parser) {
                 Ok(value) => {
                     let value: T = value;
-                    dest.cast::<T>().write(value);
+                    // SAFETY: callers invoke this returned emplace function
+                    // with writable storage for `T`.
+                    unsafe {
+                        dest.cast::<T>().write(value);
+                    }
                     Ok(())
                 }
                 Err(err) => Err(err),
             }
-        }
-    };
+        };
+    // SAFETY: the returned function pointer erases only the parser lifetime so
+    // it can be stored in generated static schema data. Calling it remains
+    // unsafe and must use the lifetime-compatible parser type.
     unsafe { std::mem::transmute(func) }
 }
 
@@ -492,16 +570,27 @@ where
     let func: unsafe fn(
         dest: NonNull<()>,
         parser: &mut Parser<'a>,
-    ) -> Result<(), &'static DecodeError> = unsafe {
+    ) -> Result<(), &'static DecodeError> =
         |dest: NonNull<()>, parser: &mut Parser<'a>| -> Result<(), &'static DecodeError> {
-            // safety: from above assert F is ZST.
-            match T::emplace_from_json(dest, parser) {
+            // SAFETY: callers invoke this returned emplace function with
+            // writable storage for `T`, which is exactly `T::emplace_from_json`'s
+            // destination contract.
+            match unsafe { T::emplace_from_json(dest, parser) } {
                 Ok(()) => {
-                    let func = std::mem::transmute_copy::<(), F>(&());
-                    match func(&*dest.cast().as_ptr()) {
+                    // SAFETY: the const assertion above proves `F` is
+                    // zero-sized, so no bytes are read to construct it.
+                    let func = unsafe { std::mem::transmute_copy::<(), F>(&()) };
+                    // SAFETY: `T::emplace_from_json` returned `Ok`, so `dest`
+                    // now contains an initialized `T`.
+                    match func(unsafe { &*dest.cast().as_ptr() }) {
                         Ok(_) => Ok(()),
                         Err(err) => {
-                            dest.cast::<T>().drop_in_place();
+                            // SAFETY: validation failed after `T` was
+                            // initialized, so drop that initialized value before
+                            // reporting the error.
+                            unsafe {
+                                dest.cast::<T>().drop_in_place();
+                            }
                             parser.report_error(err);
                             return Err(&crate::error::CUSTOM_FIELD_VALIDATION_ERROR);
                         }
@@ -509,7 +598,9 @@ where
                 }
                 Err(err) => Err(err),
             }
-        }
-    };
+        };
+    // SAFETY: the returned function pointer erases only the parser lifetime so
+    // it can be stored in generated static schema data. Calling it remains
+    // unsafe and must use the lifetime-compatible parser type.
     unsafe { std::mem::transmute(func) }
 }

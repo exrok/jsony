@@ -32,7 +32,9 @@ fn skip_to_escape(mut at: usize, data: &[u8]) -> usize {
         let contains_backslash = chars_backslash.wrapping_sub(ONE_BYTES) & !chars_backslash;
         let masked = (contains_ctrl | contains_quote | contains_backslash) & (ONE_BYTES << 7);
         if masked != 0 {
-            // SAFETY: chunk is in-bounds for slice
+            // SAFETY: `chunk` is produced by `rest.chunks_exact`, and `rest`
+            // is a subslice of `data`, so both pointers are into the same
+            // allocation and `chunk.as_ptr()` is in bounds for `data`.
             return unsafe { chunk.as_ptr().offset_from(data.as_ptr()) } as usize
                 + masked.trailing_zeros() as usize / 8;
         }
@@ -53,11 +55,16 @@ fn skip_to_escape_slow(mut at: usize, data: &[u8]) -> usize {
 
 pub(crate) fn parse_escape(index: usize, read: &[u8], scratch: &mut Vec<u8>) -> Result<usize, ()> {
     scratch.reserve(4);
+    // SAFETY: `reserve(4)` guarantees at least four spare elements. The spare
+    // capacity pointer is aligned for `MaybeUninit<u8>`, and the temporary
+    // array reference is used only for the first four spare slots.
     match parse_escape_inner(index, read, unsafe {
         &mut *(scratch.spare_capacity_mut().as_mut_ptr() as *mut [MaybeUninit<u8>; 4])
     }) {
         Ok((i, v)) => {
             let l = scratch.len() + v;
+            // SAFETY: `parse_escape_inner` writes exactly `v` bytes into the
+            // reserved spare capacity, where `v <= 4`.
             unsafe {
                 scratch.set_len(l);
             }
@@ -97,6 +104,8 @@ pub(crate) fn skip_json_string_and_eq(
                         let segment = &data[at..head];
                         if value[read..].starts_with(segment) {
                             read += segment.len();
+                            // SAFETY: `parse_escape_inner` initialized exactly
+                            // `written` bytes of this stack scratch buffer.
                             if value[read..].starts_with(unsafe {
                                 std::slice::from_raw_parts(scratch.as_ptr() as *const u8, written)
                             }) {
@@ -111,14 +120,14 @@ pub(crate) fn skip_json_string_and_eq(
                     Err(()) => {
                         return Err(&DecodeError {
                             message: "Invalid escape sequence in string",
-                        })
+                        });
                     }
                 }
             }
             _ => {
                 return Err(&DecodeError {
                     message: "Control character detected in json",
-                })
+                });
             }
         }
     }
@@ -147,14 +156,14 @@ pub(crate) fn skip_json_string_and_validate(
                     Err(()) => {
                         return Err(&DecodeError {
                             message: "Invalid escape sequence in string",
-                        })
+                        });
                     }
                 }
             }
             _ => {
                 return Err(&DecodeError {
                     message: "Control character detected in json",
-                })
+                });
             }
         }
     }
@@ -275,6 +284,9 @@ fn push_wtf8_codepoint(n: u32, scratch: &mut [MaybeUninit<u8>; 4]) -> usize {
         return 1;
     }
 
+    // SAFETY: `scratch` has four bytes of storage. The match writes at most
+    // three leading bytes and the final continuation byte at
+    // `encoded_len - 1`, where `encoded_len` is in `2..=4`.
     unsafe {
         let ptr = scratch.as_mut_ptr() as *mut u8;
 

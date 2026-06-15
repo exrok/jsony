@@ -1,6 +1,6 @@
 use std::ptr::NonNull;
 
-use jsony::{json::DecodeError, parser::Parser, FromJson, JsonParserConfig};
+use jsony::{FromJson, JsonParserConfig, json::DecodeError, parser::Parser};
 
 static KEY_ERROR: DecodeError = DecodeError {
     message: "key decode failed",

@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use jsony::{from_json, parser::TRAILING_COMMA, JsonParserConfig, Jsony};
+use jsony::{JsonParserConfig, Jsony, from_json, parser::TRAILING_COMMA};
 
 macro_rules! obj {
     ($($tt:tt)*) => {

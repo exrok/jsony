@@ -1,6 +1,6 @@
-use crate::{json::DecodeError, parser::InnerParser, text::Ctx, MaybeJson};
+use crate::{MaybeJson, json::DecodeError, parser::InnerParser, text::Ctx};
 
-use crate::{from_json_with_config, FromJson, JsonError, JsonParserConfig};
+use crate::{FromJson, JsonError, JsonParserConfig, from_json_with_config};
 
 static OBJECT_INDEX_ERROR: DecodeError = DecodeError {
     message: "Object Key Index Error",
@@ -33,6 +33,9 @@ impl std::ops::Index<&'static &'static str> for MaybeJson {
             config: Default::default(),
         };
         match parser.index_object(key) {
+            // SAFETY: `parser.ctx.input` came from `self.raw`, which is valid
+            // UTF-8. Parser indices are kept at ASCII token boundaries, so this
+            // suffix starts on a UTF-8 boundary.
             Ok(true) => MaybeJson::new(unsafe {
                 std::str::from_utf8_unchecked(&parser.ctx.input[parser.index..])
             }),
@@ -56,6 +59,9 @@ impl std::ops::Index<&str> for MaybeJson {
             config: Default::default(),
         };
         match parser.index_object(key) {
+            // SAFETY: `parser.ctx.input` came from `self.raw`, which is valid
+            // UTF-8. Parser indices are kept at ASCII token boundaries, so this
+            // suffix starts on a UTF-8 boundary.
             Ok(true) => MaybeJson::new(unsafe {
                 std::str::from_utf8_unchecked(&parser.ctx.input[parser.index..])
             }),
@@ -79,6 +85,9 @@ impl std::ops::Index<usize> for MaybeJson {
             config: Default::default(),
         };
         match parser.index_array(index) {
+            // SAFETY: `parser.ctx.input` came from `self.raw`, which is valid
+            // UTF-8. Parser indices are kept at ASCII token boundaries, so this
+            // suffix starts on a UTF-8 boundary.
             Ok(true) => MaybeJson::new(unsafe {
                 std::str::from_utf8_unchecked(&parser.ctx.input[parser.index..])
             }),
@@ -114,12 +123,20 @@ impl MaybeJson {
     pub fn from_object_index_error(key: &'static &'static str) -> &'static MaybeJson {
         let ptr = key as *const &'static str as *const u8;
         let ptr = ptr.with_addr(ptr as usize | 1);
+        // SAFETY: `MaybeJson` is `repr(transparent)` over `str`. A zero-length
+        // `str` may use a non-null dangling data pointer; here the pointer is
+        // tagged with bit 0 to encode the missing-key state and is never
+        // dereferenced as string data.
         unsafe { &*(core::ptr::slice_from_raw_parts(ptr, 0) as *const MaybeJson) }
     }
     pub fn from_decode_error(decode_error: &'static DecodeError) -> &'static MaybeJson {
         // We use expose provenance here, so we can use with_exposed_provence when casting
         // back the error.
         let decode_error = (decode_error as *const DecodeError).expose_provenance();
+        // SAFETY: `MaybeJson` is `repr(transparent)` over `str`, and a
+        // zero-length `str` may use a non-null dangling data pointer. The data
+        // pointer stores the exposed address of a `'static DecodeError` and is
+        // recognized by `is_error` before any string access.
         unsafe {
             &*(core::ptr::slice_from_raw_parts(
                 std::ptr::with_exposed_provenance::<u8>(decode_error),
@@ -128,6 +145,10 @@ impl MaybeJson {
         }
     }
     pub const fn const_from_decode_error(decode_error: &'static DecodeError) -> &'static MaybeJson {
+        // SAFETY: same zero-length `MaybeJson` error representation as
+        // `from_decode_error`. This const path cannot use exposed-provenance
+        // helpers, but it stores a pointer to a `'static DecodeError` and never
+        // dereferences it as string data.
         unsafe {
             &*(core::ptr::slice_from_raw_parts(decode_error as *const _ as *const u8, 0)
                 as *const MaybeJson)
@@ -172,6 +193,9 @@ impl MaybeJson {
                 message: "Object Key Index Error",
             })
         } else {
+            // SAFETY: non-key error values are created by `from_decode_error`,
+            // which stores the exposed address of a `'static DecodeError` in
+            // the zero-length string data pointer.
             Some(unsafe { &*(std::ptr::with_exposed_provenance(self.raw.as_ptr().addr())) })
         }
     }
@@ -185,6 +209,10 @@ impl MaybeJson {
         let tagged = self.raw.as_ptr() as usize;
         if tagged & 0b1 == 1 {
             let ptr = std::ptr::with_exposed_provenance(self.raw.as_ptr().addr() & !0b1);
+            // SAFETY: key-error values are created by
+            // `from_object_index_error`, which stores the address of a
+            // `&'static str` slot with bit 0 set. Clearing the tag recovers the
+            // original aligned address.
             Some(unsafe { *(ptr as *const &'static str) })
         } else {
             None
@@ -205,6 +233,9 @@ impl MaybeJson {
                 message: "Empty object is not valid JSON",
             })
         } else {
+            // SAFETY: `MaybeJson` is `repr(transparent)` over `str`, so a
+            // non-empty `&str` has the same reference layout. Non-empty strings
+            // are not used for the tagged error representation.
             unsafe { &*(raw as *const str as *const MaybeJson) }
         }
     }
@@ -258,8 +289,10 @@ mod test {
 
         assert!(value[0].decode_error().is_some());
 
-        assert!(value["nice"]["inner"]["key_for_array"]
-            .decode_error()
-            .is_some());
+        assert!(
+            value["nice"]["inner"]["key_for_array"]
+                .decode_error()
+                .is_some()
+        );
     }
 }

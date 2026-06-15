@@ -33,7 +33,8 @@ impl<'a> Ctx<'a> {
     /// Returns a string slice containing the entire input.
     #[inline]
     pub fn as_str(&self) -> &'a str {
-        // Safety: input is guaranteed to be valid UTF-8 by construction
+        // SAFETY: `Ctx::new` stores bytes obtained from an `&str`, and this
+        // module never mutates `input`.
         unsafe { str::from_utf8_unchecked(self.input) }
     }
 
@@ -64,6 +65,13 @@ impl<'a> Ctx<'a> {
     /// ```
     pub fn try_extend_lifetime(&self, text: &str) -> Option<&'a str> {
         if self.input.as_ptr_range().contains(&text.as_ptr()) {
+            // SAFETY: `text` is already a valid `str` reference. If its start
+            // address lies inside `self.input`, then safe Rust cannot have made
+            // it point into a different live allocation that overlaps this
+            // range. The allocation backing `self.input` is borrowed for `'a`,
+            // so reusing `text`'s fat pointer with lifetime `'a` is valid for
+            // memory safety even if `text` extends past the particular
+            // `self.input` subslice.
             Some(unsafe { &*(text as *const str) })
         } else {
             None

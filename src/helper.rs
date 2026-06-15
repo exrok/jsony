@@ -6,9 +6,9 @@ pub mod owned_cow {
     use std::borrow::Cow;
 
     use crate::{
+        FromBinary, FromJson,
         binary::Decoder,
         json::{DecodeError, Parser},
-        FromBinary, FromJson,
     };
 
     pub fn decode_json<'de, 'a, T>(
@@ -35,9 +35,9 @@ pub mod json_string {
     use std::any::type_name;
 
     use crate::{
+        BytesWriter, FromBinary, FromJson, TextWriter, ToBinary, ToJson,
         binary::Decoder,
         json::{AlwaysString, DecodeError, Parser},
-        BytesWriter, FromBinary, FromJson, TextWriter, ToBinary, ToJson,
     };
 
     pub fn encode_json<T: ToJson>(value: &T, output: &mut TextWriter) -> AlwaysString {
@@ -89,8 +89,8 @@ pub mod json_string {
 /// Note: This allows for duplicate keys both on decoding and encoding.
 pub mod object_as_vec_of_tuple {
     use crate::{
-        json::{DecodeError, JsonKeyKind},
         FromJson, TextWriter, ToJson,
+        json::{DecodeError, JsonKeyKind},
     };
     pub fn encode_json<K: ToJson<Kind: JsonKeyKind>, V: ToJson>(
         value: &[(K, V)],

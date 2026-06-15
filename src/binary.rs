@@ -74,6 +74,8 @@ impl<'a> Decoder<'a> {
     }
     pub fn new(slice: &'a [u8]) -> Self {
         let start = NonNull::new(slice.as_ptr() as *mut u8).unwrap();
+        // SAFETY: adding `slice.len()` to `slice.as_ptr()` yields the
+        // one-past-the-end pointer for the same slice allocation.
         let end = NonNull::new(unsafe { slice.as_ptr().add(slice.len()) as *mut u8 }).unwrap();
         Self {
             start,
@@ -120,8 +122,12 @@ impl<'a> Decoder<'a> {
                 break 'return_empty;
             }
             let ptr = self.start.as_ptr();
+            // SAFETY: `byte_len <= remaining_size`, so advancing by `byte_len`
+            // stays within the decoder's input allocation.
             self.start = unsafe { NonNull::new_unchecked(ptr.add(byte_len)) };
             if ptr.addr() & (layout.align() - 1) != 0 {
+                // SAFETY: `byte_len` came from checked multiplication, and
+                // `layout.align()` is a valid non-zero power-of-two alignment.
                 let alloc = unsafe {
                     std::alloc::alloc(Layout::from_size_align_unchecked(byte_len, layout.align()))
                 };
@@ -129,6 +135,9 @@ impl<'a> Decoder<'a> {
                     self.report_static_error("Allocation failed");
                     break 'return_empty;
                 }
+                // SAFETY: `alloc` points to `byte_len` bytes and `ptr` points
+                // to `byte_len` remaining input bytes. The allocation is fresh,
+                // so the regions do not overlap.
                 unsafe {
                     std::ptr::copy_nonoverlapping(ptr, alloc, byte_len);
                 }
@@ -140,15 +149,27 @@ impl<'a> Decoder<'a> {
         return (false, std::ptr::without_provenance_mut(layout.align()), 0);
     }
 
+    /// # Safety
+    ///
+    /// `T` must be valid for every bit pattern, including all-zero bytes and
+    /// the next `size_of::<T>()` bytes in the decoder. This is normally upheld
+    /// by calling this only for `FromBinary::POD` types.
     pub unsafe fn pod_type<T>(&mut self) -> T {
         let size = size_of::<T>();
         if size > self.remaining_size() {
             self.eof = true;
+            // SAFETY: the caller guarantees all-zero bytes are a valid `T`.
             unsafe { std::mem::zeroed() }
         } else {
             let addr = self.start;
-            self.start = addr.add(size);
-            addr.cast::<T>().read_unaligned()
+            // SAFETY: `size <= remaining_size`, so advancing stays within the
+            // decoder input. `read_unaligned` is used because the input bytes
+            // may not be aligned for `T`, and the caller guarantees the bytes
+            // are a valid `T` representation.
+            unsafe {
+                self.start = addr.add(size);
+                addr.cast::<T>().read_unaligned()
+            }
         }
     }
     fn try_borrow_untyped_slice(&mut self, layout: Layout) -> (*const u8, usize) {
@@ -163,6 +184,8 @@ impl<'a> Decoder<'a> {
                 break 'error;
             }
             let ptr = self.start.as_ptr();
+            // SAFETY: `byte_len <= remaining_size`, so advancing by `byte_len`
+            // stays within the decoder's input allocation.
             self.start = unsafe { NonNull::new_unchecked(ptr.add(byte_len)) };
             if ptr.addr() & (layout.align() - 1) != 0 {
                 self.report_static_error("Attempted to borrowed slice of unaligned data");
@@ -174,6 +197,8 @@ impl<'a> Decoder<'a> {
     }
 
     fn remaining_size(&self) -> usize {
+        // SAFETY: `start` and `end` are maintained as pointers into the same
+        // input slice allocation, with `start <= end`.
         unsafe { self.end.as_ptr().offset_from(self.start.as_ptr()) as usize }
     }
     /// Reports a static error message.
@@ -200,6 +225,9 @@ impl<'a> Decoder<'a> {
     ///
     /// Returns a reference to the read array, or a zero-filled array if EOF is reached.
     pub fn byte_array<const N: usize>(&mut self) -> &'a [u8; N] {
+        // SAFETY: after checking `N <= remaining_size`, the next `N` bytes are
+        // inside the input slice. `[u8; N]` has alignment 1, so the cast is
+        // aligned, and the returned reference is tied to the input lifetime.
         unsafe {
             if N > self.remaining_size() {
                 self.eof = true;
@@ -215,6 +243,8 @@ impl<'a> Decoder<'a> {
     ///
     /// Returns the read byte, or 0 if EOF is reached.
     pub fn byte(&mut self) -> u8 {
+        // SAFETY: when `start < end`, `start` points to at least one remaining
+        // byte in the input slice.
         unsafe {
             if self.start.as_ptr() >= self.end.as_ptr() {
                 self.eof = true;
@@ -230,6 +260,8 @@ impl<'a> Decoder<'a> {
     ///
     /// Returns the decoded length as a `usize`, or 0 if EOF is reached.
     pub fn read_length(&mut self) -> usize {
+        // SAFETY: when `start < end`, `start` points to one remaining byte in
+        // the input slice. Advancing by one stays in bounds.
         unsafe {
             if self.start.as_ptr() >= self.end.as_ptr() {
                 self.eof = true;
@@ -262,6 +294,8 @@ impl<'a> Decoder<'a> {
     ///
     /// Returns a reference to the read slice, or an empty slice if EOF is reached.
     pub fn byte_slice(&mut self, n: usize) -> &'a [u8] {
+        // SAFETY: after checking `n <= remaining_size`, the next `n` bytes form
+        // a valid subslice of the decoder input. `u8` alignment is 1.
         unsafe {
             if n > self.remaining_size() {
                 self.eof = true;
@@ -303,6 +337,10 @@ pub fn write_length(encoder: &mut BytesWriter, len: usize) {
 macro_rules! impl_bincode_for_numeric_primitive {
     ($(( $ty:ty, $sz: tt )),* $(,)?) => {
         $(
+            // SAFETY: `$ty` is an integer primitive: every bit pattern is
+            // valid, there is no padding, and the implementation writes the
+            // canonical little-endian scalar bytes required by the POD
+            // contract.
             unsafe impl ToBinary for $ty {
                 const POD: bool = true;
                 fn encode_binary(&self, encoder: &mut BytesWriter) {
@@ -314,9 +352,15 @@ macro_rules! impl_bincode_for_numeric_primitive {
                     *self = self.to_le()
                 }
             }
+            // SAFETY: same POD argument as `ToBinary`: integer primitives have
+            // no padding and every byte pattern of the fixed-size little-endian
+            // encoding is a valid `$ty`.
             unsafe impl<'a> FromBinary<'a> for $ty {
                 const POD: bool = true;
                 fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+                    // SAFETY: after the size check, the next `$sz` bytes are
+                    // in bounds. Integer byte arrays have alignment 1, and
+                    // advancing by `$sz` stays within the decoder input.
                     unsafe {
                         if decoder.remaining_size() < $sz {
                             decoder.eof = true;
@@ -337,6 +381,8 @@ macro_rules! impl_bincode_for_numeric_primitive {
     };
 }
 
+// SAFETY: `u8` is a one-byte integer primitive. Every bit pattern is valid, so
+// marking it POD satisfies the raw-copy contract.
 unsafe impl ToBinary for u8 {
     const POD: bool = true;
     fn encode_binary(&self, encoder: &mut BytesWriter) {
@@ -344,6 +390,8 @@ unsafe impl ToBinary for u8 {
     }
 }
 
+// SAFETY: same POD argument as `ToBinary for u8`; decoding consumes one byte
+// and any byte is a valid `u8`.
 unsafe impl<'a> FromBinary<'a> for u8 {
     const POD: bool = true;
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
@@ -361,10 +409,17 @@ impl_bincode_for_numeric_primitive! {
 macro_rules! impl_bincode_via_transmute {
     ($( $src:ty as $reuse: ty ),* $(,)?) => {
         $(
+            // SAFETY: each macro invocation pairs scalar types of equal size
+            // with no padding. All bit patterns are valid for the source type
+            // (`f32`/`f64`, signed integers), so POD raw copying is sound.
             unsafe impl ToBinary for $src {
                 const POD: bool = true;
                 fn encode_binary(&self, encoder: &mut BytesWriter) {
                     <$reuse>::encode_binary(
+                        // SAFETY: each `$src`/`$reuse` pair has the same size
+                        // and bit layout for raw encoding (`f*` with its IEEE
+                        // integer bits, signed integers with same-width
+                        // unsigned integers).
                         unsafe { &*(self as *const _ as *const $reuse) },
                         encoder
                     )
@@ -373,13 +428,21 @@ macro_rules! impl_bincode_via_transmute {
                 #[cfg(not(target_endian = "little"))]
                 fn endian_transform(&mut self) {
                     <$reuse>::endian_transform(
+                        // SAFETY: same layout pairing as `encode_binary`, with
+                        // unique access through `&mut self`.
                         unsafe { &mut *(self as *mut _ as *mut $reuse) }
                     )
                 }
             }
+            // SAFETY: the decoded `$reuse` scalar has the same size as `$src`,
+            // and every bit pattern is valid for both sides of each listed
+            // pair. The POD contract is therefore preserved.
             unsafe impl<'a> FromBinary<'a> for $src {
                 const POD: bool = true;
                 fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+                    // SAFETY: `$reuse` and `$src` are same-size scalar types,
+                    // and every decoded `$reuse` bit pattern is a valid `$src`
+                    // for these pairs.
                     unsafe {
                         std::mem::transmute::<$reuse, $src>(<$reuse>::decode_binary(decoder))
                     }
@@ -388,6 +451,8 @@ macro_rules! impl_bincode_via_transmute {
                 #[cfg(not(target_endian = "little"))]
                 fn endian_transform(&mut self) {
                     <$reuse>::endian_transform(
+                        // SAFETY: same layout pairing as `encode_binary`, with
+                        // unique access through `&mut self`.
                         unsafe { &mut *(self as *mut _ as *mut $reuse) }
                     )
                 }
@@ -406,12 +471,16 @@ impl_bincode_via_transmute! {
     i128 as u128,
 }
 
+// SAFETY: this impl does not opt into POD. It encodes through a checked `u8`
+// representation, so no raw-copy invariants are claimed.
 unsafe impl ToBinary for bool {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         encoder.push(*self as u8)
     }
 }
 
+// SAFETY: this impl does not opt into POD. It constructs a valid `bool` from a
+// comparison result, not by reinterpreting arbitrary input bytes as `bool`.
 unsafe impl<'a> FromBinary<'a> for bool {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         u8::decode_binary(decoder) == 1
@@ -423,6 +492,9 @@ fn encode_array_body<T: ToBinary>(slice: &[T], encoder: &mut BytesWriter) {
     let can_memcopy = const { T::POD && (cfg!(target_endian = "little") || size_of::<T>() == 1) };
     if can_memcopy {
         let byte_size = std::mem::size_of_val(slice);
+        // SAFETY: the `POD` contract says all initialized bytes of `T` may be
+        // copied directly for this format. The endian condition ensures the raw
+        // in-memory representation matches the encoded representation.
         encoder.push_bytes(unsafe {
             std::slice::from_raw_parts(slice.as_ptr().cast::<u8>(), byte_size)
         });
@@ -433,6 +505,9 @@ fn encode_array_body<T: ToBinary>(slice: &[T], encoder: &mut BytesWriter) {
     }
 }
 
+// SAFETY: this impl does not opt into POD for slices themselves; elements are
+// encoded one-by-one unless `T::POD` lets `encode_array_body` use its documented
+// raw byte path.
 unsafe impl<T: ToBinary> ToBinary for [T] {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         write_length(encoder, self.len());
@@ -440,6 +515,9 @@ unsafe impl<T: ToBinary> ToBinary for [T] {
     }
 }
 
+// SAFETY: this impl does not mark `Cow<[T]>` as POD. The borrowed fast path is
+// guarded by `T::POD`, endian compatibility, and decoder alignment checks; the
+// fallback decodes into an owned `Vec<T>`.
 unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Cow<'a, [T]>
 where
     T: ToOwned + Clone,
@@ -453,6 +531,9 @@ where
             // already.
             if const { size_of::<T>() == 0 } {
                 let length = decoder.read_length();
+                // SAFETY: ZST slices use a dangling aligned pointer and carry
+                // no element storage. `NonNull::<T>::dangling()` is aligned for
+                // `T`.
                 Cow::Borrowed(unsafe {
                     std::slice::from_raw_parts(NonNull::<T>::dangling().as_ptr(), length)
                 })
@@ -460,10 +541,16 @@ where
                 let (alloc, ptr, length) =
                     decoder.try_borrow_or_copy_untyped_slice(Layout::new::<T>());
                 if alloc {
+                    // SAFETY: `try_borrow_or_copy_untyped_slice` returned a
+                    // fresh allocation containing `length` properly aligned POD
+                    // elements of `T`; capacity equals length.
                     Cow::Owned(unsafe {
                         Vec::from_raw_parts(ptr as *const T as *mut T, length, length)
                     })
                 } else {
+                    // SAFETY: the decoder returned an input pointer aligned for
+                    // `T` with `length` POD elements still borrowed from the
+                    // original input.
                     Cow::Borrowed(unsafe { std::slice::from_raw_parts(ptr as *const T, length) })
                 }
             }
@@ -473,6 +560,9 @@ where
     }
 }
 
+// SAFETY: this impl does not mark references as POD. The const assertion
+// requires `T` to be POD and endian-compatible before returning a borrowed
+// slice, and `try_borrow_untyped_slice` enforces bounds and alignment.
 unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for &'a [T] {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         // ideally we would like avoid this post mono assertion
@@ -483,11 +573,16 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for &'a [T] {
         // already.
         if const { size_of::<T>() == 0 } {
             let length = decoder.read_length();
+            // SAFETY: ZST slices use a dangling aligned pointer and carry no
+            // element storage.
             return unsafe {
                 std::slice::from_raw_parts(NonNull::<T>::dangling().as_ptr(), length)
             };
         }
         let (ptr, length) = decoder.try_borrow_untyped_slice(Layout::new::<T>());
+        // SAFETY: `try_borrow_untyped_slice` verifies the borrowed input pointer
+        // is aligned for `T` and that the byte range contains `length` POD
+        // elements.
         unsafe { std::slice::from_raw_parts(ptr as *const T, length) }
     }
 }
@@ -498,18 +593,24 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for &'a [T] {
 //         decoder.byte_slice(len)
 //     }
 // }
+// SAFETY: this impl does not opt into POD; it delegates to the byte-slice
+// encoder for the string's UTF-8 bytes.
 unsafe impl ToBinary for String {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         self.as_bytes().encode_binary(encoder);
     }
 }
 
+// SAFETY: this impl does not opt into POD; `str` is encoded only as its valid
+// UTF-8 byte sequence.
 unsafe impl ToBinary for str {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         self.as_bytes().encode_binary(encoder);
     }
 }
 
+// SAFETY: this impl does not opt into POD. It decodes bytes through
+// `str::from_utf8`, so only valid UTF-8 can become `&str`.
 unsafe impl<'a> FromBinary<'a> for &'a str {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         match std::str::from_utf8(<&[u8]>::decode_binary(decoder)) {
@@ -522,6 +623,9 @@ unsafe impl<'a> FromBinary<'a> for &'a str {
     }
 }
 
+// SAFETY: `[T; N]` is POD exactly when `T` is POD. Rust arrays are contiguous
+// repetitions of `T` with no inter-element padding, and endian transformation is
+// applied per element on non-little-endian targets.
 unsafe impl<'a, T: FromBinary<'a>, const N: usize> FromBinary<'a> for [T; N] {
     const POD: bool = T::POD;
 
@@ -530,6 +634,8 @@ unsafe impl<'a, T: FromBinary<'a>, const N: usize> FromBinary<'a> for [T; N] {
             let byte_size = std::mem::size_of::<[T; N]>();
             let bytes = decoder.byte_slice(byte_size);
             if bytes.len() >= byte_size {
+                // SAFETY: `T::POD` means every copied bit pattern is a valid
+                // `T`; `read_unaligned` handles arbitrary input alignment.
                 let array = unsafe { std::ptr::read_unaligned::<[T; N]>(bytes.as_ptr().cast()) };
 
                 #[cfg(not(target_endian = "little"))]
@@ -551,6 +657,9 @@ unsafe impl<'a, T: FromBinary<'a>, const N: usize> FromBinary<'a> for [T; N] {
         }
     }
 }
+// SAFETY: same array POD argument as `FromBinary`: raw-copy encoding is used
+// only through `encode_array_body`, which checks `T::POD` and endian
+// compatibility.
 unsafe impl<T: ToBinary, const N: usize> ToBinary for [T; N] {
     const POD: bool = T::POD;
 
@@ -568,6 +677,8 @@ unsafe impl<T: ToBinary, const N: usize> ToBinary for [T; N] {
     }
 }
 
+// SAFETY: `Vec<T>` is not marked POD. Its raw-copy decode path is guarded by
+// `T::POD`; otherwise elements are decoded and pushed through safe Vec APIs.
 unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Vec<T> {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         let len = decoder.read_length();
@@ -579,6 +690,10 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Vec<T> {
             let bytes = decoder.byte_slice(byte_size);
             if bytes.len() >= byte_size {
                 let mut vec: Vec<T> = Vec::with_capacity(len);
+                // SAFETY: `vec` has capacity for `len` elements, and
+                // `byte_size == len * size_of::<T>()`. `T::POD` guarantees the
+                // copied bytes are valid initialized `T` values; `set_len`
+                // follows only after the copy completes.
                 unsafe {
                     std::ptr::copy_nonoverlapping::<u8>(
                         bytes.as_ptr(),
@@ -607,24 +722,32 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Vec<T> {
         }
     }
 }
+// SAFETY: `Vec<T>` is not marked POD; it encodes as a length plus the slice
+// body, which relies on `T`'s own `ToBinary` implementation.
 unsafe impl<T: ToBinary> ToBinary for Vec<T> {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         <[T]>::encode_binary(self, encoder);
     }
 }
 
+// SAFETY: references are not marked POD and only forward encoding to the
+// referent's `ToBinary` implementation.
 unsafe impl<T: ToBinary + ?Sized> ToBinary for &mut T {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         (**self).encode_binary(encoder)
     }
 }
 
+// SAFETY: references are not marked POD and only forward encoding to the
+// referent's `ToBinary` implementation.
 unsafe impl<T: ToBinary + ?Sized> ToBinary for &T {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         (**self).encode_binary(encoder)
     }
 }
 
+// SAFETY: maps are not marked POD. Encoding writes length and then delegates to
+// the key/value `ToBinary` impls for each live entry.
 unsafe impl<K: ToBinary, V: ToBinary, S> ToBinary for HashMap<K, V, S> {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         write_length(encoder, self.len());
@@ -635,6 +758,8 @@ unsafe impl<K: ToBinary, V: ToBinary, S> ToBinary for HashMap<K, V, S> {
     }
 }
 
+// SAFETY: maps are not marked POD. Decoding constructs entries through `K` and
+// `V`'s `FromBinary` impls and inserts only fully constructed values.
 unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, V: FromBinary<'a>, S: BuildHasher + Default>
     FromBinary<'a> for HashMap<K, V, S>
 {
@@ -653,6 +778,8 @@ unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, V: FromBinary<'a>, S: BuildHasher
     }
 }
 
+// SAFETY: sets are not marked POD. Encoding writes length and delegates each
+// element to `K`'s `ToBinary` impl.
 unsafe impl<K: ToBinary, S> ToBinary for HashSet<K, S> {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         write_length(encoder, self.len());
@@ -662,6 +789,8 @@ unsafe impl<K: ToBinary, S> ToBinary for HashSet<K, S> {
     }
 }
 
+// SAFETY: sets are not marked POD. Decoding constructs elements through `K`'s
+// `FromBinary` impl before inserting them into the set.
 unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, S: BuildHasher + Default> FromBinary<'a>
     for HashSet<K, S>
 {
@@ -679,6 +808,8 @@ unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, S: BuildHasher + Default> FromBin
     }
 }
 
+// SAFETY: maps are not marked POD. Encoding writes length and delegates to
+// key/value `ToBinary` impls for each live entry.
 unsafe impl<K: ToBinary, V: ToBinary> ToBinary for BTreeMap<K, V> {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         write_length(encoder, self.len());
@@ -689,6 +820,8 @@ unsafe impl<K: ToBinary, V: ToBinary> ToBinary for BTreeMap<K, V> {
     }
 }
 
+// SAFETY: maps are not marked POD. Decoding constructs entries through `K` and
+// `V`'s `FromBinary` impls and inserts only fully constructed values.
 unsafe impl<'a, K: FromBinary<'a> + Ord, V: FromBinary<'a>> FromBinary<'a> for BTreeMap<K, V> {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         let len = decoder.read_length();
@@ -705,6 +838,8 @@ unsafe impl<'a, K: FromBinary<'a> + Ord, V: FromBinary<'a>> FromBinary<'a> for B
     }
 }
 
+// SAFETY: sets are not marked POD. Encoding writes length and delegates each
+// element to `K`'s `ToBinary` impl.
 unsafe impl<K: ToBinary> ToBinary for BTreeSet<K> {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         write_length(encoder, self.len());
@@ -714,6 +849,8 @@ unsafe impl<K: ToBinary> ToBinary for BTreeSet<K> {
     }
 }
 
+// SAFETY: sets are not marked POD. Decoding constructs elements through `K`'s
+// `FromBinary` impl before inserting them into the set.
 unsafe impl<'a, K: FromBinary<'a> + Ord> FromBinary<'a> for BTreeSet<K> {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         let len = decoder.read_length();
@@ -729,36 +866,48 @@ unsafe impl<'a, K: FromBinary<'a> + Ord> FromBinary<'a> for BTreeSet<K> {
     }
 }
 
+// SAFETY: boxes are not marked POD. Encoding forwards to the initialized
+// pointee's `ToBinary` implementation.
 unsafe impl<T: ToBinary + ?Sized> ToBinary for Box<T> {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         T::encode_binary(self, encoder)
     }
 }
 
+// SAFETY: strings are not marked POD. Decoding first obtains a valid `&str`,
+// then copies it into an owned `String`.
 unsafe impl<'a> FromBinary<'a> for String {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         <&str>::decode_binary(decoder).into()
     }
 }
 
+// SAFETY: boxed strings are not marked POD. Decoding first obtains a valid
+// `&str`, then copies it into an owned `Box<str>`.
 unsafe impl<'a> FromBinary<'a> for Box<str> {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         <&str>::decode_binary(decoder).into()
     }
 }
 
+// SAFETY: boxed slices are not marked POD. Decoding constructs a `Vec<T>` whose
+// elements are valid by `T`'s `FromBinary` impl, then converts it to a box.
 unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Box<[T]> {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         <Vec<T>>::decode_binary(decoder).into()
     }
 }
 
+// SAFETY: boxes are not marked POD. Decoding constructs a valid `T` first, then
+// places it in a `Box`.
 unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Box<T> {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         Box::new(T::decode_binary(decoder))
     }
 }
 
+// SAFETY: options are not marked POD. Encoding uses an explicit tag and only
+// delegates to `T` when a value is present.
 unsafe impl<T: ToBinary> ToBinary for Option<T> {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         if let Some(value) = self {
@@ -770,6 +919,8 @@ unsafe impl<T: ToBinary> ToBinary for Option<T> {
     }
 }
 
+// SAFETY: options are not marked POD. Decoding constructs `Some(T)` only from a
+// fully decoded `T`; any other tag becomes `None`.
 unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Option<T> {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         if u8::decode_binary(decoder) == 1 {
@@ -780,12 +931,16 @@ unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Option<T> {
     }
 }
 
+// SAFETY: `char` is not marked POD. Encoding writes the Unicode scalar value as
+// a checked `u32` representation.
 unsafe impl ToBinary for char {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         (*self as u32).encode_binary(encoder)
     }
 }
 
+// SAFETY: `char` is not marked POD. Decoding validates the `u32` with
+// `char::from_u32` before constructing a `char`.
 unsafe impl<'a> FromBinary<'a> for char {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         let raw = u32::decode_binary(decoder);
@@ -801,6 +956,8 @@ unsafe impl<'a> FromBinary<'a> for char {
     }
 }
 
+// SAFETY: `Duration` is not marked POD. Encoding uses the public seconds and
+// nanoseconds accessors, preserving `Duration`'s invariant.
 unsafe impl ToBinary for Duration {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         let secs = self.as_secs();
@@ -810,6 +967,8 @@ unsafe impl ToBinary for Duration {
     }
 }
 
+// SAFETY: `Duration` is not marked POD. Decoding uses `Duration::new`, which
+// constructs a valid normalized duration from the decoded components.
 unsafe impl<'a> FromBinary<'a> for Duration {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         let secs = u64::decode_binary(decoder);
@@ -818,6 +977,8 @@ unsafe impl<'a> FromBinary<'a> for Duration {
     }
 }
 
+// SAFETY: `Cow<T>` is not marked POD. Encoding forwards to the borrowed target,
+// so it claims no representation invariants for the enum itself.
 unsafe impl<'a, T: ToBinary + ToOwned + ?Sized> ToBinary for Cow<'a, T> {
     fn encode_binary(&self, encoder: &mut BytesWriter) {
         self.as_ref().encode_binary(encoder)
@@ -832,6 +993,8 @@ unsafe impl<'a, T: ToBinary + ToOwned + ?Sized> ToBinary for Cow<'a, T> {
 //     }
 // }
 
+// SAFETY: `Cow<str>` is not marked POD. Decoding obtains a UTF-8-validated
+// borrowed `&str` and wraps it without changing its lifetime.
 unsafe impl<'a> FromBinary<'a> for Cow<'a, str> {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
         Cow::Borrowed(<&'a str>::decode_binary(decoder))
@@ -842,8 +1005,8 @@ unsafe impl<'a> FromBinary<'a> for Cow<'a, str> {
 mod test {
     use std::fmt::Debug;
 
-    use crate::from_binary;
     use crate::BytesWriter;
+    use crate::from_binary;
 
     use super::*;
     #[derive(Default)]
@@ -856,6 +1019,8 @@ mod test {
             &'a mut self,
             value: &T,
         ) {
+            // SAFETY: setting the length to zero does not expose any
+            // uninitialized bytes and preserves the writer's capacity.
             unsafe {
                 self.buffer.set_len(0);
             }
@@ -1059,12 +1224,16 @@ mod test {
 macro_rules! tuple_impls {
     ($(($($tn: ident: $ty: tt),*)),* $(,)?) => {
         $(
+            // SAFETY: tuples are not marked POD here. Encoding delegates to
+            // each field's `ToBinary` implementation in tuple order.
             unsafe impl<$($ty: ToBinary),*> ToBinary for ($($ty,)*) {
                 fn encode_binary(&self, encoder: &mut BytesWriter) {
                     let ($($tn),*,) = self;
                     $($tn.encode_binary(encoder);)*
                 }
             }
+            // SAFETY: tuples are not marked POD here. Decoding constructs the
+            // tuple directly from fully decoded field values in tuple order.
             unsafe impl<'a, $($ty: FromBinary<'a>),*> FromBinary<'a> for ($($ty,)*) {
                 fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
                     ($( $ty::decode_binary(decoder), )*)

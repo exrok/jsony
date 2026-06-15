@@ -91,7 +91,7 @@ macro_rules! assert_binary_round_trip {
 // for testing single with that supports every option
 mod bool_as_int {
     use jsony::{
-        json::DecodeError, BytesWriter, FromBinary, FromJson, TextWriter, ToBinary, ToJson,
+        BytesWriter, FromBinary, FromJson, TextWriter, ToBinary, ToJson, json::DecodeError,
     };
 
     pub fn encode_json(value: &bool, output: &mut TextWriter) {
@@ -117,7 +117,7 @@ mod bool_as_int {
 mod from_str {
     use std::str::FromStr;
 
-    use jsony::{json::DecodeError, FromBinary};
+    use jsony::{FromBinary, json::DecodeError};
 
     pub fn decode_json<T: FromStr>(
         parser: &mut jsony::parser::Parser<'_>,
@@ -176,7 +176,7 @@ mod to_string {
 
 // for testing with that borrows lifetimes
 mod utf8_as_bytes {
-    use jsony::{json::DecodeError, FromBinary, FromJson};
+    use jsony::{FromBinary, FromJson, json::DecodeError};
 
     pub fn decode_json<'a>(
         parser: &mut jsony::parser::Parser<'a>,

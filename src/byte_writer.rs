@@ -1,4 +1,4 @@
-use std::alloc::{alloc, dealloc, handle_alloc_error, realloc, Layout};
+use std::alloc::{Layout, alloc, dealloc, handle_alloc_error, realloc};
 use std::borrow::Cow;
 use std::fmt;
 use std::marker::PhantomData;
@@ -66,19 +66,26 @@ impl Drop for BytesWriter<'_> {
     fn drop(&mut self) {
         match self.backing {
             Backing::Owned | Backing::Write { .. } => {
+                // SAFETY: for these backing variants, a non-zero `capacity`
+                // means `data` was allocated by this type with the global
+                // allocator and alignment 1. A zero-capacity writer uses a
+                // dangling pointer and has no allocation to free.
                 unsafe {
                     if self.capacity != 0 {
-                        // SAFETY: when `self.capacity > 0`, `self.capacity` is the same value
-                        // used for allocate the block of memory pointed by `self.data`.
                         let layout = Layout::from_size_align_unchecked(self.capacity, 1);
                         dealloc(self.data, layout);
                     }
                 }
             }
-            Backing::Vec { mut bytes, .. } => unsafe {
-                let vec = bytes.as_mut();
-                vec.set_len(self.len);
-            },
+            Backing::Vec { mut bytes, .. } => {
+                // SAFETY: this writer was created from an exclusive `&mut Vec<u8>`
+                // and keeps that borrow for `'a`. `data`, `capacity`, and `len`
+                // describe the same allocation, with `0..len` initialized.
+                unsafe {
+                    let vec = bytes.as_mut();
+                    vec.set_len(self.len);
+                }
+            }
             Backing::Borrowed { .. } => (),
         }
     }
@@ -121,6 +128,8 @@ impl<'a> BytesWriter<'a> {
         if self.len < 2 {
             return None;
         }
+        // SAFETY: `len >= 2`, `0..len` is initialized by the writer invariant,
+        // and `&mut self` gives exclusive access to these bytes.
         Some(unsafe { &mut *self.data.add(self.len - 2).cast() })
     }
     /// Returns a mutable reference to the last byte, if available.
@@ -128,6 +137,8 @@ impl<'a> BytesWriter<'a> {
         if self.len == 0 {
             return None;
         }
+        // SAFETY: `len > 0`, `0..len` is initialized by the writer invariant,
+        // and `&mut self` gives exclusive access to this byte.
         Some(unsafe { &mut *self.data.add(self.len - 1) })
     }
     /// Clears the buffer, setting its length to zero.
@@ -181,6 +192,9 @@ impl<'a> BytesWriter<'a> {
     ///
     /// Note that any write operation except `push` may flush this buffer to the backing store.
     pub fn buffer_slice(&self) -> &[u8] {
+        // SAFETY: the writer invariant maintains `len <= capacity` and
+        // initializes all bytes in `0..len`. For `len == 0`, `data` may be a
+        // dangling but non-null aligned pointer, which is allowed for slices.
         unsafe { std::slice::from_raw_parts(self.data, self.len) }
     }
 
@@ -188,20 +202,22 @@ impl<'a> BytesWriter<'a> {
     pub fn into_vec(self) -> Vec<u8> {
         let this = ManuallyDrop::new(self);
         match this.backing {
-            Backing::Vec { mut bytes, .. } => unsafe {
-                let vec = bytes.as_mut();
-                vec.set_len(this.len);
-                std::mem::take(vec)
-            },
+            Backing::Vec { mut bytes, .. } => {
+                // SAFETY: this writer has exclusive access to the borrowed Vec.
+                // The first `this.len` bytes are initialized, so restoring the
+                // Vec length before taking it preserves its allocation invariants.
+                unsafe {
+                    let vec = bytes.as_mut();
+                    vec.set_len(this.len);
+                    std::mem::take(vec)
+                }
+            }
             Backing::Borrowed { .. } => this.buffer_slice().into(),
             Backing::Write { .. } | Backing::Owned => {
-                // Safety: Unless the backing is `Backing::Borrowed` or Vec then the internal
-                // buffer is always backed by an internal buffer allocated in the global
-                // allocator.
-                //
-                // One uncertain case is when the buffer has zero capacity. Once,
-                // Vec::into_raw_parts is stabilized we switch to constructing empty
-                // buffers which so that this pattern is blessed.
+                // SAFETY: owned/write buffers are allocated by this type with the
+                // global allocator and alignment 1; for capacity 0 the dangling
+                // pointer is valid for an empty Vec. `ManuallyDrop` prevents the
+                // writer from freeing the allocation after transferring it.
                 unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) }
             }
         }
@@ -214,11 +230,13 @@ impl<'a> BytesWriter<'a> {
     pub fn owned_into_vec(self) -> Vec<u8> {
         let mut this = ManuallyDrop::new(self);
         if let Backing::Owned = this.backing {
-            // One uncertain case is when the buffer has zero capacity. Once,
-            // Vec::into_raw_parts is stabilized we switch to constructing empty
-            // buffers which so that this pattern is blessed.
+            // SAFETY: an owned buffer is allocated by this type with the global
+            // allocator and alignment 1; for capacity 0 the dangling pointer is
+            // valid for an empty Vec. `ManuallyDrop` prevents a double free.
             unsafe { Vec::from_raw_parts(this.data, this.len, this.capacity) }
         } else {
+            // SAFETY: `this` has not been dropped yet, and this branch does not
+            // move out any raw allocation owned by it.
             unsafe { ManuallyDrop::drop(&mut this) };
             panic!("Expected write buffer to backed by an owned allocation");
         }
@@ -234,13 +252,10 @@ impl<'a> BytesWriter<'a> {
         let data = this.data;
         let len = this.len;
         if let Backing::Vec { bytes, .. } = &mut this.backing {
-            // Safety: Unless the backing is `Backing::Borrowed` then the internal
-            // buffer is always backed by an internal buffer allocated in the global
-            // allocator.
-            //
-            // One uncertain case is when the buffer has zero capacity. Once,
-            // Vec::into_raw_parts is stabilized we switch to constructing empty
-            // buffers which so that this pattern is blessed.
+            // SAFETY: the writer has exclusive access to the backing Vec. The
+            // first `len` bytes are initialized, so restoring the Vec length is
+            // valid and yields the previous length used to compute the appended
+            // suffix.
             let offset = unsafe {
                 let bytes = bytes.as_mut();
                 let oldlen = bytes.len();
@@ -252,9 +267,13 @@ impl<'a> BytesWriter<'a> {
             // clamp to an empty slice rather than underflowing `len - offset`
             // (which would build an `&[u8]` with a bogus, enormous length).
             let start = offset.min(len);
+            // SAFETY: `start <= len <= capacity`, and the backing Vec now owns
+            // these initialized bytes for lifetime `'a`. A zero-length suffix may
+            // use a one-past or dangling aligned pointer.
             return unsafe { std::slice::from_raw_parts(data.add(start), len - start) };
         }
-        // Safety: We haven't dropped it yet.
+        // SAFETY: `this` has not been dropped yet, and no allocation was moved
+        // out on this error path.
         unsafe { ManuallyDrop::drop(&mut this) };
         panic!("Expected write buffer to backed by a Vec<u8>");
     }
@@ -269,14 +288,20 @@ impl<'a> BytesWriter<'a> {
         let len = this.len;
         let capacity = this.capacity;
         match &this.backing {
+            // SAFETY: the caller guarantees the initialized bytes are UTF-8.
+            // The Vec raw parts belong to this writer and are transferred under
+            // `ManuallyDrop`.
             Backing::Owned => Cow::Owned(unsafe {
                 String::from_utf8_unchecked(Vec::from_raw_parts(data, len, capacity))
             }),
+            // SAFETY: the caller guarantees the initialized bytes are UTF-8,
+            // and borrowed backing storage outlives `'a`.
             Backing::Borrowed { .. } => Cow::Borrowed(unsafe {
                 std::str::from_utf8_unchecked(std::slice::from_raw_parts(data, len))
             }),
             _ => {
-                // Safety: We haven't dropped it yet nor will use any of it's internals
+                // SAFETY: `this` has not been dropped yet, and no allocation was
+                // moved out on this error path.
                 unsafe { ManuallyDrop::drop(&mut this) };
                 panic!("Expected Borrowed or owneded Instance");
             }
@@ -292,12 +317,17 @@ impl<'a> BytesWriter<'a> {
         let len = this.len;
         let capacity = this.capacity;
         match &this.backing {
+            // SAFETY: the raw parts belong to this writer and are transferred
+            // under `ManuallyDrop`; `0..len` is initialized.
             Backing::Owned => Cow::Owned(unsafe { Vec::from_raw_parts(data, len, capacity) }),
             Backing::Borrowed { .. } => {
+                // SAFETY: borrowed backing storage outlives `'a`, and `0..len`
+                // is initialized by the writer invariant.
                 Cow::Borrowed(unsafe { std::slice::from_raw_parts(data, len) })
             }
             _ => {
-                // Safety: We haven't dropped it yet nor will use any of it's internals
+                // SAFETY: `this` has not been dropped yet, and no allocation was
+                // moved out on this error path.
                 unsafe { ManuallyDrop::drop(&mut this) };
                 panic!("Expected Borrowed or owneded Instance");
             }
@@ -378,9 +408,15 @@ impl<'a> BytesWriter<'a> {
 
     /// Appends the raw byte view of T.
     ///
-    /// Safety: The caller must ensure that the data is POD (Plain Old Data).
-    /// That the data type contains no gaps between the initialized fields.
+    /// # Safety
+    ///
+    /// The caller must ensure that `data` is plain old data for this binary
+    /// representation: every byte in `T`, including padding, must be
+    /// initialized and valid to copy as output.
     pub unsafe fn push_as_bytes<T>(&mut self, data: &T) {
+        // SAFETY: the caller guarantees that every byte in `data` is
+        // initialized and may be observed as raw output bytes. The reference is
+        // valid for `size_of::<T>()` bytes by construction.
         self.push_bytes(unsafe {
             ::std::slice::from_raw_parts(data as *const T as *const u8, ::std::mem::size_of::<T>())
         });
@@ -394,10 +430,12 @@ impl<'a> BytesWriter<'a> {
     pub fn push_bytes(&mut self, data: &[u8]) {
         let size = data.len();
 
+        // SAFETY: `reserve_small(size)` ensures `len + size <= capacity`.
+        // Slices cannot exceed the maximum object size, satisfying
+        // `reserve_small`'s size precondition. The source slice cannot overlap
+        // this writer's mutable destination through safe code because `&mut self`
+        // is held for the duration of the call.
         unsafe {
-            // SAFETY: this operation won't overflow because slice cannot exceeds
-            // isize::MAX bytes.
-            // https://doc.rust-lang.org/reference/behavior-considered-undefined.html
             self.reserve_small(size);
 
             let p = self.data.add(self.len);
@@ -420,6 +458,9 @@ impl<'a> BytesWriter<'a> {
             self.reserve_internal(1, false);
         }
 
+        // SAFETY: after the reserve above, `len < capacity`. The destination
+        // byte is within the allocation and `&mut self` provides exclusive
+        // access to it.
         unsafe {
             *self.data.add(len) = byte;
             self.len = len + 1;
@@ -428,6 +469,8 @@ impl<'a> BytesWriter<'a> {
     /// Appends the given `char` to the end of this buffer
     #[inline]
     pub fn push_char(&mut self, data: char) {
+        // SAFETY: `reserve_small(4)` is valid because a char encodes to at most
+        // four bytes and then guarantees enough spare capacity for the copy.
         unsafe {
             self.reserve_small(4);
             let mut buffer = [0u8; 4];
@@ -450,9 +493,9 @@ impl<'a> BytesWriter<'a> {
         } = &mut self.backing
         {
             use std::io::Write;
-            if let Err(err) =
-                writer.write_all(unsafe { std::slice::from_raw_parts(self.data, self.len) })
-            {
+            // SAFETY: `0..len` is initialized by the writer invariant.
+            let buffered = unsafe { std::slice::from_raw_parts(self.data, self.len) };
+            if let Err(err) = writer.write_all(buffered) {
                 *error = Some(err);
             }
             *written += self.len;
@@ -471,9 +514,9 @@ impl<'a> BytesWriter<'a> {
         {
             if can_write {
                 use std::io::Write;
-                if let Err(err) =
-                    writer.write_all(unsafe { std::slice::from_raw_parts(self.data, self.len) })
-                {
+                // SAFETY: `0..len` is initialized by the writer invariant.
+                let buffered = unsafe { std::slice::from_raw_parts(self.data, self.len) };
+                if let Err(err) = writer.write_all(buffered) {
                     *error = Some(err);
                     return;
                 }
@@ -489,18 +532,31 @@ impl<'a> BytesWriter<'a> {
         debug_assert!(new_capacity > self.capacity);
         if let Backing::Borrowed { .. } = &self.backing {
             let new_data = safe_alloc(new_capacity);
+            // SAFETY: `new_data` points to a fresh allocation of at least
+            // `new_capacity`, `self.data` has at least `self.len` initialized
+            // bytes, and fresh allocations cannot overlap borrowed storage.
             unsafe {
                 ptr::copy_nonoverlapping(self.data, new_data, self.len);
             }
             self.backing = Backing::Owned;
             self.data = new_data;
         } else {
+            // SAFETY: for non-borrowed backing, `data`/`capacity` either
+            // represent no allocation (`capacity == 0`) or an allocation made
+            // with the global allocator and alignment 1.
             self.data = unsafe { safe_realloc(self.data, self.capacity, new_capacity) };
         }
         self.capacity = new_capacity;
 
         if let Backing::Vec { bytes, .. } = &mut self.backing {
+            // SAFETY: the writer has exclusive access to the Vec object. The
+            // underlying allocation was just reallocated. Reading `len` from
+            // the Vec header does not dereference the old allocation pointer,
             let original_len = unsafe { bytes.as_mut().len() };
+            // SAFETY: `self.data`/`self.capacity` are now the allocation raw
+            // parts for this Vec-backed writer. `write` replaces the Vec header
+            // without dropping the stale allocation handle that was just
+            // reallocated.
             unsafe {
                 bytes.write(Vec::from_raw_parts(self.data, original_len, self.capacity));
             }
@@ -539,16 +595,32 @@ unsafe fn safe_realloc(ptr: *mut u8, capacity: usize, new_capacity: usize) -> *m
     assert!(new_capacity > 0);
     assert!(new_capacity <= isize::MAX as usize, "capacity is too large");
 
+    // SAFETY: both layouts use alignment 1 and non-zero sizes bounded by
+    // `isize::MAX`; when `capacity > 0`, the function safety contract says
+    // `ptr` was allocated with exactly that old layout.
     let data = if capacity == 0 {
-        let new_layout = Layout::from_size_align_unchecked(new_capacity, 1);
-        alloc(new_layout)
+        // SAFETY: `new_capacity` is non-zero and bounded above; alignment 1 is
+        // valid for byte storage.
+        unsafe {
+            let new_layout = Layout::from_size_align_unchecked(new_capacity, 1);
+            alloc(new_layout)
+        }
     } else {
-        let old_layout = Layout::from_size_align_unchecked(capacity, 1);
-        realloc(ptr, old_layout, new_capacity)
+        // SAFETY: the function contract says `ptr` was allocated with
+        // `capacity` bytes and alignment 1; `new_capacity` is non-zero and
+        // bounded above.
+        unsafe {
+            let old_layout = Layout::from_size_align_unchecked(capacity, 1);
+            realloc(ptr, old_layout, new_capacity)
+        }
     };
 
     if data.is_null() {
-        handle_alloc_error(Layout::from_size_align_unchecked(new_capacity, 1));
+        // SAFETY: `new_capacity > 0`, alignment 1 is valid, and the size was
+        // checked against `isize::MAX` above.
+        unsafe {
+            handle_alloc_error(Layout::from_size_align_unchecked(new_capacity, 1));
+        }
     }
 
     data
@@ -562,7 +634,13 @@ impl fmt::Write for BytesWriter<'_> {
     }
 }
 
+// SAFETY: moving a writer to another thread preserves the unique borrow carried
+// by its lifetime. All mutation of the raw buffer requires `&mut BytesWriter`,
+// and shared methods only expose initialized bytes or raw pointers.
 unsafe impl Send for BytesWriter<'_> {}
+// SAFETY: shared access does not mutate the buffer or backing writer. Methods
+// that can change `data`, `len`, `capacity`, or backing state require `&mut self`
+// or ownership of the writer.
 unsafe impl Sync for BytesWriter<'_> {}
 
 /// Conversion into a `ByteWriter` with content extraction.

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use jsony::{json::AnyValue, object, TextWriter, ToJson};
+use jsony::{TextWriter, ToJson, json::AnyValue, object};
 
 #[test]
 fn empty_object() {
@@ -329,13 +329,6 @@ fn basic_control_flow() {
             "matches": true
         }
     )
-}
-
-#[no_mangle]
-fn name(ptr: *mut u8) {
-    unsafe {
-        std::ptr::copy_nonoverlapping((&0xdeadbeafu32) as *const _ as *const u8, ptr, 1);
-    }
 }
 
 #[test]

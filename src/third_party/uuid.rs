@@ -1,9 +1,9 @@
-use uuid::{fmt::Hyphenated, Uuid};
+use uuid::{Uuid, fmt::Hyphenated};
 
 use crate::{
+    FromBinary, FromJson, ToBinary, ToJson,
     json::{AlwaysString, DecodeError},
     text::FromText,
-    FromBinary, FromJson, ToBinary, ToJson,
 };
 
 impl<'a> FromText<'a> for Uuid {
@@ -20,6 +20,9 @@ impl<'a> FromText<'a> for Uuid {
     }
 }
 
+// SAFETY: on success `Uuid::parse_str` returns a valid `Uuid`, which is written
+// exactly once into caller-provided storage. Parser or UUID errors return before
+// initializing `dest`.
 unsafe impl<'a> FromJson<'a> for Uuid {
     unsafe fn emplace_from_json(
         dest: std::ptr::NonNull<()>,
@@ -27,7 +30,11 @@ unsafe impl<'a> FromJson<'a> for Uuid {
     ) -> Result<(), &'static DecodeError> {
         match Uuid::parse_str(parser.take_string()?) {
             Ok(value) => {
-                dest.cast::<Uuid>().write(value);
+                // SAFETY: `FromJson::emplace_from_json` callers provide
+                // writable storage for the target type.
+                unsafe {
+                    dest.cast::<Uuid>().write(value);
+                }
                 Ok(())
             }
             Err(_) => Err(&DecodeError {
@@ -49,6 +56,9 @@ impl ToJson for Uuid {
     }
 }
 
+// SAFETY: the locked `uuid` crate defines `Uuid` as `#[repr(transparent)]` over
+// `uuid::Bytes`, and `Bytes` is `[u8; 16]`. Every 16-byte array is accepted by
+// `Uuid::from_bytes`, so raw-copy POD decoding cannot create an invalid `Uuid`.
 unsafe impl<'a> FromBinary<'a> for Uuid {
     const POD: bool = true;
 
@@ -57,6 +67,8 @@ unsafe impl<'a> FromBinary<'a> for Uuid {
     }
 }
 
+// SAFETY: the encoder writes the same 16 public bytes returned by
+// `Uuid::as_bytes`, matching the `FromBinary` representation.
 unsafe impl ToBinary for Uuid {
     const POD: bool = true;
 

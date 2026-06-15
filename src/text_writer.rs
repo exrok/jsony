@@ -51,7 +51,9 @@ pub trait IntoTextWriter<'a> {
 impl<'a> IntoTextWriter<'a> for &'a mut String {
     type Output = &'a str;
     fn into_text_writer(self) -> TextWriter<'a> {
-        // Safety: TextWriter will only append valid utf-8
+        // SAFETY: `TextWriter` methods preserve UTF-8, so exposing the
+        // String's Vec to the internal byte writer cannot leave invalid bytes
+        // before the borrow ends.
         TextWriter::with_buffer(BytesWriter::from(unsafe { self.as_mut_vec() }))
     }
     fn finish_writing(buffer: TextWriter<'a>) -> &'a str {
@@ -228,26 +230,31 @@ impl<'a> TextWriter<'a> {
         }
     }
     pub fn into_string(self) -> String {
-        // Safety:
-        // Since the only way to create an JsonBuffer with an owned buffer
-        // is for it to start empty, and we only append utf-8, the vec
-        // is guaranteed to be utf-8
+        // SAFETY: owned `TextWriter`s start empty, and all safe append paths on
+        // `TextWriter` append either `&str`, ASCII JSON punctuation, or UTF-8
+        // generated from `char`/formatters. Unsafe append methods carry the
+        // same UTF-8 contract to their callers.
         unsafe { String::from_utf8_unchecked(self.buffer.owned_into_vec()) }
     }
 
     pub fn as_str(&self) -> &str {
+        // SAFETY: `TextWriter` maintains the invariant that the initialized
+        // portion of its byte buffer is valid UTF-8.
         unsafe { std::str::from_utf8_unchecked(self.buffer.buffer_slice()) }
     }
 
     pub fn buffer_slice(&self) -> &str {
+        // SAFETY: `TextWriter` maintains the invariant that the initialized
+        // portion of its byte buffer is valid UTF-8.
         unsafe { std::str::from_utf8_unchecked(self.buffer.buffer_slice()) }
     }
     fn into_backed_str(self) -> &'a str {
-        // Safety:
-        // This will contain only appended utf-8 strings
+        // SAFETY: `TextWriter` only appends valid UTF-8, and the returned slice
+        // is borrowed from the backing buffer supplied for lifetime `'a`.
         unsafe { std::str::from_utf8_unchecked(self.buffer.into_backed_with_extended_slice()) }
     }
     fn into_borrowed_cow(self) -> Cow<'a, str> {
+        // SAFETY: `TextWriter` maintains valid UTF-8 in its buffer.
         unsafe { self.buffer.into_cow_utf8_unchecked() }
     }
     pub fn push_str(&mut self, text: &str) {

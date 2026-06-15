@@ -4,8 +4,8 @@ use std::{
 };
 
 use jsony::{
-    binary::Decoder, json::DecodeError, parser::Parser, BytesWriter, FromBinary, FromJson, Jsony,
-    ToBinary,
+    BytesWriter, FromBinary, FromJson, Jsony, ToBinary, binary::Decoder, json::DecodeError,
+    parser::Parser,
 };
 
 #[repr(align(16))]

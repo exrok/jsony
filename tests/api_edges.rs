@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use jsony::{json::DecodeError, parser::Parser, FromJson, JsonParserConfig, Jsony};
+use jsony::{FromJson, JsonParserConfig, Jsony, json::DecodeError, parser::Parser};
 
 #[test]
 fn from_json_bytes_borrows_valid_utf8_and_reports_invalid_utf8() {
@@ -183,25 +183,31 @@ fn maybe_json_lazy_errors_and_null_are_parseable() {
     let missing_key: &'static &'static str = &"missing";
     let missing = &value[missing_key];
     assert_eq!(missing.key_error(), Some("missing"));
-    assert!(missing[0]
-        .parse::<u8>()
-        .unwrap_err()
-        .to_string()
-        .contains("Object key not found: \"missing\""));
+    assert!(
+        missing[0]
+            .parse::<u8>()
+            .unwrap_err()
+            .to_string()
+            .contains("Object key not found: \"missing\"")
+    );
 
     let dynamic_missing = &value["missing"];
     assert_eq!(dynamic_missing.key_error(), None);
-    assert!(dynamic_missing
-        .parse::<u8>()
-        .unwrap_err()
-        .to_string()
-        .contains("Object Key Index Error"));
+    assert!(
+        dynamic_missing
+            .parse::<u8>()
+            .unwrap_err()
+            .to_string()
+            .contains("Object Key Index Error")
+    );
 
-    assert!(value["items"][2]
-        .parse::<u8>()
-        .unwrap_err()
-        .to_string()
-        .contains("Array Index of 2"));
+    assert!(
+        value["items"][2]
+            .parse::<u8>()
+            .unwrap_err()
+            .to_string()
+            .contains("Array Index of 2")
+    );
 
     assert_eq!(
         jsony::MaybeJson::null().parse::<Option<u8>>().unwrap(),
