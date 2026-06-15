@@ -507,6 +507,115 @@ pub fn expand(count: u64, seed: Option<u64>) -> Result<ExpandReport> {
     })
 }
 
+// --- Expand-only corpus driving (coverage of macro-source branches the
+//     round-trip generator never emits) ---
+
+use crate::corpus::{self, Driver};
+
+#[derive(Default)]
+pub struct CorpusReport {
+    pub total: usize,
+    pub passed: usize,
+    pub failures: Vec<String>,
+    /// Summed output bytes, to keep the optimizer from eliding the expansion.
+    pub output_bytes: u64,
+}
+
+/// The first `compile_error!` snippet in `out`, for failure messages. Returns a
+/// short window starting at the macro name so the rendered message is visible.
+fn first_error_snippet(out: &str) -> String {
+    match out.find("compile_error") {
+        Some(i) => {
+            let end = (i + 160).min(out.len());
+            let mut j = end;
+            while j > i && !out.is_char_boundary(j) {
+                j -= 1;
+            }
+            out[i..j].replace('\n', " ")
+        }
+        None => "(no compile_error in output)".to_string(),
+    }
+}
+
+/// Drive one case through the matching macro-source entry point and check its
+/// expectation. Returns the output byte length on success.
+///
+/// The expansion is wrapped in `catch_unwind`: the macro source catches its own
+/// `Error` panics and renders `compile_error!`, but a *tokenize* failure (a
+/// malformed corpus source) or an uncaught non-`Error` panic would otherwise
+/// abort the whole run. Catching it turns either into a single case failure.
+fn drive_corpus_case(case: &corpus::Case) -> Result<u64, String> {
+    let src = case.src.clone();
+    let driver = case.driver;
+    let out = match std::panic::catch_unwind(move || match driver {
+        Driver::Derive => jsony_macros_source::expand_derive_str(&src),
+        Driver::Object => jsony_macros_source::expand_object_str(&src),
+        Driver::Array => jsony_macros_source::expand_array_str(&src),
+    }) {
+        Ok(out) => out,
+        Err(_) => return Err("panicked outside the derive catch (tokenize or non-Error panic)".to_string()),
+    };
+    let errored = out.contains("compile_error");
+    match &case.expect_error {
+        None => {
+            if errored {
+                return Err(format!(
+                    "expected clean expansion, got {}",
+                    first_error_snippet(&out)
+                ));
+            }
+        }
+        Some(msg) => {
+            if !errored {
+                return Err(format!(
+                    "expected compile_error containing {msg:?}, but expanded cleanly"
+                ));
+            }
+            if !out.contains(msg.as_str()) {
+                return Err(format!(
+                    "compile_error message missing {msg:?}: {}",
+                    first_error_snippet(&out)
+                ));
+            }
+        }
+    }
+    Ok(out.len() as u64)
+}
+
+/// Drive a corpus slice and collect the verdict.
+pub fn run_corpus(cases: &[corpus::Case]) -> CorpusReport {
+    let mut report = CorpusReport {
+        total: cases.len(),
+        ..Default::default()
+    };
+    for case in cases {
+        match drive_corpus_case(case) {
+            Ok(bytes) => {
+                report.passed += 1;
+                report.output_bytes += bytes;
+            }
+            Err(e) => report.failures.push(format!("{}: {e}", case.name)),
+        }
+    }
+    report
+}
+
+/// `expand corpus` — Bucket 1 valid expand-only shapes.
+pub fn expand_corpus() -> CorpusReport {
+    run_corpus(&corpus::valid())
+}
+
+/// `expand errors` — Bucket 2 malformed shapes (each must error with the
+/// expected message).
+pub fn expand_errors() -> CorpusReport {
+    run_corpus(&corpus::errors())
+}
+
+/// `expand templates` — Bucket 3 `object!`/`array!` bodies.
+pub fn expand_templates() -> CorpusReport {
+    run_corpus(&corpus::templates())
+}
+
 /// Emit the standalone source for a single case id, plus its sampled inputs as a
 /// trailing comment block, for inspection and reproduction. Includes the
 /// truncated soundness inputs.

@@ -137,9 +137,23 @@ fn is_int(ty: Type) -> bool {
     )
 }
 
+/// A generic type parameter on a `Case`, with the concrete type it is
+/// monomorphized to for the round-trip oracle. The definition declares the bare
+/// parameter (`struct G<T>`) and the derive supplies its own `T: FromJson` etc.
+/// bounds, while the oracle instantiates `G<concrete>` so the existing
+/// compile/round-trip/ASAN pipeline actually validates the generic codegen.
+pub struct GenericParam {
+    pub name: char,
+    pub concrete: Type<'static>,
+}
+
 pub struct FieldSpec {
     pub name: String,
     pub ty: Type<'static>,
+    /// When `Some(c)`, this field's *declared* type is the generic parameter `c`
+    /// (rendered as `c` in the definition); `ty` is the concrete type the
+    /// parameter is monomorphized to, used unchanged by the sampler/oracle.
+    pub generic: Option<char>,
     /// `#[jsony(rename = "...")]`; the JSON key actually used.
     pub rename: Option<String>,
     /// `#[jsony(alias = "...")]`; an additional accepted input key.
@@ -492,6 +506,7 @@ fn gen_flatten(rng: &mut StdRng, parent: &str, allow_companion: bool) -> Flatten
             .map(|i| FieldSpec {
                 name: format!("g{i}"),
                 ty: *SCALARS.choose(rng).unwrap(),
+                generic: None,
                 rename: None,
                 alias: None,
                 default: DefaultSpec::None,
@@ -621,6 +636,10 @@ pub struct Case {
     /// An asymmetric-`with` field (split `FromJson with`/`ToJson with`) on a named
     /// struct. Mutually exclusive with `flatten`/`skip_if`. `None` otherwise.
     pub with_pair: Option<WithPairField>,
+    /// Generic type parameters declared on the type, each paired with the
+    /// concrete type the oracle monomorphizes it to. Empty for a non-generic
+    /// case. Only set for owned (non-borrowing) Named/Tuple/Enum bodies.
+    pub generics: Vec<GenericParam>,
 }
 
 impl Case {
@@ -813,6 +832,7 @@ fn gen_fields(
         fields.push(FieldSpec {
             name,
             ty,
+            generic: None,
             rename,
             alias,
             default,
@@ -844,6 +864,7 @@ fn gen_plain_field(rng: &mut StdRng) -> FieldSpec {
     FieldSpec {
         name: "f0".to_string(),
         ty,
+        generic: None,
         rename: None,
         alias: None,
         default: DefaultSpec::None,
@@ -955,6 +976,7 @@ fn gen_untagged_variants(rng: &mut StdRng) -> Vec<VariantSpec> {
                 vec![FieldSpec {
                     name: "f0".to_string(),
                     ty: *ty,
+                    generic: None,
                     rename: None,
                     alias: None,
                     default: DefaultSpec::None,
@@ -998,6 +1020,7 @@ fn gen_untagged_variants(rng: &mut StdRng) -> Vec<VariantSpec> {
             vec![FieldSpec {
                 name: "f0".to_string(),
                 ty: Type::Bool,
+                generic: None,
                 rename: None,
                 alias: None,
                 default: DefaultSpec::None,
@@ -1262,7 +1285,7 @@ pub fn case_from_id(id: u64) -> Case {
         to_binary: binary,
     };
     let mut transparent = false;
-    let body = match rng.gen_range(0..17) {
+    let mut body = match rng.gen_range(0..17) {
         16 => {
             // A self-contained with-helper / binary-rejection case.
             traits = TraitSet {
@@ -1471,6 +1494,13 @@ pub fn case_from_id(id: u64) -> Case {
     } else {
         None
     };
+    // Optionally make the struct generic: convert a couple of plain owned fields
+    // into type parameters monomorphized to their concrete type. The derive
+    // supplies the `T: Trait` bounds, while the oracle instantiates the concrete
+    // type, so the existing round-trip/ASAN pipeline actually validates the
+    // generic codegen (offset_of with a generic type, the per-field
+    // `T: FromJson` where-clauses, the schema phantom, the generic Drop glue).
+    let generics = apply_generics(&mut rng, &mut body, transparent);
     Case {
         name: format!("T{id}"),
         id,
@@ -1483,7 +1513,74 @@ pub fn case_from_id(id: u64) -> Case {
         flatten,
         skip_if,
         with_pair,
+        generics,
     }
+}
+
+/// Convert a few plain owned fields of a Named/Tuple struct or an enum into
+/// generic parameters, returning the parameter list (empty when the case stays
+/// monomorphic). A field is convertible only when it carries no bound-adding
+/// attribute (`skip`/`default` need `T: Default`, `with` needs
+/// `for<'a> FromJson<'a>`, `validate` may need `TryFrom`), and the whole case
+/// must be borrow-free so the parameter list is `<T, U>` rather than a mix of
+/// lifetime and type parameters. At most two parameters are introduced, and each
+/// is monomorphized to the field's own concrete type so the existing
+/// round-trip/ASAN oracle validates the generic codegen.
+fn apply_generics(rng: &mut StdRng, body: &mut Body, transparent: bool) -> Vec<GenericParam> {
+    if transparent {
+        return Vec::new();
+    }
+    // The whole case must be borrow-free, else `decl_generics` would emit `<T>`
+    // and drop the lifetime a non-convertible field (e.g. a struct-variant
+    // `&'a str`) still needs. Scan *every* field, not just the convertible ones.
+    let borrows = |fields: &[FieldSpec]| fields.iter().any(|f| f.ty.lifetimes() != 0);
+    let any_borrow = match body {
+        Body::Named(f) | Body::Tuple(f) => borrows(f),
+        Body::Enum { variants, .. } => variants.iter().any(|v| borrows(&v.fields)),
+        _ => return Vec::new(),
+    };
+    if any_borrow {
+        return Vec::new();
+    }
+    // Collect mutable refs to the fields that can host a generic parameter:
+    // struct fields, or *tuple*-variant fields of an enum. Struct-variant fields
+    // are excluded: a generic enum with a struct variant emits a `type __TEMP =
+    // (..)` inner alias that references the type parameter from the outer item
+    // (E0401) and fails to compile — a jsony codegen bug, see
+    // docs/known-issues.md.
+    let mut fields: Vec<&mut FieldSpec> = match body {
+        Body::Named(f) | Body::Tuple(f) => f.iter_mut().collect(),
+        Body::Enum { variants, .. } => variants
+            .iter_mut()
+            .filter(|v| v.kind == VarKind::Tuple)
+            .flat_map(|v| v.fields.iter_mut())
+            .collect(),
+        _ => return Vec::new(),
+    };
+    // Only ~30% of eligible cases become generic.
+    if fields.is_empty() || !rng.gen_bool(0.3) {
+        return Vec::new();
+    }
+    const NAMES: [char; 2] = ['T', 'U'];
+    let mut params = Vec::new();
+    for f in fields.iter_mut() {
+        if params.len() >= NAMES.len() {
+            break;
+        }
+        let plain = !f.skip
+            && f.default == DefaultSpec::None
+            && !f.with
+            && f.validate == ValidateKind::None;
+        if plain {
+            let name = NAMES[params.len()];
+            f.generic = Some(name);
+            params.push(GenericParam {
+                name,
+                concrete: f.ty,
+            });
+        }
+    }
+    params
 }
 
 // --- Input sampling (coupled with the emitted attributes) ---

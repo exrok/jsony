@@ -93,6 +93,38 @@ pub fn expand_str(src: &str) -> ExpandStats {
     stats
 }
 
+/// Expand a single `#[derive(Jsony)]` item and return the generated token
+/// stream rendered as a string.
+///
+/// Unlike [`expand_str`] (which sums stats over many items and only counts
+/// rejections), this returns the full output so a corpus driver can assert on
+/// the emitted diagnostic. A malformed item yields a `compile_error! { .. }` the
+/// caller substring-matches, exactly the way the derive proc-macro reports a
+/// rejection to the compiler. `src` must be exactly one item (the attributes
+/// plus a single `struct`/`enum`).
+pub fn expand_derive_str(src: &str) -> String {
+    let stream =
+        TokenStream::from_str(src).expect("expand_derive_str: source failed to tokenize as Rust");
+    codegen::derive(stream).to_string()
+}
+
+/// Expand an `object!` template body (the tokens between its braces) and return
+/// the generated tokens as a string. Mirrors the `object!` proc-macro entry,
+/// which receives the brace contents. A malformed body yields `compile_error!`.
+pub fn expand_object_str(src: &str) -> String {
+    let stream =
+        TokenStream::from_str(src).expect("expand_object_str: source failed to tokenize as Rust");
+    template::object(stream).to_string()
+}
+
+/// Expand an `array!` template body (the tokens between its brackets) and return
+/// the generated tokens as a string. Mirrors the `array!` proc-macro entry.
+pub fn expand_array_str(src: &str) -> String {
+    let stream =
+        TokenStream::from_str(src).expect("expand_array_str: source failed to tokenize as Rust");
+    template::array(stream).to_string()
+}
+
 /// Expand one collected item, draining `item`. Empty drains (e.g. trailing
 /// whitespace after the last item) contribute nothing.
 fn expand_item(item: &mut Vec<TokenTree>) -> ExpandStats {

@@ -119,6 +119,44 @@ fn type_str(ty: Type) -> String {
     TokenStream::from_iter(tt).to_string()
 }
 
+/// The generic parameter list for the type *declaration*: `<T, U>` for a generic
+/// case, `<'a>` for a borrowing case, else empty. The generator never combines
+/// the two (generics are only added to borrow-free cases).
+fn decl_generics(case: &Case) -> String {
+    if !case.generics.is_empty() {
+        let names: Vec<String> = case.generics.iter().map(|g| g.name.to_string()).collect();
+        format!("<{}>", names.join(", "))
+    } else if case_has_lifetime(case) {
+        "<'a>".to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// The type reference the oracle decodes/encodes through: the monomorphization
+/// `Name<u32, String>` for a generic case, `Name<'_>` for a borrowing case, else
+/// the bare `Name`. Monomorphizing here is what makes the generic codegen flow
+/// through the real compile/round-trip/ASAN pipeline.
+fn type_ref(case: &Case) -> String {
+    if !case.generics.is_empty() {
+        let args: Vec<String> = case.generics.iter().map(|g| type_str(g.concrete)).collect();
+        format!("{}<{}>", case.name, args.join(", "))
+    } else if case_has_lifetime(case) {
+        format!("{}<'_>", case.name)
+    } else {
+        case.name.clone()
+    }
+}
+
+/// A field's declared type spelling in the definition: the generic parameter
+/// name when the field is generic, otherwise its concrete type.
+fn field_type_str(f: &FieldSpec) -> String {
+    match f.generic {
+        Some(c) => c.to_string(),
+        None => type_str(f.ty),
+    }
+}
+
 /// `#[jsony(...)]` attribute prefix for a named field (empty if none).
 fn field_attr(f: &FieldSpec) -> String {
     if f.skip {
@@ -262,9 +300,9 @@ fn emit_def(out: &mut String, case: &Case) {
         return;
     }
     let name = &case.name;
-    // `<'a>` on the declaration when any field type borrows (e.g. `&'a str`,
-    // `Cow<'a, str>`); the field types render with `'a` (see `Type::gen`).
-    let lt = if case_has_lifetime(case) { "<'a>" } else { "" };
+    // Declaration generics: `<'a>` when a field borrows, `<T, U>` when the case
+    // is generic, else empty (see `decl_generics`).
+    let lt = decl_generics(case);
     // A companion `Flattenable` struct (when the flatten field uses that flavor)
     // is defined first so the parent can reference it.
     if let Some(fl) = &case.flatten {
@@ -280,7 +318,7 @@ fn emit_def(out: &mut String, case: &Case) {
         Body::Named(fields) => {
             let _ = writeln!(out, "struct {name}{lt} {{");
             for f in fields {
-                let _ = writeln!(out, "    {}{}: {},", field_attr(f), f.name, type_str(f.ty));
+                let _ = writeln!(out, "    {}{}: {},", field_attr(f), f.name, field_type_str(f));
             }
             // The flatten field is declared last, so its inlined keys follow the
             // regular fields in encode order.
@@ -309,7 +347,7 @@ fn emit_def(out: &mut String, case: &Case) {
         Body::Tuple(fields) => {
             let _ = write!(out, "struct {name}{lt}(");
             for f in fields {
-                let _ = write!(out, "{}{}, ", field_attr(f), type_str(f.ty));
+                let _ = write!(out, "{}{}, ", field_attr(f), field_type_str(f));
             }
             let _ = writeln!(out, ");");
         }
@@ -330,7 +368,7 @@ fn emit_def(out: &mut String, case: &Case) {
                             "    {}({}{}),",
                             v.name,
                             field_attr(&v.fields[0]),
-                            type_str(v.fields[0].ty)
+                            field_type_str(&v.fields[0])
                         );
                     }
                     VarKind::Struct => {
@@ -341,7 +379,7 @@ fn emit_def(out: &mut String, case: &Case) {
                                 "        {}{}: {},",
                                 field_attr(f),
                                 f.name,
-                                type_str(f.ty)
+                                field_type_str(f)
                             );
                         }
                         let _ = writeln!(out, "    }},");
@@ -941,13 +979,9 @@ fn emit_arm(out: &mut String, case: &Case) {
         return;
     }
     let name = &case.name;
-    // Type-position spelling: `T<'_>` when the type borrows (the decoded value
-    // borrows from `input`, which outlives the arm), else the bare name.
-    let tyref = if case_has_lifetime(case) {
-        format!("{name}<'_>")
-    } else {
-        name.to_string()
-    };
+    // Type-position spelling: `T<'_>` when the type borrows, `T<u32, ..>` when it
+    // is generic (the oracle monomorphization), else the bare name.
+    let tyref = type_ref(case);
     let can_decode = case.traits.from_json;
     let can_encode = case.traits.to_json;
     let bin = case.traits.binary();

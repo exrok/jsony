@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use derive_tester::run::{self, DiagReport, ExpandReport, Report};
+use derive_tester::run::{self, CorpusReport, DiagReport, ExpandReport, Report};
 
 fn report(r: &Report) {
     println!(
@@ -37,6 +37,20 @@ fn expand_report(r: &ExpandReport) {
         );
         std::process::exit(1);
     }
+}
+
+fn corpus_report(label: &str, r: &CorpusReport) -> bool {
+    println!(
+        "derive_tester expand {label}: {}/{} pass, {} bytes generated",
+        r.passed, r.total, r.output_bytes
+    );
+    for f in &r.failures {
+        eprintln!("  FAIL {f}");
+    }
+    if !r.failures.is_empty() {
+        eprintln!("{} {label} case failure(s)", r.failures.len());
+    }
+    r.failures.is_empty()
 }
 
 fn diag_report(r: &DiagReport) {
@@ -81,14 +95,57 @@ fn main() -> Result<()> {
     // `cargo +nightly llvm-cov` to quantify which codegen paths the generated
     // types reach. Reports on its own path. `DT_SEED` pins the id band.
     if mode == "expand" {
-        let count: u64 = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(1000);
         let seed: Option<u64> = std::env::var("DT_SEED")
             .ok()
             .map(|s| s.parse())
             .transpose()?;
-        let r = run::expand(count, seed)?;
-        expand_report(&r);
-        return Ok(());
+        // `expand <count>` drives the generated sweep. `expand <sub>` drives an
+        // expand-only corpus: `corpus` (valid shapes), `errors` (malformed),
+        // `templates` (object!/array!), or `all` (every corpus + the sweep).
+        let sub = args.get(2).map(String::as_str).unwrap_or("");
+        match sub {
+            "corpus" => {
+                let ok = corpus_report("corpus", &run::expand_corpus());
+                if !ok {
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
+            "errors" => {
+                let ok = corpus_report("errors", &run::expand_errors());
+                if !ok {
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
+            "templates" => {
+                let ok = corpus_report("templates", &run::expand_templates());
+                if !ok {
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
+            "all" => {
+                let count: u64 = args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(1000);
+                // One process so coverage accumulates across every entry point.
+                let valid = corpus_report("valid", &run::expand_corpus());
+                let errs = corpus_report("errors", &run::expand_errors());
+                let tmpl = corpus_report("templates", &run::expand_templates());
+                let generated = run::expand(count, seed)?;
+                if !(valid && errs && tmpl) {
+                    eprintln!("expand-only corpus failures present");
+                    std::process::exit(1);
+                }
+                expand_report(&generated);
+                return Ok(());
+            }
+            _ => {
+                let count: u64 = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(1000);
+                let r = run::expand(count, seed)?;
+                expand_report(&r);
+                return Ok(());
+            }
+        }
     }
 
     // `diag [gen_count]` runs the diagnostics tier (deliberately broken cases
@@ -133,7 +190,7 @@ fn main() -> Result<()> {
             seed,
         )?,
         other => {
-            bail!("unknown mode: {other} (expected `quick`, `run`/`sound`/`asan <count> [samples] [batch]`, `diag [gen_count]`, `expand [count]`, or `case <id>`)")
+            bail!("unknown mode: {other} (expected `quick`, `run`/`sound`/`asan <count> [samples] [batch]`, `diag [gen_count]`, `expand [count]`, `expand corpus|errors|templates|all`, or `case <id>`)")
         }
     };
     report(&r);
