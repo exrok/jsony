@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -278,4 +278,24 @@ fn binary_hash_collections_break_on_eof_lengths() {
 
     let zero_sized = jsony::from_binary::<HashSet<[u8; 0]>>(&[1]).unwrap();
     assert_eq!(zero_sized.len(), 1);
+}
+
+#[test]
+fn binary_btree_collections_roundtrip() {
+    let map: BTreeMap<u32, String> =
+        [(3, "c".to_owned()), (1, "a".to_owned()), (2, "b".to_owned())]
+            .into_iter()
+            .collect();
+    let bytes = jsony::to_binary(&map);
+    assert_eq!(jsony::from_binary::<BTreeMap<u32, String>>(&bytes).unwrap(), map);
+
+    let set: BTreeSet<i64> = [5, -1, 3, -1].into_iter().collect();
+    let bytes = jsony::to_binary(&set);
+    assert_eq!(jsony::from_binary::<BTreeSet<i64>>(&bytes).unwrap(), set);
+
+    // Length-prefixed entries match HashMap's shape: a truncated length errors.
+    let mut impossible = vec![255];
+    impossible.extend_from_slice(&u64::MAX.to_le_bytes());
+    let err = jsony::from_binary::<BTreeSet<u8>>(&impossible).unwrap_err();
+    assert_eq!(err.message(), "Unexpected EOF");
 }

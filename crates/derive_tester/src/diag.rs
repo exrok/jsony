@@ -846,26 +846,17 @@ pub fn catalog() -> Vec<DiagCase> {
     );
 
     // 32. `#[jsony(flatten)]` over a type that does not derive `Flattenable`. The
-    //     ideal error names `Flattenable` so the user knows the fix. A
-    //     correct-location error *does* reach the field type `Inner`, but its
-    //     message is the internal `FromJsonFieldVisitor` obligation rather than a
-    //     `Flattenable` hint, so the Expect (message ~ "Flattenable") is unmet.
-    out.push(
-        case(
-            "flatten_without_flattenable",
-            src(
-                "#[derive(jsony::Jsony)]\n#[jsony(Json)]\nstruct Inner { x: u32 }\n",
-                "#[derive(jsony::Jsony)]\n#[jsony(Json)]\nstruct Probe { a: u32, #[jsony(flatten)] inner: Inner }",
-            ),
-            vec![Expect::within("Flattenable", "inner: Inner")],
-        )
-        .known(
-            "flattening a non-Flattenable type surfaces as the internal \
-             `Inner: FromJsonFieldVisitor` obligation; the span reaches the field \
-             but the message names an internal trait instead of telling the user \
-             to derive Flattenable",
+    //     `#[diagnostic::on_unimplemented]` on `FromJsonFieldVisitor` names
+    //     `Flattenable` in the message and points the span at the field type, so
+    //     the user is told the fix.
+    out.push(case(
+        "flatten_without_flattenable",
+        src(
+            "#[derive(jsony::Jsony)]\n#[jsony(Json)]\nstruct Inner { x: u32 }\n",
+            "#[derive(jsony::Jsony)]\n#[jsony(Json)]\nstruct Probe { a: u32, #[jsony(flatten)] inner: Inner }",
         ),
-    );
+        vec![Expect::within("Flattenable", "inner: Inner")],
+    ));
 
     out
 }

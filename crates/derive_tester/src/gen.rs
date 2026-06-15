@@ -468,15 +468,14 @@ impl FlattenSpec {
     }
 }
 
-/// Generate the flatten spec for a parent named struct. `binary` constrains the
-/// map flavor (BTreeMap has no binary codec); the companion flavor is JSON-only
-/// and is only chosen when the caller has already dropped binary (see
+/// Generate the flatten spec for a parent named struct. The companion flavor is
+/// JSON-only and drops the parent's binary traits when chosen (see
 /// `case_from_id`). `parent` names the companion type.
-fn gen_flatten(rng: &mut StdRng, parent: &str, binary: bool, allow_companion: bool) -> FlattenSpec {
-    // Map flavor (always available) or companion flavor (JSON-only).
+fn gen_flatten(rng: &mut StdRng, parent: &str, allow_companion: bool) -> FlattenSpec {
+    // Map flavor (always available, both codecs) or companion flavor (JSON-only).
     if !allow_companion || rng.gen_bool(0.55) {
         // Flatten map: string-keyed so the inlined keys are `m_<n>` verbatim.
-        let ty = if !binary && rng.gen_bool(0.4) {
+        let ty = if rng.gen_bool(0.4) {
             Type::BTreeMap(&Type::String, &Type::U32)
         } else if rng.gen_bool(0.5) {
             Type::Map(&Type::String, &Type::I64)
@@ -672,7 +671,7 @@ impl Case {
 /// Self-contained, owned field types that impl Default + the jsony traits.
 ///
 /// `binary` excludes types lacking binary impls (see the jsony-gap note below).
-fn type_choices(binary: bool) -> Vec<Type<'static>> {
+fn type_choices() -> Vec<Type<'static>> {
     use Type::*;
     let mut v = vec![
         U8,
@@ -742,13 +741,10 @@ fn type_choices(binary: bool) -> Vec<Type<'static>> {
         // is reached only via the `object_as_vec_of_tuple` helper / `via`.
         TupleVec(&String, &I64),
         TupleVec(&U32, &U32),
+        // `BTreeMap`: ordered map with both JSON and binary codecs.
+        BTreeMap(&String, &U32),
+        BTreeMap(&I64, &Bool),
     ];
-    // `BTreeMap` implements FromJson/ToJson but has no binary codec (see
-    // docs/known-issues.md), so it is restricted to the JSON-only pool.
-    if !binary {
-        v.push(BTreeMap(&String, &U32));
-        v.push(BTreeMap(&I64, &Bool));
-    }
     v.push(Box(&U32));
     v.push(Box(&String));
     v
@@ -758,11 +754,10 @@ fn gen_fields(
     rng: &mut StdRng,
     count: usize,
     attrs: bool,
-    binary: bool,
     allow_alias: bool,
     allow_reject: bool,
 ) -> Vec<FieldSpec> {
-    let choices = type_choices(binary);
+    let choices = type_choices();
     let mut fields = Vec::new();
     for i in 0..count {
         let name = format!("f{i}");
@@ -846,8 +841,8 @@ fn add_tuple_with(rng: &mut StdRng, fields: &mut [FieldSpec]) {
 }
 
 /// A single plain field (no rename/alias/default/skip), for transparent structs.
-fn gen_plain_field(rng: &mut StdRng, binary: bool) -> FieldSpec {
-    let ty = *type_choices(binary).choose(rng).unwrap();
+fn gen_plain_field(rng: &mut StdRng) -> FieldSpec {
+    let ty = *type_choices().choose(rng).unwrap();
     FieldSpec {
         name: "f0".to_string(),
         ty,
@@ -860,7 +855,7 @@ fn gen_plain_field(rng: &mut StdRng, binary: bool) -> FieldSpec {
     }
 }
 
-fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> VariantSpec {
+fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr) -> VariantSpec {
     let name = format!("V{idx}");
     // Internal tagging supports only unit + struct variants.
     let kind = if repr == EnumRepr::Internal {
@@ -881,7 +876,7 @@ fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> Va
         // Tuple variants currently support exactly one field. `with` is the one
         // attribute valid on the positional field.
         VarKind::Tuple => {
-            let mut tf = gen_fields(rng, 1, false, binary, false, false);
+            let mut tf = gen_fields(rng, 1, false, false, false);
             add_tuple_with(rng, &mut tf);
             tf
         }
@@ -891,7 +886,7 @@ fn gen_variant(rng: &mut StdRng, idx: usize, repr: EnumRepr, binary: bool) -> Va
             // sampler exercises the alias parse path here too (see the resolved
             // finding in docs/derive-tester.md). Rejecting validators are not used
             // on variant fields (the BAD-input builder targets top-level structs).
-            gen_fields(rng, n, true, binary, true, false)
+            gen_fields(rng, n, true, true, false)
         }
     };
     // Per-variant `#[jsony(rename = "...")]` overrides `rename_all` for the JSON
@@ -980,7 +975,7 @@ fn gen_untagged_variants(rng: &mut StdRng) -> Vec<VariantSpec> {
         // No rename/alias: the prefixed declared name is the disjointness anchor,
         // and a `rename` would drop the prefix and risk a cross-variant key
         // collision. `default`/`skip`/`with` on the non-anchor fields stay.
-        let mut fields = gen_fields(rng, count, true, false, false, false);
+        let mut fields = gen_fields(rng, count, true, false, false);
         for f in fields.iter_mut() {
             f.rename = None;
             f.alias = None;
@@ -1326,7 +1321,7 @@ pub fn case_from_id(id: u64) -> Case {
         }
         0..=3 => {
             let n = rng.gen_range(1..6);
-            Body::Named(gen_fields(&mut rng, n, true, binary, true, true))
+            Body::Named(gen_fields(&mut rng, n, true, true, true))
         }
         4..=5 => {
             let n = rng.gen_range(1..4);
@@ -1334,7 +1329,7 @@ pub fn case_from_id(id: u64) -> Case {
             // variants: the transform runs on both encode and decode, and a
             // single-field newtype reports the AnyValue marker (the `with` output
             // is opaque) rather than the inner type's marker.
-            let mut tf = gen_fields(&mut rng, n, false, binary, false, false);
+            let mut tf = gen_fields(&mut rng, n, false, false, false);
             add_tuple_with(&mut rng, &mut tf);
             Body::Tuple(tf)
         }
@@ -1346,7 +1341,7 @@ pub fn case_from_id(id: u64) -> Case {
             transparent = true;
             traits.from_binary = false;
             traits.to_binary = false;
-            Body::Named(vec![gen_plain_field(&mut rng, false)])
+            Body::Named(vec![gen_plain_field(&mut rng)])
         }
         _ => {
             let repr = match rng.gen_range(0..5) {
@@ -1368,7 +1363,7 @@ pub fn case_from_id(id: u64) -> Case {
             } else {
                 let n = rng.gen_range(1..4);
                 let mut variants: Vec<VariantSpec> = (0..n)
-                    .map(|i| gen_variant(&mut rng, i, repr, binary))
+                    .map(|i| gen_variant(&mut rng, i, repr))
                     .collect();
                 // Optionally designate one unit variant the FromJson catch-all `other`.
                 // Requires another variant to remain (a meaningful enum keeps at least
@@ -1430,7 +1425,7 @@ pub fn case_from_id(id: u64) -> Case {
     // independently above) is the point of the flatten encode oracle: it must
     // leave the inlined keys verbatim.
     let flatten = if matches!(&body, Body::Named(_)) && !transparent && rng.gen_bool(0.3) {
-        let fl = gen_flatten(&mut rng, &format!("T{id}"), traits.binary(), true);
+        let fl = gen_flatten(&mut rng, &format!("T{id}"), true);
         if let FlattenKind::Companion { .. } = &fl.kind {
             traits.from_binary = false;
             traits.to_binary = false;

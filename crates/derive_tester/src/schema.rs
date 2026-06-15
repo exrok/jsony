@@ -53,8 +53,8 @@ pub enum Type<'b> {
     Generic(char),
     /// `HashMap<K, V>`. Encodes/decodes as a JSON object (string-kind keys).
     Map(&'b Type<'b>, &'b Type<'b>),
-    /// `BTreeMap<K, V>`. JSON object, sorted-key encode. No binary codec (see
-    /// `type_choices`), so it only appears in JSON-only cases.
+    /// `BTreeMap<K, V>`. JSON object with sorted-key encode, plus a binary codec
+    /// (length-prefixed entries in key order).
     BTreeMap(&'b Type<'b>, &'b Type<'b>),
     /// `Vec<(K, V)>`. A positional list of pairs; the `object_as_vec_of_tuple`
     /// helper and `via = Iterator` render it as a JSON object instead.

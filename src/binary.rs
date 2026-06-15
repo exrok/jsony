@@ -34,7 +34,7 @@ use crate::BytesWriter;
 use std::{
     alloc::Layout,
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     hash::{BuildHasher, Hash},
     ptr::NonNull,
     time::Duration,
@@ -676,6 +676,56 @@ unsafe impl<'a, K: FromBinary<'a> + Eq + Hash, S: BuildHasher + Default> FromBin
             map.insert(k);
         }
         map
+    }
+}
+
+unsafe impl<K: ToBinary, V: ToBinary> ToBinary for BTreeMap<K, V> {
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
+        write_length(encoder, self.len());
+        for (k, v) in self {
+            k.encode_binary(encoder);
+            v.encode_binary(encoder);
+        }
+    }
+}
+
+unsafe impl<'a, K: FromBinary<'a> + Ord, V: FromBinary<'a>> FromBinary<'a> for BTreeMap<K, V> {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        let len = decoder.read_length();
+        let mut map = BTreeMap::new();
+        for _ in 0..len {
+            let k = K::decode_binary(decoder);
+            let v = V::decode_binary(decoder);
+            if decoder.eof {
+                break;
+            }
+            map.insert(k, v);
+        }
+        map
+    }
+}
+
+unsafe impl<K: ToBinary> ToBinary for BTreeSet<K> {
+    fn encode_binary(&self, encoder: &mut BytesWriter) {
+        write_length(encoder, self.len());
+        for k in self {
+            k.encode_binary(encoder);
+        }
+    }
+}
+
+unsafe impl<'a, K: FromBinary<'a> + Ord> FromBinary<'a> for BTreeSet<K> {
+    fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
+        let len = decoder.read_length();
+        let mut set = BTreeSet::new();
+        for _ in 0..len {
+            let k = K::decode_binary(decoder);
+            if decoder.eof {
+                break;
+            }
+            set.insert(k);
+        }
+        set
     }
 }
 
