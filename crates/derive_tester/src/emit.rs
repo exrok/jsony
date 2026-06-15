@@ -237,7 +237,10 @@ const STR_UNKNOWN: &str = "__dt_no_such_variant__";
 fn emit_str_arm(out: &mut String, case: &Case, variants: &[crate::gen::StrVariant]) {
     let name = &case.name;
     let _ = writeln!(out, "        {name:?} => {{");
-    let _ = writeln!(out, "            let before = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(
+        out,
+        "            let before = LIVE.load(Ordering::Relaxed);"
+    );
     // `{expected:?}` (a quoted string) is only ever placed in an *operand*
     // position (a `&str` literal); embedding it inside a message format string
     // would nest quotes and break the generated literal.

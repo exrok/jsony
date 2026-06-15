@@ -641,14 +641,12 @@ pub fn case_from_id(id: u64) -> Case {
         }
         4..=5 => {
             let n = rng.gen_range(1..4);
-            // `with` is intentionally NOT enabled on tuple-*struct* fields: jsony's
-            // tuple-struct decoder ignores the field's `with` transform (it encodes
-            // `[1,"2"]` but then decodes expecting a raw number), and a single-field
-            // tuple-struct `with` fails to compile (a JSON-kind marker conflict).
-            // Both are open jsony bugs surfaced by this harness, so adding them to
-            // the round-trip gate would make it red. Tuple *variant* `with` works
-            // and is covered via `gen_variant`.
-            let tf = gen_fields(&mut rng, n, false, binary, false, false);
+            // `with` applies to positional tuple-struct fields the same as to tuple
+            // variants: the transform runs on both encode and decode, and a
+            // single-field newtype reports the AnyValue marker (the `with` output
+            // is opaque) rather than the inner type's marker.
+            let mut tf = gen_fields(&mut rng, n, false, binary, false, false);
+            add_tuple_with(&mut rng, &mut tf);
             Body::Tuple(tf)
         }
         6 => Body::Unit,
@@ -713,15 +711,17 @@ pub fn case_from_id(id: u64) -> Case {
     // adjacent-key skip is part of the external-tag decode loop). Set it on a
     // fraction of them; the sampler emits the injected EQ input when set.
     //
-    // It is NOT combined with an `other` variant: that pairing currently fails to
-    // compile (`E0499` in jsony's generated decode loop, where the `other` path
-    // and the adjacent-skip loop both mutably borrow the variant cursor). An open
-    // jsony bug surfaced by this harness, excluded here to keep the gate green.
-    let body_has_other =
-        matches!(&body, Body::Enum { variants, .. } if variants.iter().any(|v| v.other));
-    let ignore_tag_adjacent = matches!(&body, Body::Enum { repr: EnumRepr::External, .. })
-        && !body_has_other
-        && rng.gen_bool(0.4);
+    // It composes with an `other` variant: in the object decode loop the
+    // adjacent-skip takes priority (unknown keys are skipped to reach the tag),
+    // while the `other` catch-all still absorbs an unknown bare-string tag via
+    // the stringly path.
+    let ignore_tag_adjacent = matches!(
+        &body,
+        Body::Enum {
+            repr: EnumRepr::External,
+            ..
+        }
+    ) && rng.gen_bool(0.4);
     Case {
         name: format!("T{id}"),
         id,
@@ -1040,7 +1040,13 @@ fn render_adjacent(node: &Node, rng: &mut StdRng) -> Option<String> {
 /// Whether the case is an externally-tagged enum (the only shape `render_adjacent`
 /// and `ignore_tag_adjacent_fields` apply to).
 fn external_tagged(case: &Case) -> bool {
-    matches!(&case.body, Body::Enum { repr: EnumRepr::External, .. })
+    matches!(
+        &case.body,
+        Body::Enum {
+            repr: EnumRepr::External,
+            ..
+        }
+    )
 }
 
 /// Render a member list as a compact JSON object. Values are already raw JSON

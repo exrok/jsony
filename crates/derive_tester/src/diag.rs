@@ -704,7 +704,10 @@ pub fn catalog() -> Vec<DiagCase> {
                 "",
                 "#[derive(jsony::Jsony)]\n#[jsony(ToStr, FromStr)]\nenum Probe { A(u32), B }",
             ),
-            vec![Expect::within("must not have any tuple or struct", "A(u32)")],
+            vec![Expect::within(
+                "must not have any tuple or struct",
+                "A(u32)",
+            )],
         )
         .known(
             "the FromStr/ToStr data-variant check is raised at the derive entry \

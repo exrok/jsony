@@ -712,10 +712,11 @@ fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
             throw!("FromJson not implemented for Tuples without fields yet.")
         }
         [field] => {
-            //tod immple with
-            splat!(out;
-                < [~field.ty] as ::jsony::FromJson<#[#: &ctx.lifetime]> >::emplace_from_json(
-                    // to remove addition is repr(transparent) or repr(c)
+            // The destination pointer for the single field: `dst` itself for a
+            // repr(transparent)/repr(C) newtype (offset is 0), otherwise offset by
+            // the field's `offset_of!`.
+            let place = |out: &mut RustWriter| {
+                splat!(out;
                     dst[?(!matches!(ctx.target.repr, ast::Repr::Transparent | ast::Repr::C))
                         .byte_add(
                             ::std::mem::offset_of!(
@@ -723,10 +724,26 @@ fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
                                 [@Literal::usize_unsuffixed(0).into()]
                             )
                         )
-                    ],
-                    parser
+                    ]
                 )
-            );
+            };
+            if let Some(with) = field.with(FROM_JSON) {
+                // Wrap the `with` module's decode_json into an emplace function,
+                // the same way the multi-field path and the struct schema do.
+                splat!(out;
+                    [~&ctx.crate_path]::__internal::emplace_json_for_with_attribute::<
+                        &mut ::jsony::parser::Parser<#[#: &ctx.lifetime]>, [~field.ty], _
+                    >(&[~with]::[@ with_method(with, "decode_json")])(
+                        [place(out)], parser
+                    )
+                );
+            } else {
+                splat!(out;
+                    < [~field.ty] as ::jsony::FromJson<#[#: &ctx.lifetime]> >::emplace_from_json(
+                        [place(out)], parser
+                    )
+                );
+            }
         }
         fields => {
             // Decode the JSON array positionally into each field via its own
@@ -743,7 +760,18 @@ fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
                                     [ctx.dead_target_type(out)],
                                     [@Literal::usize_unsuffixed(i).into()]
                                 ),
-                                < [~field.ty] as ::jsony::FromJson<#[#: &ctx.lifetime]> >::emplace_from_json
+                                [if let Some(with) = field.with(FROM_JSON) {
+                                    // Wrap the `with` module's decode_json into an
+                                    // emplace function, the same way the struct schema
+                                    // and the tuple-variant decode do.
+                                    splat!(out;
+                                        [~&ctx.crate_path]::__internal::emplace_json_for_with_attribute::<
+                                            &mut ::jsony::parser::Parser<#[#: &ctx.lifetime]>, [~field.ty], _
+                                        >(&[~with]::[@ with_method(with, "decode_json")])
+                                    )
+                                } else {
+                                    splat!(out; < [~field.ty] as ::jsony::FromJson<#[#: &ctx.lifetime]> >::emplace_from_json)
+                                }]
                             ),
                         }]
                     ]],
@@ -770,17 +798,26 @@ fn tuple_struct_to_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
             ToJsonKind::Static("AnyValue")
         }
         [field] => {
-            splat!(out;
-                [
-                    if let Some(with) = field.with(TO_JSON) {
-                        splat!(out; [~with]::[@ with_method(with, "encode_json")])
-                    } else {
-                        splat!(out; <[~field.ty] as ::jsony::ToJson>::encode_json__jsony)
-                    }
-                ]
-                (&self.[@TokenTree::Literal(Literal::usize_unsuffixed(0))], out)
-            );
-            ToJsonKind::Forward(field)
+            if let Some(with) = field.with(TO_JSON) {
+                // A `with` module's encode_json returns `()`, so the produced
+                // JSON kind is unknown. Emit the AnyValue marker as the return
+                // value and report it as the Kind rather than forwarding the
+                // inner type's marker (which may disagree, e.g. AlwaysNumber vs
+                // AlwaysString, and would both mistype the impl and mislead the
+                // untagged-enum dispatch that reads this marker).
+                splat!(out;
+                    [~with]::[@ with_method(with, "encode_json")]
+                        (&self.[@TokenTree::Literal(Literal::usize_unsuffixed(0))], out);
+                    ::jsony::json::AnyValue
+                );
+                ToJsonKind::Static("AnyValue")
+            } else {
+                splat!(out;
+                    <[~field.ty] as ::jsony::ToJson>::encode_json__jsony
+                        (&self.[@TokenTree::Literal(Literal::usize_unsuffixed(0))], out)
+                );
+                ToJsonKind::Forward(field)
+            }
         }
         _ => {
             let mut first = true;
@@ -1639,7 +1676,29 @@ fn enum_from_json_unknown_variant(
 ) {
     splat!(out; _ =>);
     let start = out.buf.len();
-    if let Some(other) = &other {
+    if ctx.target.ignore_tag_adjacent_fields && !stringly {
+        // In the object decode loop `ignore_tag_adjacent_fields` skips any key
+        // that matches no known variant and advances the `variant` cursor to the
+        // next one. This takes priority over an `other` catch-all: capturing here
+        // would keep `variant` borrowed across `parser.skip_value()` (E0499, since
+        // the cursor aliases the parser) and would defeat the adjacent-field
+        // skipping. The `other` variant still applies on the stringly path, where
+        // an unknown bare-string tag is captured below.
+        splat!(
+            out;
+            if let Err(err) = parser.skip_value() {
+                return Err(err)
+            }
+            match parser.object_step() {
+                Ok(None) => return Err(&jsony::error::NO_FIELD_MATCHED_AN_ENUM_VARIANT),
+                Ok(Some(next_field)) => {
+                    variant = next_field;
+                    continue;
+                },
+                Err(err) => return Err(err),
+            };
+        )
+    } else if let Some(other) = &other {
         match other.fields {
             [] => (),
             [field] => other_variant_key(out, field),
@@ -1679,29 +1738,12 @@ fn enum_from_json_unknown_variant(
                         ];)
         }
     } else {
-        if ctx.target.ignore_tag_adjacent_fields && !stringly {
-            splat!(
-                out;
-                if let Err(err) = parser.skip_value() {
-                    return Err(err)
-                }
-                match parser.object_step() {
-                    Ok(None) => return Err(&jsony::error::NO_FIELD_MATCHED_AN_ENUM_VARIANT),
-                    Ok(Some(next_field)) => {
-                        variant = next_field;
-                        continue;
-                    },
-                    Err(err) => return Err(err),
-                };
-            )
-        } else {
-            splat!(
-                out;
-                let variant = variant.to_string();
-                parser.report_error(variant);
-                return Err(&::jsony::error::UNKNOWN_VARIANT);
-            )
-        }
+        splat!(
+            out;
+            let variant = variant.to_string();
+            parser.report_error(variant);
+            return Err(&::jsony::error::UNKNOWN_VARIANT);
+        )
     }
     out.tt_group(Delimiter::Brace, start);
 }

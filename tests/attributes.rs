@@ -258,6 +258,39 @@ fn with_attribute_enum() {
 }
 
 #[test]
+fn with_attribute_tuple_struct() {
+    // A single-field (newtype) tuple struct: the `with` transform applies on both
+    // encode and decode, and the JSON-kind marker reflects the `with` output
+    // (a string here) rather than the inner `u32`'s AlwaysNumber marker.
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Json)]
+    struct Newtype(#[jsony(From with = from_str, To with = to_string)] u32);
+
+    assert_json_eq!("22", Newtype(22));
+
+    // A multi-field tuple struct: each field's `with` transform applies
+    // positionally on decode as well as encode.
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Json)]
+    struct MultiTuple(
+        #[jsony(From with = from_str, To with = to_string)] u32,
+        bool,
+    );
+
+    assert_json_eq!(["22", true], MultiTuple(22, true));
+
+    // The `with` field can sit in any position, including the last.
+    #[derive(Jsony, PartialEq, Debug)]
+    #[jsony(Json)]
+    struct TrailingWith(
+        bool,
+        #[jsony(From with = from_str, To with = to_string)] u32,
+    );
+
+    assert_json_eq!([true, "22"], TrailingWith(true, 22));
+}
+
+#[test]
 fn enum_variations() {
     #[derive(Jsony, Debug, PartialEq)]
     #[jsony(Json)]
@@ -823,6 +856,48 @@ fn ignore_tag_adjacent_fields() {
     assert_decode_json_eq! {
         "Stringly",
         IgnoringWithString::Stringly
+    }
+
+    // `ignore_tag_adjacent_fields` combined with an `other` catch-all variant.
+    // In the object decode loop the adjacent-skip takes priority: unknown keys
+    // are skipped to find the real tag. The `other` variant captures an unknown
+    // bare-string tag through the stringly path.
+    #[derive(Debug, Jsony, PartialEq, Eq)]
+    #[jsony(ignore_tag_adjacent_fields)]
+    enum IgnoringWithOther {
+        Tuple(u32),
+        Struct {
+            value: u32,
+        },
+        #[jsony(other)]
+        Other,
+    }
+
+    // Unknown key before the tag is skipped, not captured as `other`.
+    assert_decode_json_eq! {
+        { "Nice": 43, "Tuple": 55 },
+        IgnoringWithOther::Tuple(55)
+    }
+    // Unknown key after the tag is discarded.
+    assert_decode_json_eq! {
+        { "Struct": { "value": 99 }, "Nice": 43 },
+        IgnoringWithOther::Struct { value: 99 }
+    }
+    // A bare string matching the `other` variant's own name.
+    assert_decode_json_eq! {
+        "Other",
+        IgnoringWithOther::Other
+    }
+    // A bare string matching no variant falls through to `other`.
+    assert_decode_json_eq! {
+        "Unknown",
+        IgnoringWithOther::Other
+    }
+    // An object whose only key matches no variant has nothing to decode.
+    assert_decode_failure! {
+        { "Nope": 43 },
+        IgnoringWithOther,
+        NO_FIELD_MATCHED_AN_ENUM_VARIANT
     }
 }
 
