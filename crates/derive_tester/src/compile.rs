@@ -33,6 +33,13 @@ pub struct ToolchainSpec {
     pub build_std: bool,
     /// `[profile.*]` overrides appended to the scaffold manifest.
     pub profile: &'static str,
+    /// Optimization level forced on the *reused batch command* only, overriding
+    /// the captured one. The dependencies and (under build-std) the standard
+    /// library are built once by the capture `cargo build` at the manifest
+    /// profile's opt-level and stay that way; only the throwaway batch binary's
+    /// own codegen drops to this level, so it compiles fast while everything it
+    /// links remains optimized. `None` leaves the captured opt-level untouched.
+    pub batch_opt_level: Option<&'static str>,
     /// Environment applied when running a compiled batch binary.
     pub run_env: &'static [(&'static str, &'static str)],
 }
@@ -55,12 +62,20 @@ opt-level = 0
 debug = false
 opt-level = 3
 "#,
+    batch_opt_level: None,
     run_env: &[],
 };
 
 /// AddressSanitizer + LeakSanitizer tier. Soundness profile keeps overflow and
 /// debug-assertion checks on, and `-Zbuild-std` instruments std so LSAN reports
 /// leaks. Runs over the malformed-heavy input set.
+///
+/// The dependencies and the instrumented std build at `opt-level = 2` (the
+/// monomorphized jsony codecs the batch links run hot over the sample set), but
+/// the batch binary itself is rewritten to `opt-level = 0` (`batch_opt_level`):
+/// its own codegen is throwaway and the LLVM optimization of one big batch is
+/// what dominated the compile, so dropping it roughly halves batch compile time
+/// while the optimized std/jsony keep the sanitized run fast.
 pub const ASAN: ToolchainSpec = ToolchainSpec {
     name: "asan",
     channel: Some("nightly"),
@@ -69,10 +84,11 @@ pub const ASAN: ToolchainSpec = ToolchainSpec {
     build_std: true,
     profile: r#"[profile.dev]
 debug = true
-opt-level = 1
+opt-level = 2
 overflow-checks = true
 debug-assertions = true
 "#,
+    batch_opt_level: Some("0"),
     run_env: &[("ASAN_OPTIONS", "detect_leaks=1:abort_on_error=1")],
 };
 
@@ -171,6 +187,11 @@ jsony_macros = {{ path = "{jsony_root}/crates/jsony_macros" }}
         base = strip_flag_token(&base, "--error-format=");
         base = strip_flag_token(&base, "--json=");
         base = strip_flag_token(&base, "-C incremental=");
+        // Force the batch binary's own opt-level down without touching the
+        // already-built (optimized) dependencies and std it links against.
+        if let Some(level) = spec.batch_opt_level {
+            base = set_opt_level(&base, level);
+        }
 
         // Persist the capture: fingerprint, then envs and base on their own
         // lines (both are single-line, the rustc command has no embedded newline).
@@ -262,6 +283,7 @@ fn capture_fingerprint(jsony_root: &str, cargo_toml: &str, spec: ToolchainSpec) 
     spec.rustflags.hash(&mut h);
     spec.target.hash(&mut h);
     spec.build_std.hash(&mut h);
+    spec.batch_opt_level.hash(&mut h);
     let root = Path::new(jsony_root);
     let mut newest = SystemTime::UNIX_EPOCH;
     for rel in ["src", "Cargo.toml", "crates/jsony_macros/src"] {
@@ -351,6 +373,23 @@ fn extract_rustc(output: &str, crate_name: &str) -> Option<(String, String)> {
         return Some((envs.trim().to_string(), base));
     }
     None
+}
+
+/// Replace the value of the `-C opt-level=` flag in a captured rustc command.
+/// Only the batch command is rewritten; the dependencies and std were already
+/// built at the manifest profile's opt-level by the capture `cargo build`.
+fn set_opt_level(cmd: &str, level: &str) -> String {
+    let prefix = "-C opt-level=";
+    let Some(start) = cmd.find(prefix) else {
+        return cmd.to_string();
+    };
+    let from = start + prefix.len();
+    let end = cmd[from..].find(' ').map(|i| from + i).unwrap_or(cmd.len());
+    let mut out = String::with_capacity(cmd.len());
+    out.push_str(&cmd[..from]);
+    out.push_str(level);
+    out.push_str(&cmd[end..]);
+    out
 }
 
 /// Remove `prefix` plus its value, where the value runs from the end of the

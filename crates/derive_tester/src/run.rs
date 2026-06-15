@@ -389,13 +389,31 @@ pub fn sweep(count: u64, samples: u32, batch: u64, bad: bool, seed: Option<u64>)
     run(band(seed, count), batch, samples, 16, bad, THROUGHPUT)
 }
 
+/// Per-type sample count above which the ASAN batch binary is built at `opt-1`
+/// instead of `opt-0`. The batch binary's codegen is throwaway, so `opt-0` is the
+/// default for fast compiles. But its unoptimized monomorphized codecs run slower
+/// per input, and run cost scales with the sample count while the compile saving
+/// is fixed. Measured per batch: `opt-1` costs ~2.0s more to compile but ~9.4e-5s
+/// less to run per sample, so the run penalty overtakes the compile saving around
+/// 21k samples. Above the threshold `opt-1` wins overall.
+const OPT1_SAMPLE_THRESHOLD: u32 = 20_000;
+
 /// ASAN + LSAN tier on the sanitizer toolchain. It runs the full soundness check
 /// set (round-trip, equivalence, duplicate-key, and the counting-allocator leak
 /// check, since that allocator is compiled into every batch) with AddressSanitizer
 /// and LeakSanitizer layered on top, so it is "sound + ASAN" in one pass. Smaller
 /// waves since sanitized batches compile and run slower. `seed` pins the id band.
 pub fn asan(count: u64, samples: u32, batch: u64, seed: Option<u64>) -> Result<Report> {
-    run(band(seed, count), batch, samples, 8, true, ASAN)
+    let mut spec = ASAN;
+    // High sample counts shift the bottleneck from compile to run, so optimize the
+    // batch binary once the per-input run penalty of opt-0 outweighs its compile
+    // saving (see OPT1_SAMPLE_THRESHOLD).
+    spec.batch_opt_level = Some(if samples >= OPT1_SAMPLE_THRESHOLD {
+        "1"
+    } else {
+        "0"
+    });
+    run(band(seed, count), batch, samples, 8, true, spec)
 }
 
 // --- Diagnostics tier ---
