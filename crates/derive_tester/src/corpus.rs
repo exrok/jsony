@@ -17,8 +17,7 @@
 //! - [`errors`]: malformed items that must expand *to* a `compile_error!` with an
 //!   expected message — the only cheap in-process check of the parse/throw code
 //!   in `ast.rs`/`case.rs`/`codegen.rs` and all of `context.rs`. Malformed input
-//!   never compiles, so the round-trip tiers cannot exercise it. (Found the
-//!   const-generic, where-clause, and empty-enum issues in docs/known-issues.md.)
+//!   never compiles, so the round-trip tiers cannot exercise it.
 //! - [`templates`]: `object!`/`array!` bodies — a separate proc-macro entry point
 //!   the round-trip pipeline never touches (`template.rs`/`lit.rs`).
 //! - [`valid`]: well-formed but syntactically odd items (generic *parameter
@@ -196,17 +195,20 @@ pub fn valid() -> Vec<Case> {
         "gen_empty_brackets",
         "#[derive(jsony::Jsony)] #[jsony(Json)] struct GE<> { a: u32 }",
     ));
-    // Garbage tokens between `<..>` and the body are silently consumed as
-    // "where clauses" (the real `where` keyword is instead rejected — see
-    // docs/known-issues.md). Drives the where-clause extraction branch.
+    // Where-clauses on the derive target. Braced struct and enum carry the
+    // clause before the body; tuple structs carry it after the body. All three
+    // positions feed `target.where_clauses` and the codegen `where` blocks.
     out.push(ok(
-        "where_clause_quirk",
-        "#[derive(jsony::Jsony)] #[jsony(FromJson)] struct WQ<T> Foo { a: T }",
+        "where_clause_struct",
+        "#[derive(jsony::Jsony)] #[jsony(Json)] struct WS<T> where T: Clone { a: T }",
     ));
-    // Same quirk but a tuple body, so the where-extraction reports a TupleStruct.
     out.push(ok(
-        "where_clause_quirk_tuple",
-        "#[derive(jsony::Jsony)] #[jsony(Json)] struct WQT<T> Foo (u32)",
+        "where_clause_enum",
+        "#[derive(jsony::Jsony)] #[jsony(FromJson)] enum WE<T> where T: Clone { A(T) }",
+    ));
+    out.push(ok(
+        "where_clause_tuple",
+        "#[derive(jsony::Jsony)] #[jsony(Json)] struct WT<T>(T) where T: Clone;",
     ));
 
     // --- leading/odd attributes and repr forms ---
@@ -296,7 +298,7 @@ pub fn valid() -> Vec<Case> {
     // --- enum `other` variant WITH a field (FromText path) ---
     out.push(ok(
         "other_tuple_field",
-        "#[derive(jsony::Jsony)] #[jsony(FromJson)] enum 01 { A, #[jsony(other)] Other(String) }",
+        "#[derive(jsony::Jsony)] #[jsony(FromJson)] enum O1 { A, #[jsony(other)] Other(String) }",
     ));
     out.push(ok(
         "other_struct_field",
@@ -866,21 +868,21 @@ pub fn errors() -> Vec<Case> {
         "Expected a Ident",
         "#[derive(jsony::Jsony)] #[jsony(FromJson)] struct 5 ;",
     ));
+    // A real `where` clause with no body group following it.
     out.push(err(
         "where_no_body",
-        "Expected body after where clauses",
-        "#[derive(jsony::Jsony)] #[jsony(FromJson)] struct S<T> Foo ;",
+        "Expected body after where clause",
+        "#[derive(jsony::Jsony)] #[jsony(FromJson)] struct S<T> where T: Clone ;",
     ));
     out.push(err(
         "after_generics_punct",
         "Expected either body or where clause",
         "#[derive(jsony::Jsony)] #[jsony(FromJson)] struct S<T> + { a: T }",
     ));
-    // An empty enum throws the placeholder "Baddness" (ast.rs:1246) during
-    // variant parsing — a poor diagnostic. See docs/known-issues.md.
+    // An empty enum has no variant to parse.
     out.push(err(
         "empty_enum",
-        "Baddness",
+        "at least one variant",
         "#[derive(jsony::Jsony)] #[jsony(FromJson)] enum E {}",
     ));
 
@@ -928,10 +930,17 @@ pub fn errors() -> Vec<Case> {
         "Unexpected tok",
         "#[derive(jsony::Jsony)] #[jsony(FromJson)] struct S<'a T> { a: u32 }",
     ));
+    // Only `where` (or the body) may follow the generic list. Garbage idents in
+    // that position are rejected rather than swallowed as a where-clause.
     out.push(err(
-        "where_clause_rejected",
-        "Expected where clause",
-        "#[derive(jsony::Jsony)] #[jsony(FromJson)] struct S<T> where T: Clone { a: T }",
+        "where_clause_quirk",
+        "Expected `where`",
+        "#[derive(jsony::Jsony)] #[jsony(FromJson)] struct WQ<T> Foo { a: T }",
+    ));
+    out.push(err(
+        "where_clause_quirk_tuple",
+        "Expected `where`",
+        "#[derive(jsony::Jsony)] #[jsony(Json)] struct WQT<T> Foo (u32)",
     ));
 
     // --- field-attr remainder/value throws ---

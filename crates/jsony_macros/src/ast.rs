@@ -289,6 +289,25 @@ fn kind_of_token(token: &TokenTree) -> &'static str {
 fn ident_eq(ident: &Ident, value: &str) -> bool {
     ident.to_string() == value
 }
+/// Capture a tuple-struct where-clause that follows the body, e.g. the
+/// `where T: Clone` in `struct S<T>(T) where T: Clone;`. `rest` is the tokens
+/// after the tuple body group. Returns just the clause tokens (the leading
+/// `where` and the trailing `;` are stripped), or an empty slice when there is
+/// no where-clause.
+fn trailing_where(rest: &[TokenTree]) -> &[TokenTree] {
+    let [TokenTree::Ident(w), clauses @ ..] = rest else {
+        return &[];
+    };
+    if !ident_eq(w, "where") {
+        return &[];
+    }
+    if let [body @ .., TokenTree::Punct(p)] = clauses {
+        if p.as_char() == ';' {
+            return body;
+        }
+    }
+    clauses
+}
 fn parse_container_attr(
     target: &mut DeriveTargetInner<'_>,
     attr: Ident,
@@ -536,6 +555,7 @@ pub fn extract_derive_target<'a>(
     .clone();
     match toks.next() {
         Some(TokenTree::Group(group)) => {
+            target.where_clauses = trailing_where(toks.as_slice());
             return (
                 if group.delimiter() == Delimiter::Parenthesis {
                     DeriveTargetKind::TupleStruct
@@ -689,20 +709,23 @@ pub fn extract_derive_target<'a>(
         Some(t) => t,
         None => Error::msg("Unexpected EOF"),
     } {
-        TokenTree::Group(group) => (
-            if group.delimiter() == Delimiter::Parenthesis {
-                DeriveTargetKind::TupleStruct
-            } else {
-                kind
-            },
-            group.stream(),
-        ),
+        TokenTree::Group(group) => {
+            target.where_clauses = trailing_where(toks.as_slice());
+            (
+                if group.delimiter() == Delimiter::Parenthesis {
+                    DeriveTargetKind::TupleStruct
+                } else {
+                    kind
+                },
+                group.stream(),
+            )
+        }
         TokenTree::Ident(tok) => {
-            if ident_eq(tok, "where") {
-                Error::span_msg("Expected where clause", tok.span());
+            if !ident_eq(tok, "where") {
+                Error::span_msg("Expected `where` clause or body", tok.span());
             }
             let [where_clauses @ .., TokenTree::Group(group)] = toks.as_slice() else {
-                Error::msg("Expected body after where clauses")
+                Error::msg("Expected body after where clause")
             };
             target.where_clauses = where_clauses;
             (
@@ -1188,7 +1211,7 @@ fn parse_inner_enum_variants<'a>(
             fields.len()
         };
         let Some(tok) = fields.get(i.saturating_sub(1)) else {
-            Error::msg("Baddness")
+            Error::msg("An enum must have at least one variant")
         };
         let start = tt_buffer.len();
         let (name, kind) = match tok {

@@ -303,7 +303,7 @@ fn impl_to_binary(
                 for ty in &target.generic_field_types {
                     splat!(out; [~ty]: [~&crate_path]::ToBinary,)
                 }
-             ]] {
+             ] [~&target.where_clauses]] {
             [if target.pod {
                 splat!(out; const POD: bool = true;)
             } else if let Some(pod_field) = pod_forward {
@@ -341,7 +341,7 @@ fn impl_to_json(
                 for ty in &target.generic_field_types {
                     splat!(output; [~ty]: [~&crate_path]::ToJson,)
                 }
-             ]] {
+             ] [~&target.where_clauses]] {
             type Kind = [
                 match kind {
                     ToJsonKind::Static(kind) => {
@@ -1117,9 +1117,9 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
             [?(!ctx.target.where_clauses.is_empty() || !ctx.target.generic_field_types.is_empty())
             where [
             for (ty in &ctx.target.generic_field_types) {
-                [~ty]: ::jsony::FromJson<#[#: &ctx.lifetime]>
+                [~ty]: ::jsony::FromJson<#[#: &ctx.lifetime]>,
             }
-            ]]
+            ] [~&ctx.target.where_clauses]]
             {
                 ::jsony::__internal::ObjectSchema::<#[#: &ctx.lifetime]> {
                     inner: &const { [struct_schema(out, ctx, &ordered_fields, None, ctx.target.rename_all)] },
