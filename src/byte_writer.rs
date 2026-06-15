@@ -247,7 +247,12 @@ impl<'a> BytesWriter<'a> {
                 bytes.set_len(len);
                 oldlen
             };
-            return unsafe { std::slice::from_raw_parts(data.add(offset), len - offset) };
+            // `len` is below the creation-time length only if the buffer was
+            // cleared or popped past the start. Then nothing was appended, so
+            // clamp to an empty slice rather than underflowing `len - offset`
+            // (which would build an `&[u8]` with a bogus, enormous length).
+            let start = offset.min(len);
+            return unsafe { std::slice::from_raw_parts(data.add(start), len - start) };
         }
         // Safety: We haven't dropped it yet.
         unsafe { ManuallyDrop::drop(&mut this) };

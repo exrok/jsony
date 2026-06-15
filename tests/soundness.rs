@@ -100,6 +100,66 @@ fn array_error_drops_initialized_zst_elements() {
     assert_eq!(LIVE_ZSTS.load(Ordering::SeqCst), 0);
 }
 
+static LIVE_OVER_ALIGNED: AtomicUsize = AtomicUsize::new(0);
+
+/// A zero-sized type with alignment greater than 1. Decoding `Vec<T>` for a ZST
+/// goes through a type-erased path that only knows the element is zero-sized, so
+/// it must still align the (otherwise dangling) data pointer to the element.
+/// A misaligned pointer is UB the moment a `&mut T` is formed, e.g. on drop.
+#[repr(align(8))]
+struct OverAlignedZst;
+
+unsafe impl<'a> FromJson<'a> for OverAlignedZst {
+    unsafe fn emplace_from_json(
+        dest: NonNull<()>,
+        parser: &mut Parser<'a>,
+    ) -> Result<(), &'static DecodeError> {
+        parser.skip_value()?;
+        LIVE_OVER_ALIGNED.fetch_add(1, Ordering::SeqCst);
+        dest.cast::<OverAlignedZst>().write(OverAlignedZst);
+        Ok(())
+    }
+}
+
+impl Drop for OverAlignedZst {
+    fn drop(&mut self) {
+        LIVE_OVER_ALIGNED.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn vec_of_over_aligned_zst_uses_aligned_pointer() {
+    LIVE_OVER_ALIGNED.store(0, Ordering::SeqCst);
+    {
+        let v = jsony::from_json::<Vec<OverAlignedZst>>("[0, 0, 0]").unwrap();
+        assert_eq!(v.len(), 3);
+        assert_eq!(
+            v.as_ptr().addr() % std::mem::align_of::<OverAlignedZst>(),
+            0,
+            "Vec data pointer is misaligned for the element type"
+        );
+    }
+    assert_eq!(LIVE_OVER_ALIGNED.load(Ordering::SeqCst), 0);
+
+    // The error path constructs and drops the partially built Vec, exercising
+    // the same pointer.
+    assert!(jsony::from_json::<Vec<OverAlignedZst>>("[0, 0, ").is_err());
+    assert_eq!(LIVE_OVER_ALIGNED.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn byte_writer_clear_then_extended_slice_is_empty() {
+    // Clearing a Vec-backed writer drops its length below the creation-time
+    // length. The extended-slice length computation must not underflow and
+    // build an `&[u8]` with a bogus, enormous length.
+    let mut backing: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8];
+    let mut writer = BytesWriter::from(&mut backing);
+    writer.push(b'x');
+    writer.clear();
+    let slice = writer.into_backed_with_extended_slice();
+    assert!(slice.is_empty());
+}
+
 static LIVE_BOXED: AtomicUsize = AtomicUsize::new(0);
 
 /// A heap-owning field whose live instances are counted. A value the decoder

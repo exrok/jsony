@@ -380,12 +380,18 @@ const MAX_SIZE: usize = (isize::MAX / 2) as usize;
 const MAX_SIZE: usize = 1usize << 42;
 
 /// Decodes a size sized array returning the raw parts in (pointer, len, capacity).
-/// Safety `emplace_from_json` must be consume a pointer to ZST.
+/// Safety `emplace_from_json` must be consume a pointer to a ZST whose alignment
+/// is `align`.
 #[cold]
 unsafe fn zero_sized_type_erased_decode_vec<'de>(
+    align: usize,
     emplace_from_json: unsafe fn(NonNull<()>, &mut Parser<'de>) -> Result<(), &'static DecodeError>,
     parser: &mut Parser<'de>,
 ) -> ((*mut u8, usize, usize), Result<(), &'static DecodeError>) {
+    // Both the emplace destination and the resulting Vec's data pointer must be
+    // aligned to the element type, even though it is zero-sized: forming a
+    // reference to a ZST (e.g. when dropping the Vec) requires correct alignment.
+    let dangling = std::ptr::without_provenance_mut::<u8>(align);
     let mut len = 0;
     let value = 'failure: {
         let mut value = match parser.at.enter_array() {
@@ -394,7 +400,8 @@ unsafe fn zero_sized_type_erased_decode_vec<'de>(
         };
         while value.is_some() {
             unsafe {
-                if let Err(err) = emplace_from_json(NonNull::dangling(), parser) {
+                if let Err(err) = emplace_from_json(NonNull::new_unchecked(dangling).cast(), parser)
+                {
                     break 'failure Err(err);
                 }
                 len += 1;
@@ -406,7 +413,7 @@ unsafe fn zero_sized_type_erased_decode_vec<'de>(
         }
         Ok(())
     };
-    ((std::ptr::dangling_mut::<u8>(), len, usize::MAX), value)
+    ((dangling, len, usize::MAX), value)
 }
 
 /// Decodes an array returning the raw parts in (pointer, len, capacity).
@@ -417,7 +424,7 @@ unsafe fn type_erased_decode_vec<'de>(
     parser: &mut Parser<'de>,
 ) -> ((*mut u8, usize, usize), Result<(), &'static DecodeError>) {
     if layout.size() == 0 {
-        return zero_sized_type_erased_decode_vec(emplace_from_json, parser);
+        return zero_sized_type_erased_decode_vec(layout.align(), emplace_from_json, parser);
     }
     let max_cap = MAX_SIZE / layout.size();
     let mut ptr: *mut u8 = std::ptr::without_provenance_mut(layout.align());
