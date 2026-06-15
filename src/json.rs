@@ -189,6 +189,11 @@ where
 /// # Safety
 /// If the Self::Visitor complete method returns `Ok(())` then `Self` must be have
 /// initialized within the given ptr.
+#[diagnostic::on_unimplemented(
+    message = "the type `{Self}` must derive `#[jsony(Flattenable)]` to be used as a `#[jsony(flatten)]` field",
+    label = "needs `#[jsony(Flattenable)]` to be flattened",
+    note = "alternatively, flatten a map type such as `HashMap` or `BTreeMap`"
+)]
 pub unsafe trait FromJsonFieldVisitor<'a> {
     type Visitor: FieldVisitor<'a>;
     /// # Safety
