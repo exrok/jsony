@@ -59,6 +59,15 @@ impl Rand {
         }
     }
 
+    /// An escape-free string for `&str` fields. jsony decodes `&'a str` with
+    /// `take_borrowed_string`, which **errors** on any string needing an escape
+    /// (it can only borrow the raw input). Alphanumeric content JSON-encodes
+    /// verbatim, so it borrows cleanly and round-trips byte-for-byte.
+    pub fn borrowed_string(&mut self) -> String {
+        let len = self.rng.gen_range(0..24);
+        rand::distributions::Alphanumeric.sample_string(&mut self.rng, len)
+    }
+
     pub fn gen_base_sample<T: Copy>(&mut self, base: &[T]) -> T
     where
         Standard: Distribution<T>,
@@ -140,6 +149,93 @@ impl<'a> Struct<'a> {
     }
 }
 
+/// A distinct integer key value for entry `idx`. Signed key types alternate sign
+/// so negative quoted-number keys (`"-1"`) are exercised; unsigned types stay
+/// non-negative. Distinct across `idx` so multi-entry maps keep distinct keys.
+fn map_key_int(k: &Type, idx: usize) -> i64 {
+    let i = idx as i64;
+    let signed = matches!(
+        k,
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+    );
+    if signed && idx % 2 == 0 {
+        -(i + 1)
+    } else {
+        i
+    }
+}
+
+/// Write a string-kind map key plus its trailing colon, byte-identical to how
+/// jsony renders that key on the `ToJson` side. String keys are `m_<idx>` (the
+/// `m_` prefix keeps flattened map keys disjoint from sibling `f<n>` field keys);
+/// integer keys render as the quoted decimal jsony emits for a numeric key
+/// (including negative keys for signed types).
+fn write_map_key(k: &Type, idx: usize, out: &mut TextWriter) {
+    match k {
+        Type::String | Type::Str => {
+            format!("m_{idx}").as_str().encode_json__jsony(out);
+            out.push_colon();
+        }
+        Type::U8 | Type::I8 | Type::U16 | Type::I16 | Type::U32 | Type::I32 | Type::U64
+        | Type::I64 | Type::U128 | Type::I128 => {
+            let mut buffer = itoa::Buffer::new();
+            out.push_str("\"");
+            out.push_str(buffer.format(map_key_int(k, idx)));
+            out.push_str("\":");
+        }
+        other => panic!("unsupported map key type: {other:?}"),
+    }
+}
+
+/// JSON-encode a `HashMap`/`BTreeMap` value as a JSON object. Under `full` (the
+/// encode oracle) exactly one entry is emitted so the re-encode is order-stable
+/// regardless of the concrete map type; otherwise 0..=2 distinct-keyed entries.
+fn json_encode_map(k: &Type, v: &Type, rand: &mut Rand, out: &mut TextWriter) {
+    let n = if rand.full {
+        1
+    } else {
+        rand.rng.gen_range(0..=2usize)
+    };
+    out.start_json_object();
+    for i in 0..n {
+        write_map_key(k, i, out);
+        v.json_encode(rand, out);
+        out.push_comma();
+    }
+    out.end_json_object();
+}
+
+/// Native JSON for a `Vec<(K, V)>`: an array of two-element `[key, value]`
+/// arrays (jsony's tuple `ToJson` is an array). Keys are encoded natively here
+/// (numeric keys are bare numbers, not strings) — the object form is only
+/// produced by the `object_as_vec_of_tuple` helper or `via = Iterator`.
+fn json_encode_tuple_vec(k: &Type, v: &Type, rand: &mut Rand, out: &mut TextWriter) {
+    let n = if rand.full {
+        1
+    } else {
+        rand.rng.gen_range(0..=2usize)
+    };
+    out.start_json_array();
+    for i in 0..n {
+        out.start_json_array();
+        match k {
+            Type::String | Type::Str => {
+                format!("m_{i}").as_str().encode_json__jsony(out);
+            }
+            _ => {
+                let mut buffer = itoa::Buffer::new();
+                out.push_str(buffer.format(i as i64));
+            }
+        }
+        out.push_comma();
+        v.json_encode(rand, out);
+        out.push_comma();
+        out.end_json_array();
+        out.push_comma();
+    }
+    out.end_json_array();
+}
+
 impl<'b> Type<'b> {
     pub fn generate_random_default(&self, out: &mut Vec<TokenTree>, seed: u64) {
         let mut rand = Rand {
@@ -208,7 +304,12 @@ impl<'b> Type<'b> {
                 return;
             }
             Type::Ref(inner) => {
-                inner.json_encode(rand, out);
+                // `&str` borrows from the input, so its value must be escape-free.
+                if matches!(inner, Type::Str) {
+                    rand.borrowed_string().encode_json__jsony(out);
+                } else {
+                    inner.json_encode(rand, out);
+                }
                 return;
             }
             Type::Slice(inner) => {
@@ -257,6 +358,14 @@ impl<'b> Type<'b> {
             }
             Type::Struct(record) => {
                 record.random_json(rand, out);
+                return;
+            }
+            Type::Map(k, v) | Type::BTreeMap(k, v) => {
+                json_encode_map(k, v, rand, out);
+                return;
+            }
+            Type::TupleVec(k, v) => {
+                json_encode_tuple_vec(k, v, rand, out);
                 return;
             }
             Type::Enum(_) => todo!(),
@@ -349,6 +458,14 @@ impl<'b> Type<'b> {
             }
             Type::Struct(record) => {
                 record.random_adv_json(rand, out);
+                return;
+            }
+            Type::Map(k, v) | Type::BTreeMap(k, v) => {
+                json_encode_map(k, v, rand, out);
+                return;
+            }
+            Type::TupleVec(k, v) => {
+                json_encode_tuple_vec(k, v, rand, out);
                 return;
             }
             Type::Enum(_) => todo!(),

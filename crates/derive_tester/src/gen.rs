@@ -299,6 +299,66 @@ pub enum Body {
     /// alignment oracle (no JSON), see `emit::emit_pod_arm`. Emits its own type
     /// definitions (the POD struct plus transparent POD / non-POD wrappers).
     Pod(PodFamily),
+    /// A ToJson-only struct with a `#[jsony(flatten, via = Iterator)] Vec<(String,
+    /// i64)>` field, exercised by a dedicated encode oracle (no decode: via=Iterator
+    /// is encode-only and does not dedup). Emits its own type definition.
+    ViaIter(ViaFamily),
+    /// A self-contained with-helper / binary-rejection case. Emits its own type
+    /// definition and a fixed oracle (no per-input JSON).
+    Helper(HelperKind),
+}
+
+/// A ToJson-only `via = Iterator` family: a leading `a: u32` field plus a flattened
+/// `Vec<(String, i64)>` rendered as inline object members in insertion order,
+/// duplicate keys preserved (no dedup).
+pub struct ViaFamily {
+    pub lead: u32,
+    pub pairs: Vec<(String, i64)>,
+}
+
+/// A self-contained with-helper / binary-rejection case, each checked by a fixed
+/// oracle (no per-input JSON). Covers the helper-breadth and binary-rejection gaps.
+#[derive(Clone, Copy)]
+pub enum HelperKind {
+    /// `Vec<(String, i64)>` via `jsony::helper::object_as_vec_of_tuple`: decodes
+    /// from / encodes to a JSON object, order-preserving.
+    ObjVecString,
+    /// `Vec<(u32, u32)>` via the same helper, exercising numeric (quoted) keys.
+    ObjVecNum,
+    /// `Cow<'a, [&'a str]>` via `#[jsony(From with = jsony::helper::owned_cow)]`,
+    /// round-tripped in both JSON and binary.
+    OwnedCow,
+    /// A `#[jsony(Binary)]` struct with a `require!` validator; the sentinel value
+    /// is encoded and must be **rejected** on binary decode (the binary-rejection
+    /// gap, complementing the JSON `KIND_REJECT` path).
+    BinReject,
+}
+
+/// Pick a helper kind deterministically.
+fn gen_helper_kind(rng: &mut StdRng) -> HelperKind {
+    match rng.gen_range(0..4) {
+        0 => HelperKind::ObjVecString,
+        1 => HelperKind::ObjVecNum,
+        2 => HelperKind::OwnedCow,
+        _ => HelperKind::BinReject,
+    }
+}
+
+/// Build a `via = Iterator` family. Keys are drawn from a tiny pool so duplicate
+/// keys occur naturally (the no-dedup property), values are distinct per entry.
+fn gen_via_family(rng: &mut StdRng) -> ViaFamily {
+    const KEYS: &[&str] = &["x", "y", "z"];
+    let n = rng.gen_range(0..4);
+    let pairs = (0..n)
+        .map(|i| {
+            let k = KEYS[rng.gen_range(0..KEYS.len())].to_string();
+            (k, (i as i64) * 7 - 3)
+        })
+        .collect();
+    ViaFamily {
+        lead: rng.gen_range(0..1000),
+        pairs,
+    }
 }
 
 /// One field in a version family's shared field plan. Field `i` is present in a
@@ -369,6 +429,169 @@ pub struct PodFamily {
     pub fields: Vec<PodField>,
 }
 
+/// A flattened field on a top-level named struct: `#[jsony(flatten)] {field}:
+/// {kind}`. At most one per container (jsony's `FromJson` supports only one). The
+/// flattened members are inlined into the parent object; the parent `rename_all`
+/// does NOT recase them (proven by the encode oracle, which requires the verbatim
+/// keys to re-encode under a recasing parent).
+pub struct FlattenSpec {
+    /// The parent field name holding the flattened value (always emitted last).
+    pub field: String,
+    pub kind: FlattenKind,
+}
+
+pub enum FlattenKind {
+    /// `#[jsony(flatten)]` over a `HashMap`/`BTreeMap<String, V>`: unknown parent
+    /// keys are absorbed into the map on decode and inlined on encode.
+    Map(Type<'static>),
+    /// `#[jsony(flatten)]` over a companion `#[jsony(Json, Flattenable)]` struct
+    /// (emitted as `{parent}_F`): its fields are inlined verbatim into the parent.
+    /// JSON-only (the companion derives no binary codec).
+    Companion {
+        /// The companion type name (`{parent}_F`).
+        name: String,
+        /// The companion's fields (plain scalars, names `g0..`, keys verbatim).
+        fields: Vec<FieldSpec>,
+    },
+}
+
+impl FlattenSpec {
+    /// Whether the flattened value carries (or contains) a float, so the case is
+    /// excluded from the exact-string encode oracle (see [`case_has_float`]).
+    fn has_float(&self) -> bool {
+        match &self.kind {
+            FlattenKind::Map(ty) => ty_has_float_pub(*ty),
+            FlattenKind::Companion { fields, .. } => {
+                fields.iter().any(|f| ty_has_float_pub(f.ty))
+            }
+        }
+    }
+}
+
+/// Generate the flatten spec for a parent named struct. `binary` constrains the
+/// map flavor (BTreeMap has no binary codec); the companion flavor is JSON-only
+/// and is only chosen when the caller has already dropped binary (see
+/// `case_from_id`). `parent` names the companion type.
+fn gen_flatten(rng: &mut StdRng, parent: &str, binary: bool, allow_companion: bool) -> FlattenSpec {
+    // Map flavor (always available) or companion flavor (JSON-only).
+    if !allow_companion || rng.gen_bool(0.55) {
+        // Flatten map: string-keyed so the inlined keys are `m_<n>` verbatim.
+        let ty = if !binary && rng.gen_bool(0.4) {
+            Type::BTreeMap(&Type::String, &Type::U32)
+        } else if rng.gen_bool(0.5) {
+            Type::Map(&Type::String, &Type::I64)
+        } else {
+            Type::Map(&Type::String, &Type::String)
+        };
+        FlattenSpec {
+            field: "fl".to_string(),
+            kind: FlattenKind::Map(ty),
+        }
+    } else {
+        // Companion Flattenable struct with 1..=3 plain scalar fields.
+        const SCALARS: &[Type<'static>] = &[Type::U32, Type::I64, Type::Bool, Type::String];
+        let n = rng.gen_range(1..=3);
+        let fields = (0..n)
+            .map(|i| FieldSpec {
+                name: format!("g{i}"),
+                ty: *SCALARS.choose(rng).unwrap(),
+                rename: None,
+                alias: None,
+                default: DefaultSpec::None,
+                skip: false,
+                with: false,
+                validate: ValidateKind::None,
+            })
+            .collect();
+        FlattenSpec {
+            field: "fl".to_string(),
+            kind: FlattenKind::Companion {
+                name: format!("{parent}_F"),
+                fields,
+            },
+        }
+    }
+}
+
+/// A `#[jsony(skip_if = ..., default)]` field on a top-level named struct
+/// (ToJson-only behavior: the predicate omits the field on *encode*; decode reads
+/// it normally, refilling the default when absent). The default is chosen equal
+/// to the predicate's trigger value, so a present trigger value round-trips
+/// (encode omits → decode refills the same value).
+pub struct SkipIfField {
+    /// The parent field name, e.g. `sk`.
+    pub name: String,
+    pub kind: SkipIfKind,
+}
+
+#[derive(Clone, Copy)]
+pub enum SkipIfKind {
+    /// `String` field, `skip_if = str::is_empty` (a path predicate). Trigger: `""`.
+    StrIsEmpty,
+    /// `u32` field, `skip_if = |v| *v == 0` (a closure predicate). Trigger: `0`.
+    IntIsZero,
+}
+
+impl SkipIfKind {
+    /// The Rust field type spelling.
+    pub fn type_str(self) -> &'static str {
+        match self {
+            SkipIfKind::StrIsEmpty => "String",
+            SkipIfKind::IntIsZero => "u32",
+        }
+    }
+    /// The `skip_if = ...` attribute value.
+    pub fn predicate(self) -> &'static str {
+        match self {
+            SkipIfKind::StrIsEmpty => "str::is_empty",
+            SkipIfKind::IntIsZero => "|v| *v == 0",
+        }
+    }
+    /// The JSON for the trigger (default) value the predicate fires on.
+    fn trigger_json(self) -> &'static str {
+        match self {
+            SkipIfKind::StrIsEmpty => "\"\"",
+            SkipIfKind::IntIsZero => "0",
+        }
+    }
+    /// A JSON value the predicate does NOT fire on (so the field is kept).
+    fn kept_json(self) -> &'static str {
+        match self {
+            SkipIfKind::StrIsEmpty => "\"keep\"",
+            SkipIfKind::IntIsZero => "42",
+        }
+    }
+}
+
+/// An asymmetric-`with` field on a top-level named struct: `#[jsony(FromJson with
+/// = dt_from_str, ToJson with = dt_to_string)] {name}: u32`. The decode and encode
+/// helpers are *different* modules (the split-prefix codegen path). The on-wire
+/// form is a JSON **string** holding the decimal; decode parses it, encode renders
+/// it back, so it round-trips and the encode oracle proves the string form.
+pub struct WithPairField {
+    /// The parent field name, e.g. `wp`.
+    pub name: String,
+}
+
+/// Public float-recursion helper shared by [`case_has_float`] and
+/// [`FlattenSpec::has_float`].
+fn ty_has_float_pub(ty: Type) -> bool {
+    match ty {
+        Type::F32 | Type::F64 => true,
+        Type::Ref(t)
+        | Type::Slice(t)
+        | Type::Vec(t)
+        | Type::Box(t)
+        | Type::Cow(t)
+        | Type::Option(t)
+        | Type::Array(t, _) => ty_has_float_pub(*t),
+        Type::Map(k, v) | Type::BTreeMap(k, v) | Type::TupleVec(k, v) => {
+            ty_has_float_pub(*k) || ty_has_float_pub(*v)
+        }
+        _ => false,
+    }
+}
+
 pub struct Case {
     pub name: String,
     pub id: u64,
@@ -390,6 +613,17 @@ pub struct Case {
     /// The sampler couples this: with the flag, an input carrying injected extras
     /// must decode equal to the clean input; without it, the same input is BAD.
     pub ignore_tag_adjacent: bool,
+    /// `#[jsony(flatten)]` field on a top-level named struct (at most one). Its
+    /// members are inlined into the parent object; the parent `rename_all` does
+    /// not recase them. `None` for every other shape.
+    pub flatten: Option<FlattenSpec>,
+    /// `#[jsony(skip_if = ..., default)]` field on a top-level named struct
+    /// (mutually exclusive with `flatten` here). Encode omits it on the trigger
+    /// value; decode refills the matching default. `None` otherwise.
+    pub skip_if: Option<SkipIfField>,
+    /// An asymmetric-`with` field (split `FromJson with`/`ToJson with`) on a named
+    /// struct. Mutually exclusive with `flatten`/`skip_if`. `None` otherwise.
+    pub with_pair: Option<WithPairField>,
 }
 
 impl Case {
@@ -490,8 +724,31 @@ fn type_choices(binary: bool) -> Vec<Type<'static>> {
         // element when an inner allocation is live.
         Array(&Option(&U32), 3),
         Array(&Option(&String), 2),
+        // Borrowed types (zero-copy decode), all four jsony traits. `&'a str`
+        // borrows escape-free input (the sampler keeps `&str` values escape-free);
+        // `Cow<'a, str>` borrows or owns. Nestings exercise the borrowed element
+        // decode path and the lifetime threading on the container.
+        Ref(&Str),          // &'a str
+        Cow(&Str),          // Cow<'a, str>
+        Option(&Ref(&Str)), // Option<&'a str>
+        Option(&Cow(&Str)),
+        Vec(&Cow(&Str)),
+        // Maps: JSON objects with string-kind keys. `HashMap` has a binary codec,
+        // so it joins both pools; numeric keys exercise the quoted-number key path.
+        Map(&String, &I64),
+        Map(&U32, &Bool),
+        Map(&String, &Vec(&U32)),
+        // `Vec<(K, V)>`: a positional pair-array (binary-capable). Its object form
+        // is reached only via the `object_as_vec_of_tuple` helper / `via`.
+        TupleVec(&String, &I64),
+        TupleVec(&U32, &U32),
     ];
-    let _ = binary;
+    // `BTreeMap` implements FromJson/ToJson but has no binary codec (see
+    // docs/known-issues.md), so it is restricted to the JSON-only pool.
+    if !binary {
+        v.push(BTreeMap(&String, &U32));
+        v.push(BTreeMap(&I64, &Bool));
+    }
     v.push(Box(&U32));
     v.push(Box(&String));
     v
@@ -542,7 +799,9 @@ fn gen_fields(
                 // the sampler can also emit a sentinel BAD input (top-level named
                 // structs), otherwise the always-`Ok` validator is used.
                 match rng.gen_range(0..4) {
-                    0 => with = true,
+                    // `with = json_string` needs `T: for<'a> FromJson<'a>`, which
+                    // borrowed types do not satisfy, so only owned fields get it.
+                    0 if ty.lifetimes() == 0 => with = true,
                     1 => {
                         validate = if allow_reject && is_int(ty) {
                             match rng.gen_range(0..3) {
@@ -579,7 +838,8 @@ fn gen_fields(
 /// tuple-struct and tuple-variant fields.
 fn add_tuple_with(rng: &mut StdRng, fields: &mut [FieldSpec]) {
     for f in fields {
-        if rng.gen_bool(0.3) {
+        // `json_string` needs `for<'a> FromJson<'a>`; skip borrowed-type fields.
+        if f.ty.lifetimes() == 0 && rng.gen_bool(0.3) {
             f.with = true;
         }
     }
@@ -1009,7 +1269,27 @@ pub fn case_from_id(id: u64) -> Case {
         to_binary: binary,
     };
     let mut transparent = false;
-    let body = match rng.gen_range(0..15) {
+    let body = match rng.gen_range(0..17) {
+        16 => {
+            // A self-contained with-helper / binary-rejection case.
+            traits = TraitSet {
+                from_json: false,
+                to_json: false,
+                from_binary: false,
+                to_binary: false,
+            };
+            Body::Helper(gen_helper_kind(&mut rng))
+        }
+        15 => {
+            // A ToJson-only `via = Iterator` family: self-contained encode oracle.
+            traits = TraitSet {
+                from_json: false,
+                to_json: false,
+                from_binary: false,
+                to_binary: false,
+            };
+            Body::ViaIter(gen_via_family(&mut rng))
+        }
         14 => {
             // A `zerocopy` POD struct: manages its own `#[jsony(Binary, zerocopy)]
             // #[repr(C)]` derive and is checked by the dedicated alignment oracle.
@@ -1144,6 +1424,61 @@ pub fn case_from_id(id: u64) -> Case {
             ..
         }
     ) && rng.gen_bool(0.4);
+    // `#[jsony(flatten)]` on a top-level named (non-transparent) struct. The
+    // companion flavor is JSON-only (its companion derives no binary codec), so
+    // choosing it drops the parent's binary traits. A recasing `rename_all` (set
+    // independently above) is the point of the flatten encode oracle: it must
+    // leave the inlined keys verbatim.
+    let flatten = if matches!(&body, Body::Named(_)) && !transparent && rng.gen_bool(0.3) {
+        let fl = gen_flatten(&mut rng, &format!("T{id}"), traits.binary(), true);
+        if let FlattenKind::Companion { .. } = &fl.kind {
+            traits.from_binary = false;
+            traits.to_binary = false;
+        }
+        Some(fl)
+    } else {
+        None
+    };
+    // `skip_if` (ToJson-only behavior) on a named struct, mutually exclusive with
+    // flatten so the appended-field ordering stays simple. JSON-only: `skip_if` is
+    // an encode-side attribute and is not part of the binary codec.
+    let skip_if = if flatten.is_none()
+        && matches!(&body, Body::Named(_))
+        && !transparent
+        && traits.to_json
+        && rng.gen_bool(0.25)
+    {
+        traits.from_binary = false;
+        traits.to_binary = false;
+        let kind = if rng.gen_bool(0.5) {
+            SkipIfKind::StrIsEmpty
+        } else {
+            SkipIfKind::IntIsZero
+        };
+        Some(SkipIfField {
+            name: "sk".to_string(),
+            kind,
+        })
+    } else {
+        None
+    };
+    // Asymmetric `with` field (JSON-only split-prefix path), mutually exclusive
+    // with the other appended-field features.
+    let with_pair = if flatten.is_none()
+        && skip_if.is_none()
+        && matches!(&body, Body::Named(_))
+        && !transparent
+        && traits.to_json
+        && rng.gen_bool(0.2)
+    {
+        traits.from_binary = false;
+        traits.to_binary = false;
+        Some(WithPairField {
+            name: "wp".to_string(),
+        })
+    } else {
+        None
+    };
     Case {
         name: format!("T{id}"),
         id,
@@ -1153,6 +1488,9 @@ pub fn case_from_id(id: u64) -> Case {
         rename_all,
         rename_all_fields,
         ignore_tag_adjacent,
+        flatten,
+        skip_if,
+        with_pair,
     }
 }
 
@@ -1211,6 +1549,82 @@ fn build_named_object(fields: &[FieldSpec], rule: RenameRule, rand: &mut Rand) -
     Node::Object(members)
 }
 
+/// The members a flattened field contributes to its parent object: `(key,
+/// value-json)` pairs with **verbatim** keys (never recased by the parent
+/// `rename_all`). Under `full` (the encode oracle) the map flavor emits exactly
+/// one entry so the inlined re-encode is order-stable.
+fn flatten_members(fl: &FlattenSpec, rand: &mut Rand) -> Vec<(String, String)> {
+    match &fl.kind {
+        FlattenKind::Map(ty) => {
+            let v = match ty {
+                Type::Map(_, v) | Type::BTreeMap(_, v) => **v,
+                _ => unreachable!("flatten map is a Map/BTreeMap"),
+            };
+            let n = if rand.full {
+                1
+            } else {
+                rand.rng.gen_range(0..=2usize)
+            };
+            (0..n)
+                .map(|i| (format!("m_{i}"), raw_value(v, rand)))
+                .collect()
+        }
+        // Companion fields are plain (no rename/alias/default), so the key is the
+        // declared name verbatim and the value is the field's sampled value.
+        FlattenKind::Companion { fields, .. } => fields
+            .iter()
+            .map(|f| (f.name.clone(), f.sample_value(rand)))
+            .collect(),
+    }
+}
+
+/// Append a case's flattened members onto an object's member list (the parent
+/// keys come first; the flatten field is declared last, so its inlined keys
+/// follow). The keys are verbatim — applying the parent's `rename_all` here would
+/// be the bug the encode oracle is built to catch.
+fn append_flatten(node: &mut Node, case: &Case, rand: &mut Rand) {
+    let Some(fl) = &case.flatten else { return };
+    if let Node::Object(members) = node {
+        for (k, v) in flatten_members(fl, rand) {
+            members.push((k, Node::Raw(v)));
+        }
+    }
+}
+
+/// Append the `skip_if` field's member to the parent object (non-`full` only).
+/// Any value round-trips: a non-trigger value is kept by encode; a trigger value
+/// is omitted by encode and refilled by the matching default on decode. The key
+/// IS recased by the parent `rename_all` (a `skip_if` field is an ordinary field).
+/// Omitted under `full`, where the single-column encode oracle wants the field
+/// absent so the re-encode (which omits on the default) matches.
+fn append_skip_if(node: &mut Node, case: &Case, rand: &mut Rand) {
+    let Some(sk) = &case.skip_if else { return };
+    if rand.full {
+        return;
+    }
+    if let Node::Object(members) = node {
+        let key = case.struct_field_rule().apply_to_field(&sk.name);
+        let value = match sk.kind {
+            SkipIfKind::StrIsEmpty => raw_value(Type::String, rand),
+            SkipIfKind::IntIsZero => raw_value(Type::U32, rand),
+        };
+        members.push((key, Node::Raw(value)));
+    }
+}
+
+/// Append the asymmetric-`with` field's member: a JSON **string** holding a
+/// decimal (decode parses it to `u32`, encode renders it back). Present in both
+/// `full` and non-`full` (the form is symmetric, so the single-column encode
+/// oracle proves the string round-trips). The key is recased by `rename_all`.
+fn append_with_pair(node: &mut Node, case: &Case, rand: &mut Rand) {
+    let Some(wp) = &case.with_pair else { return };
+    if let Node::Object(members) = node {
+        let key = case.struct_field_rule().apply_to_field(&wp.name);
+        let n: u32 = rand.rng.gen();
+        members.push((key, Node::Raw(format!("\"{n}\""))));
+    }
+}
+
 fn build_variant_content(v: &VariantSpec, rule: RenameRule, rand: &mut Rand) -> Node {
     match v.kind {
         VarKind::Unit => Node::Raw("null".to_string()),
@@ -1227,7 +1641,13 @@ fn build_struct_body(case: &Case, rand: &mut Rand) -> Node {
         }
     }
     match &case.body {
-        Body::Named(fields) => build_named_object(fields, case.struct_field_rule(), rand),
+        Body::Named(fields) => {
+            let mut node = build_named_object(fields, case.struct_field_rule(), rand);
+            append_flatten(&mut node, case, rand);
+            append_skip_if(&mut node, case, rand);
+            append_with_pair(&mut node, case, rand);
+            node
+        }
         Body::Tuple(fields) => {
             if fields.len() == 1 {
                 // Newtype: serializes transparently as the inner value (which the
@@ -1253,7 +1673,22 @@ fn build_struct_body(case: &Case, rand: &mut Rand) -> Node {
         Body::Str(_) => unreachable!("str enums are checked by the dedicated arm, not sampled"),
         Body::Version(_) => unreachable!("version families are checked by the dedicated arm"),
         Body::Pod(_) => unreachable!("POD families are checked by the dedicated arm"),
+        Body::ViaIter(_) => unreachable!("via=Iterator families are checked by the dedicated arm"),
+        Body::Helper(_) => unreachable!("helper families are checked by the dedicated arm"),
     }
+}
+
+/// The exact JSON `to_json` must produce for a `via = Iterator` family: the
+/// leading `a` field, then the flattened pairs inline in insertion order with
+/// duplicate keys preserved. Keys are simple alphabetic, so no escaping is needed.
+pub fn via_expected(fam: &ViaFamily) -> String {
+    use std::fmt::Write as _;
+    let mut s = format!("{{\"a\":{}", fam.lead);
+    for (k, v) in &fam.pairs {
+        let _ = write!(s, ",\"{k}\":{v}");
+    }
+    s.push('}');
+    s
 }
 
 fn build_enum(case: &Case, repr: EnumRepr, variants: &[VariantSpec], rand: &mut Rand) -> Node {
@@ -1532,6 +1967,15 @@ fn build_default_eq(case: &Case, seed: u64) -> Option<(String, String)> {
         };
         members.push((field.key(rule), value));
     }
+    // Include the flattened / with-pair members so the input is structurally
+    // complete (companion and with-pair fields are required); they are identical
+    // in both renderings, so the EQ assertion still isolates the target field.
+    if let Some(fl) = &case.flatten {
+        members.extend(flatten_members(fl, &mut rand));
+    }
+    if let Some(wp) = &case.with_pair {
+        members.push((rule.apply_to_field(&wp.name), format!("\"{}\"", rand.rng.gen::<u32>())));
+    }
     let present = render_members(&members);
     members.remove(
         members
@@ -1580,6 +2024,14 @@ fn build_validate_reject(case: &Case, seed: u64) -> Option<String> {
             field.sample_value(&mut rand)
         };
         members.push((field.key(rule), value));
+    }
+    // Include flattened / with-pair members so the input is structurally complete
+    // and the only decode failure is the validator firing on the sentinel.
+    if let Some(fl) = &case.flatten {
+        members.extend(flatten_members(fl, &mut rand));
+    }
+    if let Some(wp) = &case.with_pair {
+        members.push((rule.apply_to_field(&wp.name), format!("\"{}\"", rand.rng.gen::<u32>())));
     }
     Some(render_members(&members))
 }
@@ -1695,25 +2147,59 @@ pub fn sample_json(case: &Case, sample_seed: u64) -> String {
 /// not byte-match the input; such cases are excluded from the exact-string encode
 /// oracle (their encoding is still covered by the self-consistent round trip).
 fn case_has_float(case: &Case) -> bool {
-    fn ty_has_float(ty: Type) -> bool {
-        match ty {
-            Type::F32 | Type::F64 => true,
-            Type::Ref(t)
-            | Type::Slice(t)
-            | Type::Vec(t)
-            | Type::Box(t)
-            | Type::Cow(t)
-            | Type::Option(t)
-            | Type::Array(t, _) => ty_has_float(*t),
-            _ => false,
-        }
-    }
-    let any = |fields: &[FieldSpec]| fields.iter().any(|f| ty_has_float(f.ty));
-    match &case.body {
+    let any = |fields: &[FieldSpec]| fields.iter().any(|f| ty_has_float_pub(f.ty));
+    let body_float = match &case.body {
         Body::Named(f) | Body::Tuple(f) => any(f),
         Body::Enum { variants, .. } => variants.iter().any(|v| any(&v.fields)),
         _ => false,
+    };
+    body_float || case.flatten.as_ref().is_some_and(|fl| fl.has_float())
+}
+
+/// Build the absolute `skip_if` encode checks as two-column `(input, expected)`
+/// records: decode `input`, re-encode, compare to `expected`. Two records:
+///
+///   - **kept**: the `skip_if` field is present at a non-trigger value, so encode
+///     keeps it (`expected == input`). Proves the predicate-false path emits it.
+///   - **omitted**: the field is present at the trigger value, so encode omits it
+///     (`expected` drops it). Proves the predicate-true path actually fires.
+///
+/// The regular fields are rendered `full` (canonical), so the comparison is
+/// byte-absolute. `None` unless the case has a `skip_if` field and is float-free.
+pub fn build_skip_if_encode(case: &Case, seed: u64) -> Option<Vec<(String, String)>> {
+    let sk = case.skip_if.as_ref()?;
+    if case_has_float(case) {
+        return None;
     }
+    let Body::Named(fields) = &case.body else {
+        return None;
+    };
+    let mut rand = Rand {
+        rng: StdRng::seed_from_u64(mix64(seed ^ 0x5417_1F00_DEFA_0001)),
+        steam: 95,
+        full: true,
+    };
+    let rule = case.struct_field_rule();
+    let mut base: Vec<(String, String)> = Vec::new();
+    for field in fields {
+        if field.skip {
+            continue;
+        }
+        base.push((field.key(rule), field.sample_value(&mut rand)));
+    }
+    let sk_key = rule.apply_to_field(&sk.name);
+    // The skip_if field is declared last, so it sits after the regular fields.
+    let mut kept = base.clone();
+    kept.push((sk_key.clone(), sk.kind.kept_json().to_string()));
+    let kept_json = render_members(&kept);
+    let mut trig = base.clone();
+    trig.push((sk_key.clone(), sk.kind.trigger_json().to_string()));
+    let trig_input = render_members(&trig);
+    let trig_expected = render_members(&base);
+    Some(vec![
+        (kept_json.clone(), kept_json),
+        (trig_input, trig_expected),
+    ])
 }
 
 /// Build the encode-oracle input: a full canonical JSON object (every non-skip

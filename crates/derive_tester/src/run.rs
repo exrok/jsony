@@ -82,6 +82,20 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
             count += 1;
             continue;
         }
+        // A via=Iterator family is ToJson-only and self-contained. One trigger
+        // record fires its encode oracle arm.
+        if let Body::ViaIter(_) = &case.body {
+            record(&mut content, &case.name, KIND_OK, "via", "");
+            count += 1;
+            continue;
+        }
+        // A with-helper / binary-rejection family is self-contained. One trigger
+        // record fires its fixed oracle arm.
+        if let Body::Helper(_) = &case.body {
+            record(&mut content, &case.name, KIND_OK, "helper", "");
+            count += 1;
+            continue;
+        }
         // A ToJson-only case (none generated yet) has no decoder, so the derived
         // decode-oriented inputs would never run; emit only canonical inputs.
         let derive_inputs = case.traits.from_json;
@@ -97,6 +111,17 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
                     if k == 0 {
                         if let Some(enc) = crate::gen::sample_encode(case, seed) {
                             record(&mut content, &case.name, KIND_ENCODE, &enc, "");
+                            count += 1;
+                        }
+                        // Absolute `skip_if` encode checks (two-column): a present
+                        // non-trigger value is kept, a trigger value re-encodes
+                        // omitted. `expected` (col4) differs from `input` (col3) in
+                        // the omitted case.
+                        for (input, expected) in crate::gen::build_skip_if_encode(case, seed)
+                            .into_iter()
+                            .flatten()
+                        {
+                            record(&mut content, &case.name, KIND_ENCODE, &input, &expected);
                             count += 1;
                         }
                     }

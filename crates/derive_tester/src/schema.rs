@@ -51,6 +51,14 @@ pub enum Type<'b> {
     Struct(&'b Struct<'b>),
     Enum(&'b Enum<'b>),
     Generic(char),
+    /// `HashMap<K, V>`. Encodes/decodes as a JSON object (string-kind keys).
+    Map(&'b Type<'b>, &'b Type<'b>),
+    /// `BTreeMap<K, V>`. JSON object, sorted-key encode. No binary codec (see
+    /// `type_choices`), so it only appears in JSON-only cases.
+    BTreeMap(&'b Type<'b>, &'b Type<'b>),
+    /// `Vec<(K, V)>`. A positional list of pairs; the `object_as_vec_of_tuple`
+    /// helper and `via = Iterator` render it as a JSON object instead.
+    TupleVec(&'b Type<'b>, &'b Type<'b>),
 }
 
 #[derive(Debug)]
@@ -216,6 +224,10 @@ impl<'b> Type<'b> {
                     lifetimes |= record.lifetimes;
                     return lifetimes;
                 }
+                Type::Map(k, v) | Type::BTreeMap(k, v) | Type::TupleVec(k, v) => {
+                    lifetimes |= k.lifetimes() | v.lifetimes();
+                    return lifetimes;
+                }
                 _ => return lifetimes,
             }
         }
@@ -278,6 +290,18 @@ impl<'b> Type<'b> {
                 out.push(TokenTree::Ident(Ident::owned(
                     &*ch.encode_utf8(&mut [0u8; 4][..]),
                 )));
+                return;
+            }
+            Type::Map(k, v) => {
+                splat!(out; HashMap < [k.gen(out)] , [v.gen(out)] >);
+                return;
+            }
+            Type::BTreeMap(k, v) => {
+                splat!(out; BTreeMap < [k.gen(out)] , [v.gen(out)] >);
+                return;
+            }
+            Type::TupleVec(k, v) => {
+                splat!(out; Vec < ([k.gen(out)] , [v.gen(out)]) >);
                 return;
             }
         };

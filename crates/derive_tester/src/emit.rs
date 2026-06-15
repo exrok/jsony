@@ -9,8 +9,9 @@ use std::fmt::Write;
 use proc_macro2::TokenStream;
 
 use crate::gen::{
-    version_type_str, Body, Case, DefaultSpec, FieldSpec, PodFamily, ValidateKind, VarKind,
-    VariantSpec, VersionFamily, DEFAULT_CONST, VALIDATE_SENTINEL,
+    version_type_str, via_expected, Body, Case, DefaultSpec, FieldSpec, FlattenKind, FlattenSpec,
+    HelperKind, PodFamily, SkipIfField, ValidateKind, VarKind, VariantSpec, VersionFamily,
+    ViaFamily, DEFAULT_CONST, VALIDATE_SENTINEL,
 };
 use crate::schema::Type;
 
@@ -67,6 +68,49 @@ unsafe impl GlobalAlloc for CountingAlloc {
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
 "#;
+
+/// The split decode/encode `with` modules referenced by the asymmetric-`with`
+/// field (`FromJson with = dt_from_str`, `ToJson with = dt_to_string`). Generic
+/// and unused unless a case wires them up, so they cost nothing otherwise. Mirror
+/// the shipped `from_str`/`to_string` test helpers: decode parses a JSON string,
+/// encode renders the value back as a JSON string.
+const WITH_PAIR_HELPERS: &str = r#"mod dt_from_str {
+    use std::str::FromStr;
+    use jsony::json::DecodeError;
+    pub fn decode_json<T: FromStr>(
+        parser: &mut jsony::parser::Parser<'_>,
+    ) -> Result<T, &'static DecodeError>
+    where
+        <T as FromStr>::Err: std::fmt::Display,
+    {
+        match T::from_str(parser.take_string()?) {
+            Ok(value) => Ok(value),
+            Err(err) => {
+                parser.report_error(format!("FromStr failed: {err}"));
+                Err(&DecodeError { message: "FromStr failed" })
+            }
+        }
+    }
+}
+mod dt_to_string {
+    use jsony::{TextWriter, ToJson};
+    pub fn encode_json<T: ToString>(value: &T, output: &mut TextWriter) {
+        value.to_string().encode_json__jsony(output);
+    }
+}
+"#;
+
+/// Whether any field type in the case borrows (needs a `<'a>` parameter). Only
+/// the field-carrying shapes can borrow; the self-contained families manage their
+/// own definitions and never use the borrowed pool.
+fn case_has_lifetime(case: &Case) -> bool {
+    let any = |fields: &[FieldSpec]| fields.iter().any(|f| f.ty.lifetimes() != 0);
+    match &case.body {
+        Body::Named(f) | Body::Tuple(f) => any(f),
+        Body::Enum { variants, .. } => variants.iter().any(|v| any(&v.fields)),
+        _ => false,
+    }
+}
 
 /// Render a schema `Type` to its Rust source spelling (e.g. `Vec < u32 >`).
 fn type_str(ty: Type) -> String {
@@ -158,6 +202,43 @@ fn validator_defs() -> String {
     )
 }
 
+/// The Rust type spelling of a flatten field: the map type, or the companion
+/// struct name.
+fn flatten_type(fl: &FlattenSpec) -> String {
+    match &fl.kind {
+        FlattenKind::Map(ty) => type_str(*ty),
+        FlattenKind::Companion { name, .. } => name.clone(),
+    }
+}
+
+/// The struct-body line for a `skip_if` field: `#[jsony(skip_if = <pred>,
+/// default)] <name>: <ty>,`. The `default` (bare) supplies the trigger value on
+/// decode when encode has omitted the field.
+fn skip_if_field_line(sk: &SkipIfField) -> String {
+    format!(
+        "#[jsony(skip_if = {}, default)] {}: {},",
+        sk.kind.predicate(),
+        sk.name,
+        sk.kind.type_str()
+    )
+}
+
+/// Emit a companion `#[jsony(Json, Flattenable)]` struct for the companion
+/// flatten flavor (a no-op for the map flavor). Its fields are plain scalars, so
+/// their JSON keys are the declared names verbatim.
+fn emit_flatten_companion(out: &mut String, fl: &FlattenSpec) {
+    let FlattenKind::Companion { name, fields } = &fl.kind else {
+        return;
+    };
+    let _ = writeln!(out, "#[derive(jsony::Jsony, PartialEq, Debug)]");
+    let _ = writeln!(out, "#[jsony(Json, Flattenable)]");
+    let _ = writeln!(out, "struct {name} {{");
+    for f in fields {
+        let _ = writeln!(out, "    {}: {},", f.name, type_str(f.ty));
+    }
+    let _ = writeln!(out, "}}");
+}
+
 fn emit_def(out: &mut String, case: &Case) {
     // A version family emits several `#[jsony(Binary, version ...)]` structs with
     // their own headers, so it bypasses the single-type definition below.
@@ -170,7 +251,25 @@ fn emit_def(out: &mut String, case: &Case) {
         emit_pod_defs(out, &case.name, fam);
         return;
     }
+    // A via=Iterator family emits its own `#[jsony(ToJson)]` struct.
+    if let Body::ViaIter(_) = &case.body {
+        emit_via_defs(out, &case.name);
+        return;
+    }
+    // A with-helper / binary-rejection family emits its own struct.
+    if let Body::Helper(kind) = &case.body {
+        emit_helper_defs(out, &case.name, *kind);
+        return;
+    }
     let name = &case.name;
+    // `<'a>` on the declaration when any field type borrows (e.g. `&'a str`,
+    // `Cow<'a, str>`); the field types render with `'a` (see `Type::gen`).
+    let lt = if case_has_lifetime(case) { "<'a>" } else { "" };
+    // A companion `Flattenable` struct (when the flatten field uses that flavor)
+    // is defined first so the parent can reference it.
+    if let Some(fl) = &case.flatten {
+        emit_flatten_companion(out, fl);
+    }
     let _ = writeln!(out, "#[derive(jsony::Jsony, PartialEq, Debug)]");
     let _ = writeln!(out, "#[jsony({})]", case.container_attr());
     // transparent FromJson requires repr(transparent).
@@ -179,14 +278,31 @@ fn emit_def(out: &mut String, case: &Case) {
     }
     match &case.body {
         Body::Named(fields) => {
-            let _ = writeln!(out, "struct {name} {{");
+            let _ = writeln!(out, "struct {name}{lt} {{");
             for f in fields {
                 let _ = writeln!(out, "    {}{}: {},", field_attr(f), f.name, type_str(f.ty));
+            }
+            // The flatten field is declared last, so its inlined keys follow the
+            // regular fields in encode order.
+            if let Some(fl) = &case.flatten {
+                let _ = writeln!(out, "    #[jsony(flatten)] {}: {},", fl.field, flatten_type(fl));
+            }
+            // The skip_if field (mutually exclusive with flatten) is likewise last.
+            if let Some(sk) = &case.skip_if {
+                let _ = writeln!(out, "    {}", skip_if_field_line(sk));
+            }
+            // The asymmetric-`with` field (split decode/encode modules), last too.
+            if let Some(wp) = &case.with_pair {
+                let _ = writeln!(
+                    out,
+                    "    #[jsony(FromJson with = dt_from_str, ToJson with = dt_to_string)] {}: u32,",
+                    wp.name
+                );
             }
             let _ = writeln!(out, "}}");
         }
         Body::Tuple(fields) => {
-            let _ = write!(out, "struct {name}(");
+            let _ = write!(out, "struct {name}{lt}(");
             for f in fields {
                 let _ = write!(out, "{}{}, ", field_attr(f), type_str(f.ty));
             }
@@ -196,7 +312,7 @@ fn emit_def(out: &mut String, case: &Case) {
             let _ = writeln!(out, "struct {name};");
         }
         Body::Enum { variants, .. } => {
-            let _ = writeln!(out, "enum {name} {{");
+            let _ = writeln!(out, "enum {name}{lt} {{");
             for v in variants {
                 out.push_str(&variant_attr(v));
                 match v.kind {
@@ -241,6 +357,8 @@ fn emit_def(out: &mut String, case: &Case) {
         }
         Body::Version(_) => unreachable!("version families are emitted above"),
         Body::Pod(_) => unreachable!("POD families are emitted above"),
+        Body::ViaIter(_) => unreachable!("via=Iterator families are emitted above"),
+        Body::Helper(_) => unreachable!("helper families are emitted above"),
     }
 }
 
@@ -602,6 +720,191 @@ fn emit_pod_arm(out: &mut String, name: &str, fam: &PodFamily) {
     let _ = writeln!(out, "        }}");
 }
 
+/// Emit a via=Iterator family's type definition: a `#[jsony(ToJson)]` struct with
+/// a leading `a: u32` and a flattened `Vec<(String, i64)>` rendered via Iterator.
+fn emit_via_defs(out: &mut String, name: &str) {
+    let _ = writeln!(out, "#[derive(jsony::Jsony)]");
+    let _ = writeln!(out, "#[jsony(ToJson)]");
+    let _ = writeln!(out, "struct {name} {{");
+    let _ = writeln!(out, "    a: u32,");
+    let _ = writeln!(out, "    #[jsony(flatten, via = Iterator)]");
+    let _ = writeln!(out, "    pairs: Vec<(String, i64)>,");
+    let _ = writeln!(out, "}}");
+}
+
+/// Emit the self-contained via=Iterator encode oracle: construct the value with
+/// its (possibly duplicate-keyed) pairs, encode it, and assert byte-equality with
+/// the expected inline-object output. One trigger record fires the arm.
+fn emit_via_arm(out: &mut String, name: &str, fam: &ViaFamily) {
+    let expected = via_expected(fam);
+    let _ = writeln!(out, "        {name:?} => {{");
+    let _ = writeln!(out, "            let before = LIVE.load(Ordering::Relaxed);");
+    // The value and its encoding own heap allocations (the pair strings), so they
+    // are scoped to drop before the leak check below.
+    let _ = writeln!(out, "            {{");
+    let _ = write!(
+        out,
+        "                let v = {name} {{ a: {}u32, pairs: vec![",
+        fam.lead
+    );
+    for (k, val) in &fam.pairs {
+        let _ = write!(out, "({k:?}.to_string(), {val}i64), ");
+    }
+    let _ = writeln!(out, "] }};");
+    let _ = writeln!(out, "                let s = jsony::to_json(&v);");
+    // `expected` is placed as an operand (a `&str` literal), not inside a format
+    // string, since it contains braces and quotes.
+    let _ = writeln!(
+        out,
+        "                if s != {expected:?} {{ return Err(format!(\"via encode mismatch: got {{s}}\")); }}"
+    );
+    let _ = writeln!(out, "            }}");
+    let _ = writeln!(out, "            let after = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(
+        out,
+        "            if after != before {{ return Err(format!(\"leak: {{}} bytes (via {name})\", after - before)); }}"
+    );
+    let _ = writeln!(out, "            Ok(())");
+    let _ = writeln!(out, "        }}");
+}
+
+/// Emit the type definition for a with-helper / binary-rejection family.
+fn emit_helper_defs(out: &mut String, name: &str, kind: HelperKind) {
+    let _ = writeln!(out, "#[derive(jsony::Jsony, PartialEq, Debug)]");
+    match kind {
+        HelperKind::ObjVecString => {
+            let _ = writeln!(out, "#[jsony(Json)]");
+            let _ = writeln!(out, "struct {name} {{");
+            let _ = writeln!(
+                out,
+                "    #[jsony(with = jsony::helper::object_as_vec_of_tuple)] pairs: Vec<(String, i64)>,"
+            );
+            let _ = writeln!(out, "}}");
+        }
+        HelperKind::ObjVecNum => {
+            let _ = writeln!(out, "#[jsony(Json)]");
+            let _ = writeln!(out, "struct {name} {{");
+            let _ = writeln!(
+                out,
+                "    #[jsony(with = jsony::helper::object_as_vec_of_tuple)] pairs: Vec<(u32, u32)>,"
+            );
+            let _ = writeln!(out, "}}");
+        }
+        HelperKind::OwnedCow => {
+            let _ = writeln!(out, "#[jsony(Binary, Json)]");
+            let _ = writeln!(out, "struct {name}<'a> {{");
+            let _ = writeln!(
+                out,
+                "    #[jsony(From with = jsony::helper::owned_cow)] shared: Cow<'a, [&'a str]>,"
+            );
+            let _ = writeln!(out, "}}");
+        }
+        HelperKind::BinReject => {
+            let _ = writeln!(out, "#[jsony(Binary)]");
+            let _ = writeln!(out, "struct {name} {{");
+            let _ = writeln!(
+                out,
+                "    #[jsony(validate = jsony::require!(|v| *v != {VALIDATE_SENTINEL}, \"dt sentinel rejected\"))] x: u32,"
+            );
+            let _ = writeln!(out, "}}");
+        }
+    }
+}
+
+/// Emit the self-contained oracle for a with-helper / binary-rejection family.
+/// All bindings live inside an inner block so heap allocations drop before the
+/// leak check. One trigger record fires the whole arm.
+fn emit_helper_arm(out: &mut String, name: &str, kind: HelperKind) {
+    let _ = writeln!(out, "        {name:?} => {{");
+    let _ = writeln!(out, "            let before = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(out, "            {{");
+    match kind {
+        HelperKind::ObjVecString => {
+            let expected = "{\"pairs\":{\"a\":1,\"bb\":22}}";
+            let _ = writeln!(
+                out,
+                "                let v = {name} {{ pairs: vec![(\"a\".to_string(), 1i64), (\"bb\".to_string(), 22i64)] }};"
+            );
+            let _ = writeln!(out, "                let s = jsony::to_json(&v);");
+            let _ = writeln!(
+                out,
+                "                if s != {expected:?} {{ return Err(format!(\"obj_vec_str encode: got {{s}}\")); }}"
+            );
+            let _ = writeln!(
+                out,
+                "                let d: {name} = match jsony::from_json(&s) {{ Ok(v) => v, Err(e) => return Err(format!(\"obj_vec_str decode: {{e}}\")) }};"
+            );
+            let _ = writeln!(out, "                if d != v {{ return Err(format!(\"obj_vec_str roundtrip mismatch\")); }}");
+        }
+        HelperKind::ObjVecNum => {
+            let expected = "{\"pairs\":{\"34\":234,\"112\":452}}";
+            let _ = writeln!(
+                out,
+                "                let v = {name} {{ pairs: vec![(34u32, 234u32), (112u32, 452u32)] }};"
+            );
+            let _ = writeln!(out, "                let s = jsony::to_json(&v);");
+            let _ = writeln!(
+                out,
+                "                if s != {expected:?} {{ return Err(format!(\"obj_vec_num encode: got {{s}}\")); }}"
+            );
+            let _ = writeln!(
+                out,
+                "                let d: {name} = match jsony::from_json({expected:?}) {{ Ok(v) => v, Err(e) => return Err(format!(\"obj_vec_num decode: {{e}}\")) }};"
+            );
+            let _ = writeln!(out, "                if d != v {{ return Err(format!(\"obj_vec_num roundtrip mismatch\")); }}");
+        }
+        HelperKind::OwnedCow => {
+            let expected = "{\"shared\":[\"hello\",\"nice\"]}";
+            let _ = writeln!(
+                out,
+                "                let v = {name} {{ shared: Cow::Borrowed(&[\"hello\", \"nice\"]) }};"
+            );
+            let _ = writeln!(out, "                let s = jsony::to_json(&v);");
+            let _ = writeln!(
+                out,
+                "                if s != {expected:?} {{ return Err(format!(\"owned_cow encode: got {{s}}\")); }}"
+            );
+            let _ = writeln!(
+                out,
+                "                let d: {name}<'_> = match jsony::from_json(&s) {{ Ok(v) => v, Err(e) => return Err(format!(\"owned_cow json decode: {{e}}\")) }};"
+            );
+            let _ = writeln!(out, "                if d != v {{ return Err(format!(\"owned_cow json mismatch\")); }}");
+            let _ = writeln!(out, "                let b = jsony::to_binary(&v);");
+            let _ = writeln!(
+                out,
+                "                let d2: {name}<'_> = match jsony::from_binary(&b) {{ Ok(v) => v, Err(_) => return Err(format!(\"owned_cow binary decode failed\")) }};"
+            );
+            let _ = writeln!(out, "                if d2 != v {{ return Err(format!(\"owned_cow binary mismatch\")); }}");
+        }
+        HelperKind::BinReject => {
+            let _ = writeln!(
+                out,
+                "                let gb = jsony::to_binary(&{name} {{ x: 5u32 }});"
+            );
+            let _ = writeln!(
+                out,
+                "                match jsony::from_binary::<{name}>(&gb) {{ Ok(v) => drop(v), Err(e) => return Err(format!(\"binreject valid value rejected: {{e}}\")) }};"
+            );
+            let _ = writeln!(
+                out,
+                "                let bb = jsony::to_binary(&{name} {{ x: {VALIDATE_SENTINEL}u32 }});"
+            );
+            let _ = writeln!(
+                out,
+                "                match jsony::from_binary::<{name}>(&bb) {{ Ok(v) => {{ drop(v); return Err(format!(\"binreject sentinel accepted\")); }} Err(e) => drop(e) }};"
+            );
+        }
+    }
+    let _ = writeln!(out, "            }}");
+    let _ = writeln!(out, "            let after = LIVE.load(Ordering::Relaxed);");
+    let _ = writeln!(
+        out,
+        "            if after != before {{ return Err(format!(\"leak: {{}} bytes (helper {name})\", after - before)); }}"
+    );
+    let _ = writeln!(out, "            Ok(())");
+    let _ = writeln!(out, "        }}");
+}
+
 fn emit_arm(out: &mut String, case: &Case) {
     if let Body::Str(variants) = &case.body {
         emit_str_arm(out, case, variants);
@@ -615,7 +918,22 @@ fn emit_arm(out: &mut String, case: &Case) {
         emit_pod_arm(out, &case.name, fam);
         return;
     }
+    if let Body::ViaIter(fam) = &case.body {
+        emit_via_arm(out, &case.name, fam);
+        return;
+    }
+    if let Body::Helper(kind) = &case.body {
+        emit_helper_arm(out, &case.name, *kind);
+        return;
+    }
     let name = &case.name;
+    // Type-position spelling: `T<'_>` when the type borrows (the decoded value
+    // borrows from `input`, which outlives the arm), else the bare name.
+    let tyref = if case_has_lifetime(case) {
+        format!("{name}<'_>")
+    } else {
+        name.to_string()
+    };
     let can_decode = case.traits.from_json;
     let can_encode = case.traits.to_json;
     let bin = case.traits.binary();
@@ -635,7 +953,7 @@ fn emit_arm(out: &mut String, case: &Case) {
         // generated decoder failed to drop on the error path.
         let _ = writeln!(
             out,
-            "                \"{KIND_BAD}\" => {{ match jsony::from_json::<{name}>(input) {{ Ok(v) => drop(v), Err(e) => drop(e) }} }}"
+            "                \"{KIND_BAD}\" => {{ match jsony::from_json::<{tyref}>(input) {{ Ok(v) => drop(v), Err(e) => drop(e) }} }}"
         );
         // Reject path: the input must error (e.g. a rejecting validator firing on
         // its sentinel). A decode that *accepts* it is the failure. The value or
@@ -643,7 +961,7 @@ fn emit_arm(out: &mut String, case: &Case) {
         // drop the rejection triggers.
         let _ = writeln!(
             out,
-            "                \"{KIND_REJECT}\" => {{ match jsony::from_json::<{name}>(input) {{ Ok(v) => {{ drop(v); return Err(format!(\"reject input accepted: json={{input}}\")); }} Err(e) => drop(e) }} }}"
+            "                \"{KIND_REJECT}\" => {{ match jsony::from_json::<{tyref}>(input) {{ Ok(v) => {{ drop(v); return Err(format!(\"reject input accepted: json={{input}}\")); }} Err(e) => drop(e) }} }}"
         );
         // Equivalence path: `input` and `extra` are two encodings of the same
         // value (key-permuted or whitespace-injected). Both must decode and
@@ -653,11 +971,11 @@ fn emit_arm(out: &mut String, case: &Case) {
         let _ = writeln!(out, "                \"{KIND_EQ}\" => {{");
         let _ = writeln!(
             out,
-            "                    let a: {name} = match jsony::from_json(input) {{ Ok(v) => v, Err(e) => return Err(format!(\"equiv a from_json: {{e}} a={{input}}\")) }};"
+            "                    let a: {tyref} = match jsony::from_json(input) {{ Ok(v) => v, Err(e) => return Err(format!(\"equiv a from_json: {{e}} a={{input}}\")) }};"
         );
         let _ = writeln!(
             out,
-            "                    let b: {name} = match jsony::from_json(extra) {{ Ok(v) => v, Err(e) => return Err(format!(\"equiv b from_json: {{e}} b={{extra}}\")) }};"
+            "                    let b: {tyref} = match jsony::from_json(extra) {{ Ok(v) => v, Err(e) => return Err(format!(\"equiv b from_json: {{e}} b={{extra}}\")) }};"
         );
         let _ = writeln!(
             out,
@@ -665,18 +983,27 @@ fn emit_arm(out: &mut String, case: &Case) {
         );
         let _ = writeln!(out, "                }}");
         if can_encode {
-            // Absolute encode oracle: a full canonical input must re-encode to
-            // itself byte-for-byte. Catches encode bugs (wrong key order/casing,
-            // dropped/extra fields, wrong tag placement) the round trip misses.
+            // Absolute encode oracle (two-column): decode `input` (col3),
+            // re-encode, and compare to `expected` (col4, defaulting to `input`
+            // when col4 is empty — the symmetric round-trip case). The asymmetric
+            // form (col4 != col3) checks attributes whose decode and encode forms
+            // differ: `skip_if` (a present trigger value re-encodes omitted),
+            // `via`, and an asymmetric `with` pair. Catches encode bugs (wrong key
+            // order/casing, dropped/extra fields, wrong tag placement) the round
+            // trip misses.
             let _ = writeln!(out, "                \"{KIND_ENCODE}\" => {{");
             let _ = writeln!(
                 out,
-                "                    let v: {name} = match jsony::from_json(input) {{ Ok(v) => v, Err(e) => return Err(format!(\"encode-oracle decode: {{e}} json={{input}}\")) }};"
+                "                    let v: {tyref} = match jsony::from_json(input) {{ Ok(v) => v, Err(e) => return Err(format!(\"encode-oracle decode: {{e}} json={{input}}\")) }};"
             );
             let _ = writeln!(out, "                    let s = jsony::to_json(&v);");
             let _ = writeln!(
                 out,
-                "                    if s != input {{ return Err(format!(\"encode mismatch: got {{s}} want {{input}}\")); }}"
+                "                    let expected = if extra.is_empty() {{ input }} else {{ extra }};"
+            );
+            let _ = writeln!(
+                out,
+                "                    if s != expected {{ return Err(format!(\"encode mismatch: got {{s}} want {{expected}}\")); }}"
             );
             let _ = writeln!(out, "                }}");
         }
@@ -688,13 +1015,13 @@ fn emit_arm(out: &mut String, case: &Case) {
     if can_decode {
         let _ = writeln!(
             out,
-            "                    let v1: {name} = match jsony::from_json(input) {{ Ok(v) => v, Err(e) => return Err(format!(\"from_json: {{e}} json={{input}}\")) }};"
+            "                    let v1: {tyref} = match jsony::from_json(input) {{ Ok(v) => v, Err(e) => return Err(format!(\"from_json: {{e}} json={{input}}\")) }};"
         );
         if can_encode {
             let _ = writeln!(out, "                    let s = jsony::to_json(&v1);");
             let _ = writeln!(
                 out,
-                "                    let v2: {name} = match jsony::from_json(&s) {{ Ok(v) => v, Err(e) => return Err(format!(\"reparse: {{e}} json={{s}}\")) }};"
+                "                    let v2: {tyref} = match jsony::from_json(&s) {{ Ok(v) => v, Err(e) => return Err(format!(\"reparse: {{e}} json={{s}}\")) }};"
             );
             let _ = writeln!(
                 out,
@@ -708,7 +1035,7 @@ fn emit_arm(out: &mut String, case: &Case) {
             );
             let _ = writeln!(
                 out,
-                "                    let v3: {name} = match jsony::from_binary(&bytes) {{ Ok(v) => v, Err(_) => return Err(format!(\"from_binary failed (json={{input}})\")) }};"
+                "                    let v3: {tyref} = match jsony::from_binary(&bytes) {{ Ok(v) => v, Err(_) => return Err(format!(\"from_binary failed (json={{input}})\")) }};"
             );
             let _ = writeln!(
                 out,
@@ -738,8 +1065,11 @@ pub(crate) fn emit_batch(cases: &[Case]) -> String {
     let mut out = String::new();
     out.push_str("#![allow(dead_code, non_snake_case, non_camel_case_types, unused)]\n");
     out.push_str("use std::io::Read;\n");
+    out.push_str("use std::collections::{HashMap, BTreeMap};\n");
+    out.push_str("use std::borrow::Cow;\n");
     out.push_str(ALLOCATOR);
     out.push_str(&validator_defs());
+    out.push_str(WITH_PAIR_HELPERS);
     out.push('\n');
 
     for case in cases {
