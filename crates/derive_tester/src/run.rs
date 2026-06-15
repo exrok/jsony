@@ -43,8 +43,8 @@ fn jsony_root() -> Result<String> {
 fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
     let mut content = String::new();
     let mut count = 0u64;
-    let record = |content: &mut String, name: &str, kind: char, json: &str, extra: &str| {
-        content.push_str(name);
+    let record = |content: &mut String, idx: usize, kind: char, json: &str, extra: &str| {
+        content.push_str(&idx.to_string());
         content.push(FIELD_SEP);
         content.push(kind);
         content.push(FIELD_SEP);
@@ -60,39 +60,39 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
     // partial-init drop paths.
     let eq_seeds = samples.min(4);
     let bad_seeds = if bad { samples.min(4) } else { 0 };
-    for case in cases {
+    for (idx, case) in cases.iter().enumerate() {
         // A Str enum has no JSON form. One trigger record fires its self-contained
         // `ToStr`/`FromStr` oracle arm, which checks every variant internally.
         if let Body::Str(_) = &case.body {
-            record(&mut content, &case.name, KIND_OK, "str", "");
+            record(&mut content, idx, KIND_OK, "str", "");
             count += 1;
             continue;
         }
         // A version family is binary-only and self-contained. One trigger record
         // fires its cross-version oracle arm.
         if let Body::Version(_) = &case.body {
-            record(&mut content, &case.name, KIND_OK, "ver", "");
+            record(&mut content, idx, KIND_OK, "ver", "");
             count += 1;
             continue;
         }
         // A POD family is binary-only and self-contained. One trigger record fires
         // its alignment oracle arm.
         if let Body::Pod(_) = &case.body {
-            record(&mut content, &case.name, KIND_OK, "pod", "");
+            record(&mut content, idx, KIND_OK, "pod", "");
             count += 1;
             continue;
         }
         // A via=Iterator family is ToJson-only and self-contained. One trigger
         // record fires its encode oracle arm.
         if let Body::ViaIter(_) = &case.body {
-            record(&mut content, &case.name, KIND_OK, "via", "");
+            record(&mut content, idx, KIND_OK, "via", "");
             count += 1;
             continue;
         }
         // A with-helper / binary-rejection family is self-contained. One trigger
         // record fires its fixed oracle arm.
         if let Body::Helper(_) = &case.body {
-            record(&mut content, &case.name, KIND_OK, "helper", "");
+            record(&mut content, idx, KIND_OK, "helper", "");
             count += 1;
             continue;
         }
@@ -103,14 +103,14 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
             let seed = case.id ^ (k as u64).wrapping_mul(0x9E3779B97F4A7C15);
             if derive_inputs && (k < eq_seeds || k < bad_seeds) {
                 let s = sample(case, seed);
-                record(&mut content, &case.name, KIND_OK, &s.canonical, "");
+                record(&mut content, idx, KIND_OK, &s.canonical, "");
                 count += 1;
                 if k < eq_seeds {
                     // Absolute encode oracle (once per case): a full canonical
                     // input must re-encode to itself byte-for-byte.
                     if k == 0 {
                         if let Some(enc) = crate::gen::sample_encode(case, seed) {
-                            record(&mut content, &case.name, KIND_ENCODE, &enc, "");
+                            record(&mut content, idx, KIND_ENCODE, &enc, "");
                             count += 1;
                         }
                         // Absolute `skip_if` encode checks (two-column): a present
@@ -121,24 +121,24 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
                             .into_iter()
                             .flatten()
                         {
-                            record(&mut content, &case.name, KIND_ENCODE, &input, &expected);
+                            record(&mut content, idx, KIND_ENCODE, &input, &expected);
                             count += 1;
                         }
                     }
                     // Skip records that are byte-identical to the canonical input
                     // (shapes with no reorderable object, e.g. newtypes).
                     if s.permuted != s.canonical {
-                        record(&mut content, &case.name, KIND_EQ, &s.canonical, &s.permuted);
+                        record(&mut content, idx, KIND_EQ, &s.canonical, &s.permuted);
                         count += 1;
                     }
                     if s.spaced != s.canonical {
-                        record(&mut content, &case.name, KIND_EQ, &s.canonical, &s.spaced);
+                        record(&mut content, idx, KIND_EQ, &s.canonical, &s.spaced);
                         count += 1;
                     }
                     // Absolute default-value check: omitting a `default = N` field
                     // must decode equal to setting it to N.
                     if let Some((present, omitted)) = &s.default_eq {
-                        record(&mut content, &case.name, KIND_EQ, present, omitted);
+                        record(&mut content, idx, KIND_EQ, present, omitted);
                         count += 1;
                     }
                     // `ignore_tag_adjacent_fields`: with the flag, injected extra
@@ -147,7 +147,7 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
                     // a BAD input in the soundness tier.)
                     if case.ignore_tag_adjacent {
                         if let Some(adj) = &s.adjacent {
-                            record(&mut content, &case.name, KIND_EQ, &s.canonical, adj);
+                            record(&mut content, idx, KIND_EQ, &s.canonical, adj);
                             count += 1;
                         }
                     }
@@ -155,19 +155,19 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
                     // holds the sentinel. This is a strict must-error assertion
                     // (KIND_REJECT), run in every tier since it is decode-only.
                     if let Some(reject) = &s.validate_reject {
-                        record(&mut content, &case.name, KIND_REJECT, reject, "");
+                        record(&mut content, idx, KIND_REJECT, reject, "");
                         count += 1;
                     }
                     // `other` catch-all: an unknown tag must decode to the same
                     // value as the other variant's own (known) tag.
                     if let Some((known, unknown)) = &s.other_eq {
-                        record(&mut content, &case.name, KIND_EQ, known, unknown);
+                        record(&mut content, idx, KIND_EQ, known, unknown);
                         count += 1;
                     }
                 }
                 if k < bad_seeds {
                     if let Some(dup) = &s.dup {
-                        record(&mut content, &case.name, KIND_BAD, dup, "");
+                        record(&mut content, idx, KIND_BAD, dup, "");
                         count += 1;
                     }
                     // An externally-tagged enum without `ignore_tag_adjacent_fields`
@@ -176,22 +176,22 @@ fn sample_inputs(cases: &[Case], samples: u32, bad: bool) -> (String, u64) {
                     // it also drives the partial-init drop path for the leak check.
                     if !case.ignore_tag_adjacent {
                         if let Some(adj) = &s.adjacent {
-                            record(&mut content, &case.name, KIND_BAD, adj, "");
+                            record(&mut content, idx, KIND_BAD, adj, "");
                             count += 1;
                         }
                     }
                     for cut in truncations(&s.canonical) {
-                        record(&mut content, &case.name, KIND_BAD, cut, "");
+                        record(&mut content, idx, KIND_BAD, cut, "");
                         count += 1;
                     }
                     for bad in malformations(&s.canonical) {
-                        record(&mut content, &case.name, KIND_BAD, &bad, "");
+                        record(&mut content, idx, KIND_BAD, &bad, "");
                         count += 1;
                     }
                 }
             } else {
                 let json = sample_json(case, seed);
-                record(&mut content, &case.name, KIND_OK, &json, "");
+                record(&mut content, idx, KIND_OK, &json, "");
                 count += 1;
             }
         }
@@ -627,7 +627,7 @@ pub fn emit_case_source(id: u64, samples: u32) -> String {
     let case = case_from_id(id);
     let mut src = emit_batch(std::slice::from_ref(&case));
     let (inputs, _) = sample_inputs(std::slice::from_ref(&case), samples, true);
-    src.push_str("\n/* sampled inputs (name<TAB>kind<TAB>json):\n");
+    src.push_str("\n/* sampled inputs (idx<TAB>kind<TAB>json):\n");
     src.push_str(&inputs);
     src.push_str("*/\n");
     src

@@ -1,8 +1,9 @@
 //! Emit a self-checking batch source file from `Case`s.
 //!
-//! Each batch contains only type definitions + a `name -> oracle` dispatcher.
-//! JSON inputs are loaded at runtime (file arg or stdin), one `name<TAB>json`
-//! record per line, so a single compiled binary checks many input samples.
+//! Each batch contains type definitions, one `dt_case_{idx}` oracle function per
+//! case, and an integer-indexed dispatcher into them. JSON inputs are loaded at
+//! runtime (file arg or stdin), one `idx<TAB>kind<TAB>json` record per line, so a
+//! single compiled binary checks many input samples.
 
 use std::fmt::Write;
 
@@ -15,7 +16,7 @@ use crate::gen::{
 };
 use crate::schema::Type;
 
-/// Record separator in the runtime input file: `name<TAB>kind<TAB>json`.
+/// Record separator in the runtime input file: `idx<TAB>kind<TAB>json`.
 pub(crate) const FIELD_SEP: char = '\t';
 
 /// Input kinds in the record file. `OK` inputs must round-trip, `BAD` inputs
@@ -415,13 +416,30 @@ fn emit_def(out: &mut String, case: &Case) {
 /// (declared `V{i}`, renamed `ren_V{i}`, or recased) can produce it.
 const STR_UNKNOWN: &str = "__dt_no_such_variant__";
 
+/// Emit the signature line for a per-case oracle function `dt_case_{idx}`. Every
+/// case body is its own function (kept small so LLVM's super-linear per-function
+/// cost stays bounded) and the dispatcher selects it by integer index, not by a
+/// string `match` over every case at once.
+///
+/// `#[inline(never)]` is load-bearing: at `opt-level >= 1` (the ASAN tier)
+/// rustc's cross-CGU ThinLTO would otherwise re-inline every once-called case
+/// back into the dispatcher, rebuilding the giant function and paying the import
+/// cost on top, which more than doubles the compile. Pinning the functions apart
+/// keeps the split win across both profiles.
+fn emit_case_fn_header(out: &mut String, idx: usize) {
+    let _ = writeln!(
+        out,
+        "#[inline(never)]\nfn dt_case_{idx}(kind: &str, input: &str, extra: &str) -> Result<(), String> {{"
+    );
+}
+
 /// Emit the dedicated `ToStr`/`FromStr` oracle arm for a Str enum. It is
 /// self-contained (no JSON, one trigger record): for every variant it asserts
 /// `to_str` yields the expected string and that string `parse`s back to the same
 /// variant, then asserts an unknown string fails to parse.
-fn emit_str_arm(out: &mut String, case: &Case, variants: &[crate::gen::StrVariant]) {
+fn emit_str_arm(out: &mut String, idx: usize, case: &Case, variants: &[crate::gen::StrVariant]) {
     let name = &case.name;
-    let _ = writeln!(out, "        {name:?} => {{");
+    emit_case_fn_header(out, idx);
     let _ = writeln!(
         out,
         "            let before = LIVE.load(Ordering::Relaxed);"
@@ -550,8 +568,8 @@ fn version_literal(
 ///     min/max-window rejection), not panic.
 ///
 /// One trigger record fires the whole arm; no JSON inputs are consumed.
-fn emit_version_arm(out: &mut String, name: &str, fam: &VersionFamily) {
-    let _ = writeln!(out, "        {name:?} => {{");
+fn emit_version_arm(out: &mut String, idx: usize, name: &str, fam: &VersionFamily) {
+    emit_case_fn_header(out, idx);
     let _ = writeln!(
         out,
         "            let before = LIVE.load(Ordering::Relaxed);"
@@ -674,10 +692,10 @@ fn pod_literal(name: &str, fam: &PodFamily, seed: usize) -> String {
 ///     for alignment `> 1` at least one unaligned (copy) placement too.
 ///
 /// One trigger record fires the whole arm; no JSON inputs are consumed.
-fn emit_pod_arm(out: &mut String, name: &str, fam: &PodFamily) {
+fn emit_pod_arm(out: &mut String, idx: usize, name: &str, fam: &PodFamily) {
     let one = pod_literal(name, fam, 0);
     let two = pod_literal(name, fam, 1);
-    let _ = writeln!(out, "        {name:?} => {{");
+    emit_case_fn_header(out, idx);
     let _ = writeln!(
         out,
         "            let before = LIVE.load(Ordering::Relaxed);"
@@ -784,9 +802,9 @@ fn emit_via_defs(out: &mut String, name: &str) {
 /// Emit the self-contained via=Iterator encode oracle: construct the value with
 /// its (possibly duplicate-keyed) pairs, encode it, and assert byte-equality with
 /// the expected inline-object output. One trigger record fires the arm.
-fn emit_via_arm(out: &mut String, name: &str, fam: &ViaFamily) {
+fn emit_via_arm(out: &mut String, idx: usize, name: &str, fam: &ViaFamily) {
     let expected = via_expected(fam);
-    let _ = writeln!(out, "        {name:?} => {{");
+    emit_case_fn_header(out, idx);
     let _ = writeln!(
         out,
         "            let before = LIVE.load(Ordering::Relaxed);"
@@ -866,8 +884,8 @@ fn emit_helper_defs(out: &mut String, name: &str, kind: HelperKind) {
 /// Emit the self-contained oracle for a with-helper / binary-rejection family.
 /// All bindings live inside an inner block so heap allocations drop before the
 /// leak check. One trigger record fires the whole arm.
-fn emit_helper_arm(out: &mut String, name: &str, kind: HelperKind) {
-    let _ = writeln!(out, "        {name:?} => {{");
+fn emit_helper_arm(out: &mut String, idx: usize, name: &str, kind: HelperKind) {
+    emit_case_fn_header(out, idx);
     let _ = writeln!(
         out,
         "            let before = LIVE.load(Ordering::Relaxed);"
@@ -963,35 +981,34 @@ fn emit_helper_arm(out: &mut String, name: &str, kind: HelperKind) {
     let _ = writeln!(out, "        }}");
 }
 
-fn emit_arm(out: &mut String, case: &Case) {
+fn emit_arm(out: &mut String, idx: usize, case: &Case) {
     if let Body::Str(variants) = &case.body {
-        emit_str_arm(out, case, variants);
+        emit_str_arm(out, idx, case, variants);
         return;
     }
     if let Body::Version(fam) = &case.body {
-        emit_version_arm(out, &case.name, fam);
+        emit_version_arm(out, idx, &case.name, fam);
         return;
     }
     if let Body::Pod(fam) = &case.body {
-        emit_pod_arm(out, &case.name, fam);
+        emit_pod_arm(out, idx, &case.name, fam);
         return;
     }
     if let Body::ViaIter(fam) = &case.body {
-        emit_via_arm(out, &case.name, fam);
+        emit_via_arm(out, idx, &case.name, fam);
         return;
     }
     if let Body::Helper(kind) = &case.body {
-        emit_helper_arm(out, &case.name, *kind);
+        emit_helper_arm(out, idx, &case.name, *kind);
         return;
     }
-    let name = &case.name;
     // Type-position spelling: `T<'_>` when the type borrows, `T<u32, ..>` when it
     // is generic (the oracle monomorphization), else the bare name.
     let tyref = type_ref(case);
     let can_decode = case.traits.from_json;
     let can_encode = case.traits.to_json;
     let bin = case.traits.binary();
-    let _ = writeln!(out, "        {name:?} => {{");
+    emit_case_fn_header(out, idx);
     // Live-byte baseline. Every path below restores it before the leak check,
     // unless it early-returns on a correctness failure.
     let _ = writeln!(
@@ -1143,14 +1160,33 @@ pub(crate) fn emit_batch(cases: &[Case]) -> String {
         out.push('\n');
     }
 
-    out.push_str(
-        "fn run_case(name: &str, kind: &str, input: &str, extra: &str) -> Result<(), String> {\n",
-    );
-    out.push_str("    match name {\n");
-    for case in cases {
-        emit_arm(&mut out, case);
+    // Each case body is its own function. Splitting them keeps every function
+    // small, so LLVM's super-linear per-function cost (present even at -O0) stays
+    // bounded instead of compounding across one giant `run_case` body.
+    for (idx, case) in cases.iter().enumerate() {
+        emit_arm(&mut out, idx, case);
+        out.push('\n');
     }
-    out.push_str("        _ => Err(format!(\"unknown type {name}\")),\n");
+
+    // Index -> type name, only for the human-readable `FAIL` line. Keeping the
+    // names out of the hot dispatch (and out of the input records) lets the
+    // dispatcher select by integer.
+    out.push_str("static DT_NAMES: &[&str] = &[\n");
+    for case in cases {
+        let _ = writeln!(out, "    {:?},", case.name);
+    }
+    out.push_str("];\n\n");
+
+    // Integer dispatch: a jump table over the case index, far cheaper to compile
+    // than a string `match` whose every arm carried a full case body.
+    out.push_str(
+        "fn run_case(idx: u32, kind: &str, input: &str, extra: &str) -> Result<(), String> {\n",
+    );
+    out.push_str("    match idx {\n");
+    for idx in 0..cases.len() {
+        let _ = writeln!(out, "        {idx} => dt_case_{idx}(kind, input, extra),");
+    }
+    out.push_str("        _ => Err(format!(\"unknown index {idx}\")),\n");
     out.push_str("    }\n");
     out.push_str("}\n\n");
 
@@ -1173,13 +1209,15 @@ pub(crate) fn emit_batch(cases: &[Case]) -> String {
         "        let mut cols = line.splitn(4, '{}');",
         FIELD_SEP.escape_default()
     );
-    out.push_str("        let name = cols.next().expect(\"name\");\n");
+    out.push_str(
+        "        let idx: u32 = cols.next().expect(\"idx\").parse().expect(\"idx parse\");\n",
+    );
     out.push_str("        let kind = cols.next().expect(\"kind\");\n");
     out.push_str("        let input = cols.next().unwrap_or(\"\");\n");
     out.push_str("        let extra = cols.next().unwrap_or(\"\");\n");
     out.push_str("        total += 1;\n");
     out.push_str(
-        "        if let Err(e) = run_case(name, kind, input, extra) { eprintln!(\"FAIL {name}: {e}\"); fails += 1; }\n",
+        "        if let Err(e) = run_case(idx, kind, input, extra) { let name = DT_NAMES.get(idx as usize).copied().unwrap_or(\"?\"); eprintln!(\"FAIL {name}: {e}\"); fails += 1; }\n",
     );
     out.push_str("    }\n");
     out.push_str(
