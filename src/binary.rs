@@ -483,7 +483,14 @@ unsafe impl ToBinary for bool {
 // comparison result, not by reinterpreting arbitrary input bytes as `bool`.
 unsafe impl<'a> FromBinary<'a> for bool {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
-        u8::decode_binary(decoder) == 1
+        match u8::decode_binary(decoder) {
+            0 => false,
+            1 => true,
+            value => {
+                decoder.report_error(format_args!("Invalid bool tag: {value}"));
+                false
+            }
+        }
     }
 }
 
@@ -920,13 +927,17 @@ unsafe impl<T: ToBinary> ToBinary for Option<T> {
 }
 
 // SAFETY: options are not marked POD. Decoding constructs `Some(T)` only from a
-// fully decoded `T`; any other tag becomes `None`.
+// fully decoded `T`; malformed tags report a decoder error and return a
+// placeholder `None`.
 unsafe impl<'a, T: FromBinary<'a>> FromBinary<'a> for Option<T> {
     fn decode_binary(decoder: &mut Decoder<'a>) -> Self {
-        if u8::decode_binary(decoder) == 1 {
-            Some(T::decode_binary(decoder))
-        } else {
-            None
+        match u8::decode_binary(decoder) {
+            0 => None,
+            1 => Some(T::decode_binary(decoder)),
+            value => {
+                decoder.report_error(format_args!("Invalid option tag: {value}"));
+                None
+            }
         }
     }
 }

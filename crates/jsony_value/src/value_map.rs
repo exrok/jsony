@@ -92,6 +92,14 @@ pub(super) struct ObjectKeyIndex {
     table: RawTable,
     hasher: foldhash::quality::RandomState,
 }
+impl ObjectKeyIndex {
+    fn empty() -> Self {
+        Self {
+            table: RawTable::new(),
+            hasher: foldhash::quality::RandomState::default(),
+        }
+    }
+}
 unsafe impl<'a> Send for ValueMap<'a> {}
 unsafe impl<'a> Sync for ValueMap<'a> {}
 
@@ -301,6 +309,12 @@ impl<'a> ValueMapBuilder<'a> {
         };
 
         if map.tag.map_has_index() {
+            unsafe {
+                map.ptr
+                    .sub(INDEX_ENTRY_COUNT)
+                    .cast::<ObjectKeyIndex>()
+                    .write(ObjectKeyIndex::empty());
+            }
             let mut index = ObjectKeyIndex {
                 table: RawTable::with_capacity(map.len as u32),
                 hasher: foldhash::quality::RandomState::default(),
@@ -313,10 +327,8 @@ impl<'a> ValueMapBuilder<'a> {
                 }
             }
             unsafe {
-                map.ptr
-                    .sub(INDEX_ENTRY_COUNT)
-                    .cast::<ObjectKeyIndex>()
-                    .write(index);
+                let index_ptr = map.ptr.sub(INDEX_ENTRY_COUNT).cast::<ObjectKeyIndex>();
+                index_ptr.as_ptr().replace(index);
             }
         }
         map
@@ -394,10 +406,9 @@ impl<'a> Clone for ValueMap<'a> {
         }
         if let Some(index) = self.key_index() {
             unsafe {
-                new.ptr
-                    .sub(INDEX_ENTRY_COUNT)
-                    .cast::<ObjectKeyIndex>()
-                    .write(index.clone());
+                let index_ptr = new.ptr.sub(INDEX_ENTRY_COUNT).cast::<ObjectKeyIndex>();
+                index_ptr.write(ObjectKeyIndex::empty());
+                index_ptr.as_ptr().replace(index.clone());
             }
         }
         for (i, (key, value)) in self.entries().iter().enumerate() {

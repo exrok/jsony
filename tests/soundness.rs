@@ -21,10 +21,12 @@ unsafe impl<'a> FromJson<'a> for WideFirst {
         parser: &mut Parser<'a>,
     ) -> Result<(), &'static DecodeError> {
         parser.skip_value()?;
-        dest.cast::<WideFirst>().write(WideFirst {
-            marker: 0,
-            padding: 0,
-        });
+        unsafe {
+            dest.cast::<WideFirst>().write(WideFirst {
+                marker: 0,
+                padding: 0,
+            });
+        }
         Ok(())
     }
 }
@@ -40,9 +42,11 @@ unsafe impl<'a> FromJson<'a> for TrackedDrop {
     ) -> Result<(), &'static DecodeError> {
         parser.skip_value()?;
         let ptr = dest.cast::<TrackedDrop>().as_ptr();
-        dest.cast::<TrackedDrop>().write(TrackedDrop {
-            initialized_at: ptr,
-        });
+        unsafe {
+            dest.cast::<TrackedDrop>().write(TrackedDrop {
+                initialized_at: ptr,
+            });
+        }
         Ok(())
     }
 }
@@ -64,7 +68,9 @@ unsafe impl<'a> FromJson<'a> for ZstDrop {
     ) -> Result<(), &'static DecodeError> {
         parser.skip_value()?;
         LIVE_ZSTS.fetch_add(1, Ordering::SeqCst);
-        dest.cast::<ZstDrop>().write(ZstDrop);
+        unsafe {
+            dest.cast::<ZstDrop>().write(ZstDrop);
+        }
         Ok(())
     }
 }
@@ -116,7 +122,9 @@ unsafe impl<'a> FromJson<'a> for OverAlignedZst {
     ) -> Result<(), &'static DecodeError> {
         parser.skip_value()?;
         LIVE_OVER_ALIGNED.fetch_add(1, Ordering::SeqCst);
-        dest.cast::<OverAlignedZst>().write(OverAlignedZst);
+        unsafe {
+            dest.cast::<OverAlignedZst>().write(OverAlignedZst);
+        }
         Ok(())
     }
 }
@@ -228,7 +236,9 @@ unsafe impl<'a> FromJson<'a> for BoxedField {
     ) -> Result<(), &'static DecodeError> {
         let value = u32::decode_json(parser)?;
         LIVE_BOXED.fetch_add(1, Ordering::SeqCst);
-        dest.cast::<BoxedField>().write(BoxedField(Box::new(value)));
+        unsafe {
+            dest.cast::<BoxedField>().write(BoxedField(Box::new(value)));
+        }
         Ok(())
     }
 }

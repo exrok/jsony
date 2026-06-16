@@ -9,6 +9,7 @@ use crate::util::MemoryPool;
 use crate::writer::RustWriter;
 use crate::Error;
 use proc_macro::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
+const MAX_OBJECT_SCHEMA_FIELDS: usize = 63;
 
 #[allow(unused)]
 enum StaticToken {
@@ -825,6 +826,13 @@ fn struct_schema(
     temp_tuple: Option<(&Ident, &[Generic])>,
     field_rename: RenameRule,
 ) {
+    if fields.len() > MAX_OBJECT_SCHEMA_FIELDS {
+        let span = fields[MAX_OBJECT_SCHEMA_FIELDS].name.span();
+        Error::span_msg(
+            "Jsony FromJson currently supports at most 63 decoded fields in an object schema",
+            span,
+        );
+    }
     let ag_source: &[Generic] = match temp_tuple {
         Some((_, generics)) => generics,
         None => &ctx.target.generics,
@@ -982,6 +990,13 @@ fn schema_ordered_fields<'a>(fields: &'a [Field<'a>]) -> Vec<&'a Field<'a>> {
     buf
 }
 fn required_bitset(ordered: &[&Field]) -> u64 {
+    if ordered.len() > MAX_OBJECT_SCHEMA_FIELDS {
+        let span = ordered[MAX_OBJECT_SCHEMA_FIELDS].name.span();
+        Error::span_msg(
+            "Jsony FromJson currently supports at most 63 decoded fields in an object schema",
+            span,
+        );
+    }
     let mut defaults = 0;
     for field in ordered {
         if field.flags & (Field::WITH_FROM_JSON_DEFAULT | Field::WITH_FROM_JSON_SKIP) != 0 {

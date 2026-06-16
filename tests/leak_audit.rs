@@ -24,7 +24,9 @@ unsafe impl<'a> jsony::FromJson<'a> for Tracked {
     ) -> Result<(), &'static jsony::json::DecodeError> {
         let value = u32::decode_json(parser)?;
         LIVE.fetch_add(1, Ordering::SeqCst);
-        dest.cast::<Tracked>().write(Tracked(Box::new(value)));
+        unsafe {
+            dest.cast::<Tracked>().write(Tracked(Box::new(value)));
+        }
         Ok(())
     }
 }

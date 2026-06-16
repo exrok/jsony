@@ -121,8 +121,8 @@ impl std::fmt::Debug for MaybeJson {
 
 impl MaybeJson {
     pub fn from_object_index_error(key: &'static &'static str) -> &'static MaybeJson {
-        let ptr = key as *const &'static str as *const u8;
-        let ptr = ptr.with_addr(ptr as usize | 1);
+        let ptr = (key as *const &'static str as *const u8).expose_provenance();
+        let ptr = std::ptr::with_exposed_provenance::<u8>(ptr | 1);
         // SAFETY: `MaybeJson` is `repr(transparent)` over `str`. A zero-length
         // `str` may use a non-null dangling data pointer; here the pointer is
         // tagged with bit 0 to encode the missing-key state and is never
@@ -130,8 +130,10 @@ impl MaybeJson {
         unsafe { &*(core::ptr::slice_from_raw_parts(ptr, 0) as *const MaybeJson) }
     }
     pub fn from_decode_error(decode_error: &'static DecodeError) -> &'static MaybeJson {
-        // We use expose provenance here, so we can use with_exposed_provence when casting
-        // back the error.
+        // We use exposed provenance here, so we can use
+        // `with_exposed_provenance` when casting back the error. A zero-length
+        // `str` reference does not carry a usable Stacked Borrows tag for
+        // reading the stored static pointer back directly.
         let decode_error = (decode_error as *const DecodeError).expose_provenance();
         // SAFETY: `MaybeJson` is `repr(transparent)` over `str`, and a
         // zero-length `str` may use a non-null dangling data pointer. The data
@@ -189,9 +191,7 @@ impl MaybeJson {
         }
         let tagged = self.raw.as_ptr() as usize;
         if tagged & 0b1 == 1 {
-            Some(&DecodeError {
-                message: "Object Key Index Error",
-            })
+            Some(&OBJECT_INDEX_ERROR)
         } else {
             // SAFETY: non-key error values are created by `from_decode_error`,
             // which stores the exposed address of a `'static DecodeError` in

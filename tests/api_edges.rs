@@ -88,7 +88,9 @@ unsafe impl<'a> FromJson<'a> for VecDropTracked {
     ) -> Result<(), &'static DecodeError> {
         parser.skip_value()?;
         LIVE_VEC_ITEMS.fetch_add(1, Ordering::SeqCst);
-        dest.cast::<VecDropTracked>().write(VecDropTracked);
+        unsafe {
+            dest.cast::<VecDropTracked>().write(VecDropTracked);
+        }
         Ok(())
     }
 }
@@ -254,6 +256,15 @@ fn binary_reports_invalid_utf8_and_invalid_char() {
 
     let err = jsony::from_binary::<char>(&0xd800u32.to_le_bytes()).unwrap_err();
     assert!(err.message().contains("Unicode scalar"), "{err}");
+}
+
+#[test]
+fn binary_reports_invalid_bool_and_option_tags() {
+    let err = jsony::from_binary::<bool>(&[2]).unwrap_err();
+    assert!(err.message().contains("Invalid bool tag"), "{err}");
+
+    let err = jsony::from_binary::<Option<u8>>(&[2]).unwrap_err();
+    assert!(err.message().contains("Invalid option tag"), "{err}");
 }
 
 #[repr(align(2))]

@@ -193,6 +193,27 @@ use super::DecodeError;
 // maximum number fields.
 // currently 63 based on how we compute the bit masks.
 pub const MAX_FIELDS: usize = 63;
+static TOO_MANY_FIELDS: DecodeError = DecodeError {
+    message: "Too many fields in Jsony object schema",
+};
+
+fn schema_all_mask(fields_len: usize) -> Result<u64, &'static DecodeError> {
+    if fields_len > MAX_FIELDS {
+        return Err(&TOO_MANY_FIELDS);
+    }
+    Ok((1u64 << fields_len) - 1)
+}
+
+fn schema_default_mask(
+    defaults_len: usize,
+    fields_len: usize,
+) -> Result<u64, &'static DecodeError> {
+    if defaults_len > fields_len || defaults_len > MAX_FIELDS {
+        return Err(&TOO_MANY_FIELDS);
+    }
+    Ok((1u64 << defaults_len) - 1)
+}
+
 pub struct Field<'a> {
     pub name: &'static str,
     pub offset: usize,
@@ -237,7 +258,7 @@ impl<'a> ObjectSchema<'a> {
 /// so the matched key is skipped without being forwarded to the unused-field
 /// visitor. Derived code uses it to swallow an internal tag key that shares the
 /// variant object with the real fields. The value is unreachable as a real
-/// index: a schema holds at most 64 fields (the seen/required bitset is a
+/// index: a schema holds at most 63 fields (the seen/required bitset is a
 /// `u64`), and no slice can be `usize::MAX` long.
 pub const SKIP_FIELD_ALIAS_INDEX: usize = usize::MAX;
 
@@ -249,7 +270,19 @@ impl<'a> ObjectSchema<'a> {
         mut unused: Option<&mut dyn FieldVisitor<'a>>,
         alias: &[(usize, &'static str)],
     ) -> Result<(), &'static DecodeError> {
-        let all = (1u64 << self.inner.fields.len()) - 1;
+        let fields_len = self.inner.fields.len();
+        let all = match schema_all_mask(fields_len) {
+            Ok(mask) => mask,
+            Err(err) => {
+                if let Some(visitor) = unused {
+                    // SAFETY: the visitor was passed to this decode attempt
+                    // and no fields have been decoded. Destroy it before
+                    // reporting the invalid internal schema.
+                    unsafe { visitor.destroy() }
+                }
+                return Err(err);
+            }
+        };
         let mut bitset = 0;
 
         let error = 'error: {
@@ -347,7 +380,10 @@ impl<'a> ObjectSchema<'a> {
                 Ok(None) => {}
                 Err(err) => break 'error err,
             };
-            let default = (1u64 << self.inner.defaults.len()) - 1;
+            let default = match schema_default_mask(self.inner.defaults.len(), fields_len) {
+                Ok(mask) => mask,
+                Err(err) => break 'error err,
+            };
             if (bitset | default) & all != all {
                 parser.parent_context = JsonParentContext::Schema {
                     schema: self.inner,
@@ -398,7 +434,19 @@ impl<'a> ObjectSchema<'a> {
         parser: &mut Parser<'a>,
         mut unused: Option<&mut dyn FieldVisitor<'a>>,
     ) -> Result<(), &'static DecodeError> {
-        let all = (1u64 << self.inner.fields.len()) - 1;
+        let fields_len = self.inner.fields.len();
+        let all = match schema_all_mask(fields_len) {
+            Ok(mask) => mask,
+            Err(err) => {
+                if let Some(visitor) = unused {
+                    // SAFETY: the visitor was passed to this decode attempt
+                    // and no fields have been decoded. Destroy it before
+                    // reporting the invalid internal schema.
+                    unsafe { visitor.destroy() }
+                }
+                return Err(err);
+            }
+        };
         let mut bitset = 0;
 
         let error = 'with_next_key: {
@@ -472,7 +520,10 @@ impl<'a> ObjectSchema<'a> {
                 Ok(None) => {}
                 Err(err) => break 'with_next_key err,
             };
-            let default = (1u64 << self.inner.defaults.len()) - 1;
+            let default = match schema_default_mask(self.inner.defaults.len(), fields_len) {
+                Ok(mask) => mask,
+                Err(err) => break 'with_next_key err,
+            };
             if (bitset | default) & all != all {
                 parser.parent_context = JsonParentContext::Schema {
                     schema: self.inner,
