@@ -536,3 +536,208 @@ fn generic_enum_struct_variant() {
     let back: Pair<String, Vec<u8>> = jsony::from_json(&s).unwrap();
     assert_eq!(original, back);
 }
+
+#[test]
+fn wide_struct_uses_indexed_decode() {
+    macro_rules! define_wide_required {
+        ($($field:ident: $value:expr),+ $(,)?) => {
+            #[allow(dead_code)]
+            #[derive(Jsony, Debug, PartialEq)]
+            struct WideRequired {
+                $($field: u16,)+
+            }
+
+            impl WideRequired {
+                fn expected() -> Self {
+                    Self {
+                        $($field: $value,)+
+                    }
+                }
+            }
+
+            #[allow(dead_code)]
+            #[derive(Jsony, Debug, PartialEq)]
+            #[jsony(tag = "kind")]
+            enum WideEnum {
+                Variant {
+                    $($field: u16,)+
+                }
+            }
+
+            impl WideEnum {
+                fn expected() -> Self {
+                    Self::Variant {
+                        $($field: $value,)+
+                    }
+                }
+            }
+        };
+    }
+
+    define_wide_required! {
+        f00: 0, f01: 1, f02: 2, f03: 3, f04: 4, f05: 5, f06: 6, f07: 7, f08: 8, f09: 9,
+        f10: 10, f11: 11, f12: 12, f13: 13, f14: 14, f15: 15, f16: 16, f17: 17, f18: 18, f19: 19,
+        f20: 20, f21: 21, f22: 22, f23: 23, f24: 24, f25: 25, f26: 26, f27: 27, f28: 28, f29: 29,
+        f30: 30, f31: 31, f32: 32, f33: 33, f34: 34, f35: 35, f36: 36, f37: 37, f38: 38, f39: 39,
+        f40: 40, f41: 41, f42: 42, f43: 43, f44: 44, f45: 45, f46: 46, f47: 47, f48: 48, f49: 49,
+        f50: 50, f51: 51, f52: 52, f53: 53, f54: 54, f55: 55, f56: 56, f57: 57, f58: 58, f59: 59,
+        f60: 60, f61: 61, f62: 62, f63: 63, f64: 64, f65: 65, f66: 66, f67: 67, f68: 68, f69: 69,
+    }
+
+    let mut json = String::from("{");
+    for i in (0..70).rev() {
+        if i != 69 {
+            json.push(',');
+        }
+        json.push_str(&format!(r#""f{i:02}":{i}"#));
+    }
+    json.push('}');
+
+    assert_eq!(
+        from_json::<WideRequired>(&json).unwrap(),
+        WideRequired::expected()
+    );
+
+    let mut enum_json = String::from(r#"{"kind":"Variant""#);
+    for i in (0..70).rev() {
+        enum_json.push(',');
+        enum_json.push_str(&format!(r#""f{i:02}":{i}"#));
+    }
+    enum_json.push('}');
+    assert_eq!(
+        from_json::<WideEnum>(&enum_json).unwrap(),
+        WideEnum::expected()
+    );
+
+    let err = from_json::<WideRequired>(r#"{"f69":69}"#).unwrap_err();
+    let msg = err.to_string();
+    assert_eq!(err.decoding_error(), &jsony::error::MISSING_REQUIRED_FIELDS);
+    assert!(msg.contains("\"f00\""), "{msg}");
+
+    let err = from_json::<WideRequired>(r#"{"f69":69,"f69":70}"#).unwrap_err();
+    assert_eq!(err.decoding_error(), &jsony::error::DUPLICATE_FIELD);
+    assert!(err.to_string().contains("@ key \"f69\""));
+}
+
+#[test]
+fn wide_struct_defaults_and_aliases_use_indexed_decode() {
+    macro_rules! define_wide_default_alias {
+        ($($field:ident,)+ @last $last:ident) => {
+            #[allow(dead_code)]
+            #[derive(Jsony, Debug, Default, PartialEq)]
+            struct WideDefaultAlias {
+                $(
+                    #[jsony(default)]
+                    $field: u16,
+                )+
+                #[jsony(default, alias = "last")]
+                $last: u16,
+            }
+        };
+    }
+
+    define_wide_default_alias! {
+        f00, f01, f02, f03, f04, f05, f06, f07, f08, f09,
+        f10, f11, f12, f13, f14, f15, f16, f17, f18, f19,
+        f20, f21, f22, f23, f24, f25, f26, f27, f28, f29,
+        f30, f31, f32, f33, f34, f35, f36, f37, f38, f39,
+        f40, f41, f42, f43, f44, f45, f46, f47, f48, f49,
+        f50, f51, f52, f53, f54, f55, f56, f57, f58, f59,
+        f60, f61, f62, f63, f64, f65, f66, f67, f68,
+        @last f69
+    }
+
+    let value = from_json::<WideDefaultAlias>(r#"{"last":69,"unknown":1}"#).unwrap();
+    assert_eq!(value.f00, 0);
+    assert_eq!(value.f69, 69);
+}
+
+#[test]
+fn wide_flattenable_uses_indexed_decode() {
+    macro_rules! define_wide_flattenable {
+        ($($field:ident: $value:expr,)+ @last $last:ident: $last_value:expr $(,)?) => {
+            #[allow(dead_code)]
+            #[derive(Jsony, Debug, PartialEq)]
+            #[jsony(FromJson, Flattenable)]
+            struct WideFlattenable {
+                #[jsony(default = 1000)]
+                f00: u16,
+                $($field: u16,)+
+                #[jsony(alias = "last")]
+                $last: u16,
+            }
+
+            impl WideFlattenable {
+                fn expected() -> Self {
+                    Self {
+                        f00: 1000,
+                        $($field: $value,)+
+                        $last: $last_value,
+                    }
+                }
+            }
+
+            #[allow(dead_code)]
+            #[derive(Jsony, Debug, PartialEq)]
+            #[jsony(FromJson)]
+            struct WideFlattenWrapper {
+                head: u16,
+                #[jsony(flatten)]
+                inner: WideFlattenable,
+                tail: u16,
+            }
+
+            impl WideFlattenWrapper {
+                fn expected() -> Self {
+                    Self {
+                        head: 7,
+                        inner: WideFlattenable::expected(),
+                        tail: 9,
+                    }
+                }
+            }
+        };
+    }
+
+    define_wide_flattenable! {
+        f01: 1, f02: 2, f03: 3, f04: 4, f05: 5, f06: 6, f07: 7, f08: 8, f09: 9,
+        f10: 10, f11: 11, f12: 12, f13: 13, f14: 14, f15: 15, f16: 16, f17: 17, f18: 18, f19: 19,
+        f20: 20, f21: 21, f22: 22, f23: 23, f24: 24, f25: 25, f26: 26, f27: 27, f28: 28, f29: 29,
+        f30: 30, f31: 31, f32: 32, f33: 33, f34: 34, f35: 35, f36: 36, f37: 37, f38: 38, f39: 39,
+        f40: 40, f41: 41, f42: 42, f43: 43, f44: 44, f45: 45, f46: 46, f47: 47, f48: 48, f49: 49,
+        f50: 50, f51: 51, f52: 52, f53: 53, f54: 54, f55: 55, f56: 56, f57: 57, f58: 58, f59: 59,
+        f60: 60, f61: 61, f62: 62, f63: 63, f64: 64, f65: 65, f66: 66, f67: 67, f68: 68,
+        @last f69: 69,
+    }
+
+    let mut json = String::from(r#"{"last":69"#);
+    for i in (1..69).rev() {
+        json.push(',');
+        json.push_str(&format!(r#""f{i:02}":{i}"#));
+    }
+    json.push('}');
+
+    assert_eq!(
+        from_json::<WideFlattenable>(&json).unwrap(),
+        WideFlattenable::expected()
+    );
+
+    let mut wrapper_json = String::from(r#"{"head":7,"last":69"#);
+    for i in (1..69).rev() {
+        wrapper_json.push(',');
+        wrapper_json.push_str(&format!(r#""f{i:02}":{i}"#));
+    }
+    wrapper_json.push_str(r#","unknown":true,"tail":9}"#);
+
+    assert_eq!(
+        from_json::<WideFlattenWrapper>(&wrapper_json).unwrap(),
+        WideFlattenWrapper::expected()
+    );
+
+    let err = from_json::<WideFlattenable>(r#"{"last":69}"#).unwrap_err();
+    assert_eq!(err.decoding_error(), &jsony::error::MISSING_REQUIRED_FIELDS);
+
+    let err =
+        from_json::<WideFlattenWrapper>(r#"{"head":7,"last":69,"f69":70,"tail":9}"#).unwrap_err();
+    assert_eq!(err.decoding_error(), &jsony::error::DUPLICATE_FIELD);
+}

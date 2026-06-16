@@ -79,6 +79,10 @@ pub(crate) enum JsonParentContext {
         schema: &'static ObjectSchemaInner,
         mask: u64,
     },
+    SchemaField {
+        schema: &'static ObjectSchemaInner,
+        index: usize,
+    },
 }
 #[derive(Clone)]
 pub struct InnerParser<'j> {

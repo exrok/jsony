@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, ptr::NonNull};
+use std::{marker::PhantomData, num::NonZeroU64, ptr::NonNull};
 pub struct NestedDynamicFieldDecoder<'a, T: FieldVisitor<'a>> {
     pub inner: T,
     pub destination: NonNull<()>,
@@ -16,6 +16,14 @@ pub struct DynamicFieldDecoder<'a> {
     pub alias: &'static [(usize, &'static str)],
     pub bitset: u64,
     pub required: u64,
+}
+
+pub struct DynamicFieldDecoderIndexed<'a, const N: usize> {
+    pub destination: NonNull<()>,
+    pub schema: ObjectSchema<'a>,
+    pub field_index: fn(&str) -> usize,
+    pub bitset: [u64; N],
+    pub required: &'static [u64],
 }
 
 /// helper function used for writing the default value from the Jsony derive macros
@@ -149,9 +157,7 @@ impl<'a> FieldVisitor<'a> for DynamicFieldDecoder<'a> {
             let parser = borrowed.into_parser();
             let mask = 1 << index;
             if self.bitset & mask != 0 {
-                if let JsonParentContext::None = parser.parent_context {
-                    parser.parent_context = JsonParentContext::ObjectKey(field.name);
-                }
+                set_object_key_context(parser, field.name);
                 return Err(&DUPLICATE_FIELD);
             }
             // SAFETY: `destination + field.offset` is the uninitialized storage
@@ -161,9 +167,7 @@ impl<'a> FieldVisitor<'a> for DynamicFieldDecoder<'a> {
             if let Err(err) =
                 unsafe { (field.decode)(self.destination.byte_add(field.offset), parser) }
             {
-                if let JsonParentContext::None = parser.parent_context {
-                    parser.parent_context = JsonParentContext::ObjectKey(field.name);
-                }
+                set_object_key_context(parser, field.name);
                 return Err(err);
             }
             self.bitset |= mask;
@@ -174,6 +178,86 @@ impl<'a> FieldVisitor<'a> for DynamicFieldDecoder<'a> {
         }
 
         return borrowed.into_parser().at.skip_value();
+    }
+}
+
+impl<'a, const N: usize> FieldVisitor<'a> for DynamicFieldDecoderIndexed<'a, N> {
+    fn complete(&mut self) -> Result<(), &'static DecodeError> {
+        debug_assert_eq!(
+            N,
+            self.schema.inner.fields.len().div_ceil(u64::BITS as usize)
+        );
+        debug_assert_eq!(N, self.required.len());
+        if first_missing_required(&self.bitset, self.required).is_some() {
+            return Err(&MISSING_REQUIRED_FIELDS);
+        }
+        // SAFETY: missing default fields have not been initialized by this
+        // visitor, and defaults are paired with the first schema fields.
+        unsafe {
+            emplace_missing_defaults(
+                self.destination,
+                self.schema.fields(),
+                self.schema.inner.defaults,
+                &self.bitset,
+            );
+        }
+        Ok(())
+    }
+
+    unsafe fn destroy(&mut self) {
+        // SAFETY: the bitset records only fields successfully initialized by
+        // this visitor, and destroy is called at most once on the error path.
+        unsafe {
+            drop_initialized_fields(
+                self.destination,
+                self.schema.fields(),
+                self.schema.inner.drops,
+                &self.bitset,
+            );
+        }
+    }
+
+    fn visit(
+        &mut self,
+        mut borrowed: ParserWithBorrowedKey<'a, '_>,
+    ) -> Result<(), &'static DecodeError> {
+        let field_name = borrowed.key();
+        let index = (self.field_index)(field_name);
+        if index == UNKNOWN_FIELD_INDEX {
+            if let Some(vis) = borrowed.parser().visit_unused_field {
+                vis(borrowed.reborrow());
+            }
+            return borrowed.into_parser().at.skip_value();
+        }
+        if index == SKIP_FIELD_ALIAS_INDEX {
+            return borrowed.into_parser().at.skip_value();
+        }
+
+        let fields = self.schema.fields();
+        debug_assert!(index < fields.len());
+        // SAFETY: generated field-index functions return only
+        // `UNKNOWN_FIELD_INDEX`, `SKIP_FIELD_ALIAS_INDEX`, or a valid field
+        // index for this schema.
+        let field = unsafe { fields.get_unchecked(index) };
+        let parser = borrowed.into_parser();
+        let (word_index, mask) = field_bit(index);
+        debug_assert!(word_index < N);
+        // SAFETY: `word_index` is derived from a valid field index.
+        let word = unsafe { self.bitset.get_unchecked_mut(word_index) };
+        if *word & mask != 0 {
+            set_object_key_context(parser, field.name);
+            return Err(&DUPLICATE_FIELD);
+        }
+        // SAFETY: `destination + field.offset` is the uninitialized storage
+        // for this schema field, and the duplicate check above proves it is not
+        // live yet.
+        if let Err(err) = unsafe { (field.decode)(self.destination.byte_add(field.offset), parser) }
+        {
+            set_object_key_context(parser, field.name);
+            return Err(err);
+        }
+        *word |= mask;
+        Ok(())
     }
 }
 
@@ -190,15 +274,20 @@ pub use crate::json::dyn_tuple_decode;
 type DecodeFn<'a> = unsafe fn(NonNull<()>, &mut Parser<'a>) -> Result<(), &'static DecodeError>;
 use super::DecodeError;
 
-// maximum number fields.
-// currently 63 based on how we compute the bit masks.
-pub const MAX_FIELDS: usize = 63;
+// Maximum field count for the legacy single-word decoder.
+const SMALL_MAX_FIELDS: usize = 63;
+
+// Sanity cap for derived object schemas decoded by the indexed path.
+const MAX_SCHEMA_FIELD_WORDS: usize = 16;
+pub const MAX_FIELDS: usize = MAX_SCHEMA_FIELD_WORDS * u64::BITS as usize;
 static TOO_MANY_FIELDS: DecodeError = DecodeError {
     message: "Too many fields in Jsony object schema",
 };
 
+pub const UNKNOWN_FIELD_INDEX: usize = usize::MAX;
+
 fn schema_all_mask(fields_len: usize) -> Result<u64, &'static DecodeError> {
-    if fields_len > MAX_FIELDS {
+    if fields_len > SMALL_MAX_FIELDS {
         return Err(&TOO_MANY_FIELDS);
     }
     Ok((1u64 << fields_len) - 1)
@@ -208,10 +297,93 @@ fn schema_default_mask(
     defaults_len: usize,
     fields_len: usize,
 ) -> Result<u64, &'static DecodeError> {
-    if defaults_len > fields_len || defaults_len > MAX_FIELDS {
+    if defaults_len > fields_len || defaults_len > SMALL_MAX_FIELDS {
         return Err(&TOO_MANY_FIELDS);
     }
     Ok((1u64 << defaults_len) - 1)
+}
+
+#[inline]
+fn field_bit(index: usize) -> (usize, u64) {
+    (
+        index / u64::BITS as usize,
+        1u64 << (index % u64::BITS as usize),
+    )
+}
+
+#[inline]
+fn set_object_key_context(parser: &mut Parser<'_>, key: &'static str) {
+    if matches!(&parser.parent_context, JsonParentContext::None) {
+        parser.parent_context = JsonParentContext::ObjectKey(key);
+    }
+}
+
+fn first_missing_required(bitset: &[u64], required: &[u64]) -> Option<usize> {
+    let mut word_index = 0;
+    while word_index < required.len() {
+        if let Some(missing) = NonZeroU64::new(required[word_index] & !bitset[word_index]) {
+            return Some(word_index * u64::BITS as usize + missing.get().trailing_zeros() as usize);
+        }
+        word_index += 1;
+    }
+    None
+}
+
+unsafe fn emplace_missing_defaults(
+    dest: NonNull<()>,
+    fields: &[Field<'_>],
+    defaults: &[unsafe fn(NonNull<()>) -> UnsafeReturn],
+    bitset: &[u64],
+) {
+    let defaults_len = defaults.len();
+    for word_index in 0..defaults_len.div_ceil(u64::BITS as usize) {
+        let start = word_index * u64::BITS as usize;
+        let remaining = defaults_len - start;
+        let valid = if remaining >= u64::BITS as usize {
+            u64::MAX
+        } else {
+            (1u64 << remaining) - 1
+        };
+        let mut missing = !bitset[word_index] & valid;
+        while let Some(nonzero) = NonZeroU64::new(missing) {
+            let index = start + nonzero.get().trailing_zeros() as usize;
+            // SAFETY: schema construction orders defaulted fields first, so
+            // every index below `defaults_len` has a matching default callback
+            // and field descriptor. The bitset shows this slot is not live yet.
+            unsafe {
+                defaults[index](dest.byte_add(fields[index].offset));
+            }
+            missing &= missing - 1;
+        }
+    }
+}
+
+unsafe fn drop_initialized_fields(
+    dest: NonNull<()>,
+    fields: &[Field<'_>],
+    drops: &[unsafe fn(NonNull<()>)],
+    bitset: &[u64],
+) {
+    for (word_index, word) in bitset.iter().copied().enumerate() {
+        let Some(mut remaining) = NonZeroU64::new(word) else {
+            continue;
+        };
+        loop {
+            let index = word_index * u64::BITS as usize + remaining.get().trailing_zeros() as usize;
+            // SAFETY: the bitset records only fields successfully initialized
+            // by this decoder, so every set bit maps to an in-bounds field and
+            // matching drop callback.
+            unsafe {
+                let field = fields.get_unchecked(index);
+                drops.get_unchecked(index)(dest.byte_add(field.offset));
+            }
+            let next = remaining.get() & (remaining.get() - 1);
+            let Some(next) = NonZeroU64::new(next) else {
+                break;
+            };
+            remaining = next;
+        }
+    }
 }
 
 pub struct Field<'a> {
@@ -257,12 +429,143 @@ impl<'a> ObjectSchema<'a> {
 /// map a key to a field index. An entry using this index resolves to no field,
 /// so the matched key is skipped without being forwarded to the unused-field
 /// visitor. Derived code uses it to swallow an internal tag key that shares the
-/// variant object with the real fields. The value is unreachable as a real
-/// index: a schema holds at most 63 fields (the seen/required bitset is a
-/// `u64`), and no slice can be `usize::MAX` long.
-pub const SKIP_FIELD_ALIAS_INDEX: usize = usize::MAX;
+/// variant object with the real fields.
+pub const SKIP_FIELD_ALIAS_INDEX: usize = usize::MAX - 1;
 
 impl<'a> ObjectSchema<'a> {
+    pub unsafe fn decode_indexed(
+        &self,
+        dest: NonNull<()>,
+        parser: &mut Parser<'a>,
+        mut unused: Option<&mut dyn FieldVisitor<'a>>,
+        field_index: fn(&str) -> usize,
+        bitset: &mut [u64],
+        required: &[u64],
+    ) -> Result<(), &'static DecodeError> {
+        let fields = self.fields();
+        let words = fields.len().div_ceil(u64::BITS as usize);
+        if fields.len() > MAX_FIELDS || bitset.len() != words || required.len() != words {
+            if let Some(visitor) = unused {
+                // SAFETY: the visitor was passed to this decode attempt and no
+                // fields have been decoded. Destroy it before reporting the
+                // invalid internal schema.
+                unsafe { visitor.destroy() }
+            }
+            return Err(&TOO_MANY_FIELDS);
+        }
+
+        let error = 'error: {
+            match parser.at.enter_object(&mut parser.scratch) {
+                Ok(Some(mut key)) => {
+                    'key_loop: loop {
+                        'next: {
+                            let index = field_index(key);
+                            if index == SKIP_FIELD_ALIAS_INDEX {
+                                if let Err(error) = parser.at.skip_value() {
+                                    break 'error error;
+                                }
+                                break 'next;
+                            }
+
+                            if index != UNKNOWN_FIELD_INDEX {
+                                debug_assert!(index < fields.len());
+                                // SAFETY: generated field-index functions
+                                // return only `UNKNOWN_FIELD_INDEX`,
+                                // `SKIP_FIELD_ALIAS_INDEX`, or a valid field
+                                // index for this schema.
+                                let field = unsafe { fields.get_unchecked(index) };
+                                let (word_index, mask) = field_bit(index);
+                                debug_assert!(word_index < bitset.len());
+                                if bitset[word_index] & mask != 0 {
+                                    set_object_key_context(parser, field.name);
+                                    break 'error &DUPLICATE_FIELD;
+                                }
+
+                                // SAFETY: the caller provides `dest` as
+                                // writable storage for the object described by
+                                // this schema. This field has not been seen
+                                // yet, so its slot is uninitialized.
+                                if let Err(err) =
+                                    unsafe { (field.decode)(dest.byte_add(field.offset), parser) }
+                                {
+                                    set_object_key_context(parser, field.name);
+                                    break 'error err;
+                                }
+                                bitset[word_index] |= mask;
+                                break 'next;
+                            }
+
+                            if let Some(ref mut unused_processor) = unused {
+                                // SAFETY: `key` was returned by this parser
+                                // for the current object step and remains live
+                                // until the parser advances to the next key
+                                // below.
+                                let borrowed = unsafe { ParserWithBorrowedKey::new(key, parser) };
+                                if let Err(err) = unused_processor.visit(borrowed) {
+                                    break 'error err;
+                                }
+                                break 'next;
+                            }
+                            if let Some(vis) = parser.visit_unused_field {
+                                // SAFETY: same key lifetime argument as the
+                                // unused-field visitor path above.
+                                vis(unsafe { ParserWithBorrowedKey::new(key, parser) });
+                            }
+
+                            if let Err(error) = parser.at.skip_value() {
+                                break 'error error;
+                            }
+                        }
+
+                        match parser.at.object_step(&mut parser.scratch) {
+                            Ok(Some(next_key2)) => {
+                                key = next_key2;
+                                continue 'key_loop;
+                            }
+                            Ok(None) => {
+                                break 'key_loop;
+                            }
+                            Err(err) => break 'error err,
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => break 'error err,
+            };
+
+            if let Some(index) = first_missing_required(bitset, required) {
+                parser.parent_context = JsonParentContext::SchemaField {
+                    schema: self.inner,
+                    index,
+                };
+                break 'error &MISSING_REQUIRED_FIELDS;
+            }
+            if let Some(visitor) = &mut unused {
+                if let Err(err) = visitor.complete() {
+                    break 'error err;
+                }
+            }
+            // SAFETY: missing default fields have not been initialized, and
+            // defaults are paired with the first schema fields.
+            unsafe {
+                emplace_missing_defaults(dest, fields, self.inner.defaults, bitset);
+            }
+            return Ok(());
+        };
+
+        // SAFETY: the bitset records exactly the fields initialized before the
+        // decode error.
+        unsafe {
+            drop_initialized_fields(dest, fields, self.inner.drops, bitset);
+        }
+        if let Some(visitor) = unused {
+            // SAFETY: the visitor has not completed successfully and is being
+            // destroyed exactly once on the error path.
+            unsafe { visitor.destroy() }
+        }
+        Err(error)
+    }
+
     pub unsafe fn decode_with_alias(
         &self,
         dest: NonNull<()>,
@@ -317,10 +620,7 @@ impl<'a> ObjectSchema<'a> {
                                     };
                                     let mask = 1 << index;
                                     if bitset & mask != 0 {
-                                        if let JsonParentContext::None = parser.parent_context {
-                                            parser.parent_context =
-                                                JsonParentContext::ObjectKey(field.name);
-                                        }
+                                        set_object_key_context(parser, field.name);
 
                                         break 'error &DUPLICATE_FIELD;
                                     }
@@ -332,10 +632,7 @@ impl<'a> ObjectSchema<'a> {
                                     if let Err(err) = unsafe {
                                         (field.decode)(dest.byte_add(field.offset), parser)
                                     } {
-                                        if let JsonParentContext::None = parser.parent_context {
-                                            parser.parent_context =
-                                                JsonParentContext::ObjectKey(field.name);
-                                        }
+                                        set_object_key_context(parser, field.name);
                                         break 'error err;
                                     }
                                     bitset |= mask;
@@ -460,10 +757,7 @@ impl<'a> ObjectSchema<'a> {
                                     continue;
                                 }
                                 if bitset & mask != 0 {
-                                    if let JsonParentContext::None = parser.parent_context {
-                                        parser.parent_context =
-                                            JsonParentContext::ObjectKey(field.name);
-                                    }
+                                    set_object_key_context(parser, field.name);
 
                                     break 'with_next_key &DUPLICATE_FIELD;
                                 }
@@ -473,10 +767,7 @@ impl<'a> ObjectSchema<'a> {
                                 if let Err(err) =
                                     unsafe { (field.decode)(dest.byte_add(field.offset), parser) }
                                 {
-                                    if let JsonParentContext::None = parser.parent_context {
-                                        parser.parent_context =
-                                            JsonParentContext::ObjectKey(field.name);
-                                    }
+                                    set_object_key_context(parser, field.name);
                                     break 'with_next_key err;
                                 }
                                 bitset |= mask;

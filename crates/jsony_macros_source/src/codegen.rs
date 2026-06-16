@@ -10,7 +10,8 @@ use crate::writer::RustWriter;
 use crate::Error;
 use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 
-const MAX_OBJECT_SCHEMA_FIELDS: usize = 63;
+const MAX_OBJECT_SCHEMA_FIELDS: usize = 1024;
+const LINEAR_OBJECT_SCHEMA_FIELDS: usize = 63;
 
 #[rustfmt::skip]
 macro_rules! throw {
@@ -667,7 +668,7 @@ fn struct_schema(
 ) {
     if fields.len() > MAX_OBJECT_SCHEMA_FIELDS {
         let span = fields[MAX_OBJECT_SCHEMA_FIELDS].name.span();
-        throw!("Jsony FromJson currently supports at most 63 decoded fields in an object schema" @ span);
+        throw!("Jsony FromJson currently supports at most 1024 decoded fields in an object schema" @ span);
     }
 
     let ag_source: &[Generic] = match temp_tuple {
@@ -783,10 +784,14 @@ fn schema_ordered_fields<'a>(fields: &'a [Field<'a>]) -> Vec<&'a Field<'a>> {
     buf
 }
 
+fn bitset_words(fields_len: usize) -> usize {
+    fields_len.div_ceil(u64::BITS as usize)
+}
+
 fn required_bitset(ordered: &[&Field]) -> u64 {
-    if ordered.len() > MAX_OBJECT_SCHEMA_FIELDS {
-        let span = ordered[MAX_OBJECT_SCHEMA_FIELDS].name.span();
-        throw!("Jsony FromJson currently supports at most 63 decoded fields in an object schema" @ span);
+    if ordered.len() > 63 {
+        let span = ordered[63].name.span();
+        throw!("Jsony FromJson currently supports at most 63 decoded fields in the legacy object schema path" @ span);
     }
 
     let mut defaults = 0;
@@ -798,6 +803,83 @@ fn required_bitset(ordered: &[&Field]) -> u64 {
         break;
     }
     ((1 << ordered.len()) - 1) ^ ((1 << defaults) - 1)
+}
+
+fn emit_required_bitset_slice(out: &mut RustWriter, ordered: &[&Field]) {
+    if ordered.len() > MAX_OBJECT_SCHEMA_FIELDS {
+        let span = ordered[MAX_OBJECT_SCHEMA_FIELDS].name.span();
+        throw!("Jsony FromJson currently supports at most 1024 decoded fields in an object schema" @ span);
+    }
+
+    let mut defaults = 0;
+    for field in ordered {
+        if field.flags & (Field::WITH_FROM_JSON_DEFAULT | Field::WITH_FROM_JSON_SKIP) != 0 {
+            defaults += 1;
+            continue;
+        }
+        break;
+    }
+
+    out.tt_punct_alone('&');
+    let start = out.buf.len();
+    for word_index in 0..bitset_words(ordered.len()) {
+        let mut word = 0;
+        let start_index = (word_index * u64::BITS as usize).max(defaults);
+        let end_index = ((word_index + 1) * u64::BITS as usize).min(ordered.len());
+        for index in start_index..end_index {
+            word |= 1u64 << (index % u64::BITS as usize);
+        }
+        out.buf
+            .push(TokenTree::Literal(Literal::u64_unsuffixed(word)));
+        out.tt_punct_alone(',');
+    }
+    out.tt_group(Delimiter::Bracket, start);
+}
+
+fn emit_zero_u64_array(out: &mut RustWriter, words: usize) {
+    let start = out.buf.len();
+    out.buf.push(TokenTree::Literal(Literal::u64_unsuffixed(0)));
+    out.tt_punct_alone(';');
+    out.buf
+        .push(TokenTree::Literal(Literal::usize_unsuffixed(words)));
+    out.tt_group(Delimiter::Bracket, start);
+}
+
+fn emit_field_index_fn(
+    out: &mut RustWriter,
+    ctx: &Ctx,
+    ordered_fields: &[&Field],
+    field_rename: RenameRule,
+    include_aliases: bool,
+    skip_key: Option<&str>,
+) {
+    splat!(out;
+        fn __jsony_field_index(key: &str) -> usize {
+            match key {
+                [for ((i, field) in ordered_fields.iter().enumerate()) {
+                    [@field_name_literal(ctx, field, field_rename).into()]
+                        => [@TokenTree::Literal(Literal::usize_unsuffixed(i))],
+                }]
+                [if let Some(skip_key) = skip_key {
+                    splat!(out;
+                        [@Literal::string(skip_key).into()]
+                            => ::jsony::__internal::SKIP_FIELD_ALIAS_INDEX,
+                    )
+                }]
+                [?(include_aliases)
+                    [for ((i, field) in ordered_fields.iter().enumerate()) {
+                        [if let Some(alias) = field.attr.alias(FROM_JSON) {
+                            splat!(out;
+                                [@TokenTree::Literal(alias.clone())]
+                                    => [@TokenTree::Literal(Literal::usize_unsuffixed(i))],
+                            )
+                        }]
+                    }]
+                ]
+                _ => ::jsony::__internal::UNKNOWN_FIELD_INDEX,
+            }
+        }
+    );
 }
 
 fn tuple_struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
@@ -1148,6 +1230,13 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
         }
     }
     let ordered_fields = schema_ordered_fields(fields);
+    let mut any_field_flag = 0;
+    for field in fields {
+        any_field_flag |= field.flags;
+    }
+    let has_alias = any_field_flag & Field::WITH_FROM_JSON_ALIAS != 0;
+    let use_indexed = ordered_fields.len() > LINEAR_OBJECT_SCHEMA_FIELDS;
+    let indexed_words = bitset_words(ordered_fields.len());
 
     splat!(out;
         [?(ctx.target.flattenable)
@@ -1168,6 +1257,9 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
         ]
         [
             let start = out.buf.len();
+            if use_indexed {
+                emit_field_index_fn(out, ctx, &ordered_fields, ctx.target.rename_all, has_alias, None);
+            }
             if let Some(flatten_field) = flattening {
                 splat!(out;
                     let mut __flatten_visitor_jsony =
@@ -1191,13 +1283,10 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
                     phantom: ::std::marker::PhantomData
                 })
             }
-            let mut any_field_flag = 0;
-            for field in fields {
-                any_field_flag |= field.flags;
-            }
-            let has_alias = any_field_flag & Field::WITH_FROM_JSON_ALIAS != 0;
             splat!(out; .[
-                if has_alias {
+                if use_indexed {
+                    splat!(out; decode_indexed)
+                } else if has_alias {
                     splat!(out; decode_with_alias)
                 } else {
                     splat!(out; decode)
@@ -1207,7 +1296,10 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
             } else {
                 splat!(out; None)
             }]
-            [?(has_alias) , &[[
+            [if use_indexed {
+                splat!(out; , __jsony_field_index, &mut [emit_zero_u64_array(out, indexed_words)], [emit_required_bitset_slice(out, &ordered_fields)])
+            }]
+            [?(!use_indexed && has_alias) , &[[
                 [
                     for (i, field) in ordered_fields.iter().enumerate() {
                         if let Some(alias) = field.attr.alias(FROM_JSON) {
@@ -1247,37 +1339,59 @@ fn struct_from_json(out: &mut RustWriter, ctx: &Ctx, fields: &[Field]) {
                 if has_skips {
                     throw!("Flattenable does not yet support skipped fields")
                 }
-                let body = token_stream!(
-                    out;
-                    jsony::__internal::DynamicFieldDecoder {
-                        destination: dst,
-                        schema: __schema_inner::<
-                            #[#: &ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
-                        >(),
-                        alias: &[[
-                            [?(has_alias)
-                                [
-                                    for (i, field) in ordered_fields.iter().enumerate() {
-                                        if let Some(alias) = field.attr.alias(FROM_JSON) {
-                                            splat!(out; (
-                                                [@TokenTree::Literal(Literal::usize_unsuffixed(i))],
-                                                [@TokenTree::Literal(alias.clone())]
-                                            ),)
+                if use_indexed {
+                    let body = token_stream!(
+                        out;
+                        [emit_field_index_fn(out, ctx, &ordered_fields, ctx.target.rename_all, has_alias, None)]
+                        jsony::__internal::DynamicFieldDecoderIndexed {
+                            destination: dst,
+                            schema: __schema_inner::<
+                                #[#: &ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
+                            >(),
+                            field_index: __jsony_field_index,
+                            bitset: [emit_zero_u64_array(out, indexed_words)],
+                            required: [emit_required_bitset_slice(out, &ordered_fields)],
+                        }
+                    );
+                    impl_from_json_field_visitor(
+                        out,
+                        ctx,
+                        &|out| splat!(out; jsony::__internal::DynamicFieldDecoderIndexed<#[#: &ctx.lifetime], [@TokenTree::Literal(Literal::usize_unsuffixed(indexed_words))]>),
+                        body
+                    )
+                } else {
+                    let body = token_stream!(
+                        out;
+                        jsony::__internal::DynamicFieldDecoder {
+                            destination: dst,
+                            schema: __schema_inner::<
+                                #[#: &ctx.lifetime] [?(!ctx.generics.is_empty()), [fmt_generics(out, ctx.generics, USE)]]
+                            >(),
+                            alias: &[[
+                                [?(has_alias)
+                                    [
+                                        for (i, field) in ordered_fields.iter().enumerate() {
+                                            if let Some(alias) = field.attr.alias(FROM_JSON) {
+                                                splat!(out; (
+                                                    [@TokenTree::Literal(Literal::usize_unsuffixed(i))],
+                                                    [@TokenTree::Literal(alias.clone())]
+                                                ),)
+                                            }
                                         }
-                                    }
+                                    ]
                                 ]
-                            ]
-                        ]],
-                        bitset: [@TokenTree::Literal(Literal::u64_unsuffixed(0))],
-                        required: [@TokenTree::Literal(Literal::u64_unsuffixed(required_bitset(&ordered_fields)))],
-                    }
-                );
-                impl_from_json_field_visitor(
-                    out,
-                    ctx,
-                    &|out| splat!(out; jsony::__internal::DynamicFieldDecoder<#[#: &ctx.lifetime]>),
-                    body
-                )
+                            ]],
+                            bitset: [@TokenTree::Literal(Literal::u64_unsuffixed(0))],
+                            required: [@TokenTree::Literal(Literal::u64_unsuffixed(required_bitset(&ordered_fields)))],
+                        }
+                    );
+                    impl_from_json_field_visitor(
+                        out,
+                        ctx,
+                        &|out| splat!(out; jsony::__internal::DynamicFieldDecoder<#[#: &ctx.lifetime]>),
+                        body
+                    )
+                }
 
             }
         ]
@@ -1572,6 +1686,13 @@ fn enum_variant_from_json_struct(
     let is_inline_tag = matches!(ctx.target.tag, Tag::Inline(_));
     let has_field_alias = any_field_flag & Field::WITH_FROM_JSON_ALIAS != 0;
     let use_alias = is_inline_tag || has_field_alias;
+    let use_indexed = ordered_fields.len() > LINEAR_OBJECT_SCHEMA_FIELDS;
+    let indexed_words = bitset_words(ordered_fields.len());
+    let skip_key = if let Tag::Inline(tag) = &ctx.target.tag {
+        Some(tag.as_str())
+    } else {
+        None
+    };
     // The `__TEMP` tuple alias is a nested item, so it must re-declare exactly
     // the target generics this variant's fields reference (USE = lifetimes +
     // names, no bounds). Declaring an unused type parameter on the alias is
@@ -1599,6 +1720,9 @@ fn enum_variant_from_json_struct(
     // keeps the large schema/decode token sequence from being generated twice.
     splat! {
         out;
+        [if use_indexed {
+            emit_field_index_fn(out, ctx, &ordered_fields, field_rename, has_field_alias, skip_key);
+        }]
         type __TEMP[emit_generic_params(out, &used_generics)] = ([for (field in &ordered_fields) { [~field.ty], }]);
         let schema = ::jsony::__internal::ObjectSchema{
             inner: const { &[struct_schema(out, ctx, &ordered_fields, Some((&temp_ident, &used_generics)), field_rename)]},
@@ -1618,7 +1742,9 @@ fn enum_variant_from_json_struct(
             }
         }]
         if let Err(_err) = schema.[
-            if use_alias {
+            if use_indexed {
+                splat!(out; decode_indexed)
+            } else if use_alias {
                 splat!(out; decode_with_alias)
             } else {
                 splat!(out; decode)
@@ -1630,8 +1756,11 @@ fn enum_variant_from_json_struct(
                 splat!(out; Some(&mut flatten_visitor))
             } else {
                 splat!(out; None)
-            }],
-            [?(use_alias) &[[
+            }]
+            [if use_indexed {
+                splat!(out; , __jsony_field_index, &mut [emit_zero_u64_array(out, indexed_words)], [emit_required_bitset_slice(out, &ordered_fields)])
+            }]
+            [?(!use_indexed && use_alias) , &[[
                 [if let Tag::Inline(tag) = &ctx.target.tag {
                     splat!(out; (::jsony::__internal::SKIP_FIELD_ALIAS_INDEX, [@Literal::string(tag).into()]),)
                 }]

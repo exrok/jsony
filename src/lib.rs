@@ -506,6 +506,14 @@ impl std::fmt::Display for JsonError {
                     return Ok(());
                 }
             }
+            JsonParentContext::SchemaField { schema, index } => {
+                if std::ptr::eq(self.inner.error, &crate::error::MISSING_REQUIRED_FIELDS) {
+                    if let Some(field) = schema.fields.get(*index) {
+                        write!(f, ": {:?}", field.name)?;
+                        return Ok(());
+                    }
+                }
+            }
             _ => (),
         }
         write!(f, " near `{}`", self.inner.near_by_input().escape_ascii())
