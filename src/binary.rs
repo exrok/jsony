@@ -175,6 +175,9 @@ impl<'a> Decoder<'a> {
     fn try_borrow_untyped_slice(&mut self, layout: Layout) -> (*const u8, usize) {
         'error: {
             let len = self.read_length();
+            if len == 0 {
+                return (std::ptr::without_provenance_mut(layout.align()), 0);
+            }
             let Some(byte_len) = len.checked_mul(layout.size()) else {
                 self.report_static_error("Invalid length, overflowed");
                 break 'error;
