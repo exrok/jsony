@@ -1,5 +1,25 @@
 # CHANGELOG
 
+# 0.1.10 (2026-06-16)
+
+Enhancements:
+
+- Derive now supports generics: const generics, `where` clauses, and generic struct-like
+  enum variants.
+- Derive multi-field tuple structs, serialized as a heterogeneous array.
+- Add `prettify` and `PrettifyConfig` for reformatting JSON with indentation, including
+  limits on inline object and array entries.
+- Add FromBinary/ToBinary impls for `BTreeMap` and `BTreeSet`.
+- Better diagnostic spans and a clearer error for missing `flatten` impls.
+
+Fixes:
+
+- Soundness hardening around zero-sized and over-aligned types.
+- `untagged` unit variants now match `null`.
+- Tuple-struct `with`, `ignore_tag_adjacent_fields`, and `other` attributes now work.
+- `skip` combined with `alias` fields.
+- Emit an error on plain enum binary fallback.
+
 # 0.1.9 (2026-03-07)
 
 Enhancements:
