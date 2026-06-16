@@ -56,6 +56,7 @@ impl<'a> From<&'a mut Vec<u8>> for BytesWriter<'a> {
             capacity: value.capacity(),
             backing: Backing::Vec {
                 bytes: NonNull::from(value),
+                offset: 0,
                 marker: PhantomData,
             },
         }
@@ -77,13 +78,15 @@ impl Drop for BytesWriter<'_> {
                     }
                 }
             }
-            Backing::Vec { mut bytes, .. } => {
+            Backing::Vec {
+                mut bytes, offset, ..
+            } => {
                 // SAFETY: this writer was created from an exclusive `&mut Vec<u8>`
-                // and keeps that borrow for `'a`. `data`, `capacity`, and `len`
-                // describe the same allocation, with `0..len` initialized.
+                // and keeps that borrow for `'a`. The Vec owns the allocation,
+                // and `offset..offset + len` is initialized by the writer.
                 unsafe {
                     let vec = bytes.as_mut();
-                    vec.set_len(self.len);
+                    vec.set_len(offset + self.len);
                 }
             }
             Backing::Borrowed { .. } => (),
@@ -95,6 +98,7 @@ pub(crate) enum Backing<'a> {
     Owned,
     Vec {
         bytes: NonNull<Vec<u8>>,
+        offset: usize,
         // Life time as Vec<u8>... we store it as pointer
         // to avoid issues aliasing issues. Although it should be fine.
         marker: PhantomData<&'a ()>,
@@ -123,6 +127,24 @@ impl<'a> BytesWriter<'a> {
             },
         }
     }
+
+    pub(crate) fn from_vec_suffix(value: &'a mut Vec<u8>) -> Self {
+        let offset = value.len();
+        BytesWriter {
+            // SAFETY: `offset == len <= capacity`, so this is either in-bounds
+            // or one-past the Vec allocation. A zero-capacity Vec uses a
+            // non-null dangling pointer and `add(0)`.
+            data: unsafe { value.as_mut_ptr().add(offset) },
+            len: 0,
+            capacity: value.capacity() - offset,
+            backing: Backing::Vec {
+                bytes: NonNull::from(value),
+                offset,
+                marker: PhantomData,
+            },
+        }
+    }
+
     /// Returns a mutable reference to the last two bytes, if available.
     pub fn last_2(&mut self) -> Option<&mut [u8; 2]> {
         if self.len < 2 {
@@ -202,13 +224,15 @@ impl<'a> BytesWriter<'a> {
     pub fn into_vec(self) -> Vec<u8> {
         let this = ManuallyDrop::new(self);
         match this.backing {
-            Backing::Vec { mut bytes, .. } => {
+            Backing::Vec {
+                mut bytes, offset, ..
+            } => {
                 // SAFETY: this writer has exclusive access to the borrowed Vec.
-                // The first `this.len` bytes are initialized, so restoring the
-                // Vec length before taking it preserves its allocation invariants.
+                // The initialized logical buffer ends at `offset + this.len`,
+                // so restoring that length preserves its allocation invariants.
                 unsafe {
                     let vec = bytes.as_mut();
-                    vec.set_len(this.len);
+                    vec.set_len(offset + this.len);
                     std::mem::take(vec)
                 }
             }
@@ -249,28 +273,24 @@ impl<'a> BytesWriter<'a> {
     /// Panics if the writer is not backed by a `Vec<u8>`.
     pub fn into_backed_with_extended_slice(self) -> &'a [u8] {
         let mut this = ManuallyDrop::new(self);
-        let data = this.data;
         let len = this.len;
-        if let Backing::Vec { bytes, .. } = &mut this.backing {
+        if let Backing::Vec { bytes, offset, .. } = &mut this.backing {
             // SAFETY: the writer has exclusive access to the backing Vec. The
-            // first `len` bytes are initialized, so restoring the Vec length is
-            // valid and yields the previous length used to compute the appended
-            // suffix.
-            let offset = unsafe {
+            // logical initialized bytes end at `offset + len`, so restoring the
+            // Vec length is valid. The previous Vec length is the creation-time
+            // suffix boundary.
+            let (data, start, suffix_len) = unsafe {
                 let bytes = bytes.as_mut();
                 let oldlen = bytes.len();
-                bytes.set_len(len);
-                oldlen
+                let end = *offset + len;
+                bytes.set_len(end);
+                let start = oldlen.min(end);
+                (bytes.as_mut_ptr(), start, end - start)
             };
-            // `len` is below the creation-time length only if the buffer was
-            // cleared or popped past the start. Then nothing was appended, so
-            // clamp to an empty slice rather than underflowing `len - offset`
-            // (which would build an `&[u8]` with a bogus, enormous length).
-            let start = offset.min(len);
-            // SAFETY: `start <= len <= capacity`, and the backing Vec now owns
-            // these initialized bytes for lifetime `'a`. A zero-length suffix may
-            // use a one-past or dangling aligned pointer.
-            return unsafe { std::slice::from_raw_parts(data.add(start), len - start) };
+            // SAFETY: `start <= end`, and the backing Vec now owns these
+            // initialized bytes for lifetime `'a`. A zero-length suffix may use
+            // a one-past or dangling aligned pointer.
+            return unsafe { std::slice::from_raw_parts(data.add(start), suffix_len) };
         }
         // SAFETY: `this` has not been dropped yet, and no allocation was moved
         // out on this error path.
@@ -540,6 +560,24 @@ impl<'a> BytesWriter<'a> {
             }
             self.backing = Backing::Owned;
             self.data = new_data;
+        } else if let Backing::Vec { bytes, offset, .. } = &mut self.backing {
+            let old_capacity = *offset + self.capacity;
+            let new_total_capacity = *offset + new_capacity;
+            // SAFETY: the writer has exclusive access to the Vec. Its pointer
+            // and capacity are the allocation raw parts, and `old_capacity` is
+            // the total allocation capacity represented by this suffix view.
+            let data = unsafe {
+                let vec = bytes.as_mut();
+                let original_len = vec.len();
+                let data = safe_realloc(vec.as_mut_ptr(), old_capacity, new_total_capacity);
+                bytes.write(Vec::from_raw_parts(data, original_len, new_total_capacity));
+                data
+            };
+            // SAFETY: `offset <= new_total_capacity`, so this is in-bounds or
+            // one-past the reallocated Vec allocation.
+            self.data = unsafe { data.add(*offset) };
+            self.capacity = new_capacity;
+            return;
         } else {
             // SAFETY: for non-borrowed backing, `data`/`capacity` either
             // represent no allocation (`capacity == 0`) or an allocation made
@@ -547,21 +585,6 @@ impl<'a> BytesWriter<'a> {
             self.data = unsafe { safe_realloc(self.data, self.capacity, new_capacity) };
         }
         self.capacity = new_capacity;
-
-        if let Backing::Vec { bytes, .. } = &mut self.backing {
-            // SAFETY: the writer has exclusive access to the Vec object. The
-            // underlying allocation was just reallocated. Reading `len` from
-            // the Vec header does not dereference the old allocation pointer,
-            let original_len = unsafe { bytes.as_mut().len() };
-            // SAFETY: `self.data`/`self.capacity` are now the allocation raw
-            // parts for this Vec-backed writer. `write` replaces the Vec header
-            // without dropping the stale allocation handle that was just
-            // reallocated.
-            unsafe {
-                bytes.write(Vec::from_raw_parts(self.data, original_len, self.capacity));
-            }
-            return;
-        }
 
         debug_assert!(!self.data.is_null());
         debug_assert!(self.len <= self.capacity);

@@ -54,7 +54,7 @@ impl<'a> IntoTextWriter<'a> for &'a mut String {
         // SAFETY: `TextWriter` methods preserve UTF-8, so exposing the
         // String's Vec to the internal byte writer cannot leave invalid bytes
         // before the borrow ends.
-        TextWriter::with_buffer(BytesWriter::from(unsafe { self.as_mut_vec() }))
+        TextWriter::with_buffer(BytesWriter::from_vec_suffix(unsafe { self.as_mut_vec() }))
     }
     fn finish_writing(buffer: TextWriter<'a>) -> &'a str {
         buffer.into_backed_str()
@@ -64,7 +64,7 @@ impl<'a> IntoTextWriter<'a> for &'a mut String {
 impl<'a> IntoTextWriter<'a> for &'a mut Vec<u8> {
     type Output = &'a str;
     fn into_text_writer(self) -> TextWriter<'a> {
-        TextWriter::with_buffer(BytesWriter::from(self))
+        TextWriter::with_buffer(BytesWriter::from_vec_suffix(self))
     }
     fn finish_writing(buffer: TextWriter<'a>) -> &'a str {
         buffer.into_backed_str()

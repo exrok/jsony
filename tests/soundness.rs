@@ -160,6 +160,60 @@ fn byte_writer_clear_then_extended_slice_is_empty() {
     assert!(slice.is_empty());
 }
 
+#[test]
+fn vec_backed_byte_writer_preserves_prefix_view() {
+    let mut backing = vec![1, 2];
+    let mut writer = BytesWriter::from(&mut backing);
+    assert_eq!(writer.buffer_slice(), &[1, 2]);
+    writer.push(3);
+    let slice = writer.into_backed_with_extended_slice();
+    assert_eq!(slice, &[3]);
+    assert_eq!(&backing[..], &[1, 2, 3]);
+}
+
+#[test]
+fn vec_backed_text_writer_hides_non_utf8_prefix() {
+    struct ObservesWriter;
+
+    impl jsony::ToJson for ObservesWriter {
+        type Kind = jsony::json::AnyValue;
+
+        fn encode_json__jsony(&self, output: &mut jsony::TextWriter) -> Self::Kind {
+            assert_eq!(output.as_str(), "");
+            assert_eq!(output.buffer_slice(), "");
+            output.push_str("null");
+            jsony::json::AnyValue
+        }
+    }
+
+    let mut output = Vec::with_capacity(1);
+    output.push(0xff);
+
+    let encoded = jsony::to_json_into(&ObservesWriter, &mut output);
+    assert_eq!(encoded, "null");
+    assert_eq!(&output[..], b"\xffnull");
+}
+
+#[test]
+fn string_backed_text_writer_uses_suffix_view() {
+    struct ObservesWriter;
+
+    impl jsony::ToJson for ObservesWriter {
+        type Kind = jsony::json::AnyValue;
+
+        fn encode_json__jsony(&self, output: &mut jsony::TextWriter) -> Self::Kind {
+            assert_eq!(output.as_str(), "");
+            output.push_str("true");
+            jsony::json::AnyValue
+        }
+    }
+
+    let mut output = String::from("prefix:");
+    let encoded = jsony::to_json_into(&ObservesWriter, &mut output);
+    assert_eq!(encoded, "true");
+    assert_eq!(output, "prefix:true");
+}
+
 static LIVE_BOXED: AtomicUsize = AtomicUsize::new(0);
 
 /// A heap-owning field whose live instances are counted. A value the decoder
