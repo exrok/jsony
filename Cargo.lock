@@ -275,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "jsony"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "itoa",
  "jsony_macros",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "jsony_macros"
-version = "0.1.8"
+version = "0.1.10"
 
 [[package]]
 name = "jsony_macros_source"
