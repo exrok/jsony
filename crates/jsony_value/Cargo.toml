@@ -1,8 +1,8 @@
 [package]
 name = "jsony_value"
-version = "0.0.1"
+version = "0.1.0"
 authors = ["Thomas Dagenais <exrok@i64.dev>"]
-description = "A JSON value representation for the jsony crate."
+description = "A compact untyped JSON value representation for the jsony crate."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/exrok/jsony"
 readme = "README.md"
@@ -13,7 +13,7 @@ rust-version = "1.84"
 
 [dependencies]
 foldhash = { version = "0.2", default-features = false }
-jsony = "0.1.9"
+jsony = "0.1.10"
 
 [features]
 default = []

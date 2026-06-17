@@ -1,6 +1,6 @@
 # jsony_value: Memory-efficient JSON value types for jsony.
 
-**WARNING**: This crate is still experimental and makes extended usage of unsafe.
+**WARNING**: This crate is still experimental and makes extensive usage of unsafe.
 
 Values use a 16-byte tagged union representation, allowing
 [`Option<Value>`] to also be 16 bytes through niche optimization.
@@ -27,8 +27,8 @@ let flag: Value = true.into();
 
 // Build a JSON object
 let map: Value = [
-("name", Value::from("Alice")),
-("age", Value::from(30i64)),
+    ("name", Value::from("Alice")),
+    ("age", Value::from(30i64)),
 ].into_iter().collect();
 ```
 
