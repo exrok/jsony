@@ -304,6 +304,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsony_benchmark"
+version = "0.1.0"
+dependencies = [
+ "jsony",
+ "jsony_bench",
+]
+
+[[package]]
 name = "jsony_config"
 version = "0.1.2"
 dependencies = [

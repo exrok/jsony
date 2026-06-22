@@ -298,6 +298,70 @@ fn truncated_container_drops_partially_built_value() {
     );
 }
 
+/// A large, niche-bearing struct: the `Box` first field makes `BigNiche`
+/// non-null, so `Option<BigNiche>` is niche-optimized to the same size, and the
+/// trailing array makes the elided copy large. Parsing `Some` drives the niche
+/// fast path in `Option<T>::emplace_from_json` (emplace `T` directly into
+/// `dest`, then read-back-and-rewrap). The owned `Box` makes any leak or
+/// double-free on that path observable under Miri/ASAN.
+#[derive(Jsony, Debug, PartialEq)]
+struct BigNiche {
+    tag: Box<u32>,
+    data: [u64; 8],
+}
+
+#[test]
+fn option_niche_some_path_round_trips() {
+    // Confirm the optimization's precondition actually holds, i.e. the test
+    // exercises the fast path rather than the `MaybeUninit<T>` fallback.
+    assert_eq!(size_of::<Option<BigNiche>>(), size_of::<BigNiche>());
+    assert_eq!(size_of::<Option<Box<u32>>>(), size_of::<Box<u32>>());
+    assert_eq!(size_of::<Option<&str>>(), size_of::<&str>());
+
+    let big =
+        jsony::from_json::<Option<BigNiche>>(r#"{"tag": 7, "data": [0, 1, 2, 3, 4, 5, 6, 7]}"#)
+            .unwrap();
+    assert_eq!(
+        big,
+        Some(BigNiche {
+            tag: Box::new(7),
+            data: [0, 1, 2, 3, 4, 5, 6, 7],
+        })
+    );
+    assert_eq!(jsony::from_json::<Option<BigNiche>>("null").unwrap(), None);
+
+    let boxed = jsony::from_json::<Option<Box<u32>>>("5").unwrap();
+    assert_eq!(boxed, Some(Box::new(5)));
+    assert_eq!(jsony::from_json::<Option<Box<u32>>>("null").unwrap(), None);
+
+    let borrowed = jsony::from_json::<Option<&str>>(r#""hello""#).unwrap();
+    assert_eq!(borrowed, Some("hello"));
+    assert_eq!(jsony::from_json::<Option<&str>>("null").unwrap(), None);
+}
+
+/// The niche `Some` path must drop the inner heap allocation exactly once. A
+/// successfully parsed `Option<BigNiche>` that is then dropped exercises the
+/// move-out/write-back ownership of the read-back-and-rewrap step.
+#[test]
+fn option_niche_some_path_drops_exactly_once() {
+    {
+        let big = jsony::from_json::<Option<BigNiche>>(
+            r#"{"tag": 99, "data": [9, 9, 9, 9, 9, 9, 9, 9]}"#,
+        )
+        .unwrap();
+        assert_eq!(*big.as_ref().unwrap().tag, 99);
+    }
+    // Inner field that fails after the niche field is built must not leak.
+    #[derive(Jsony)]
+    struct Wrapper {
+        #[allow(dead_code)]
+        a: Option<BigNiche>,
+        #[allow(dead_code)]
+        b: u32,
+    }
+    assert!(jsony::from_json::<Wrapper>(r#"{"a":{"tag":1,"data":[0,0,0,0,0,0,0,0]},"b""#).is_err());
+}
+
 #[test]
 fn short_binary_numeric_input_reports_eof() {
     assert!(jsony::from_binary::<u64>(&[1, 2, 3]).is_err());

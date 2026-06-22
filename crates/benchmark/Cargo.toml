@@ -1,0 +1,8 @@
+[package]
+name = "jsony_benchmark"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+jsony = { path = "../.." }
+jsony_bench = { path = "../jsony_bench" }

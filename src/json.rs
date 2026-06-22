@@ -782,8 +782,10 @@ unsafe impl<'de, K: FromJson<'de> + Eq + Hash, V: FromJson<'de>, S: Default + Bu
 }
 
 // SAFETY: this writes `None` immediately for JSON null. For non-null input it
-// uses `MaybeUninit<T>` and constructs `Some(T)` only after `T` was initialized
-// successfully, leaving `dest` uninitialized on errors.
+// constructs `Some(T)` only after `T` was initialized successfully, leaving
+// `dest` uninitialized on errors. When `Option<T>` is niche-optimized (same
+// size and alignment as `T`) it emplaces `T` directly into `dest`; otherwise it
+// uses a stack `MaybeUninit<T>`.
 unsafe impl<'a, T: FromJson<'a>> FromJson<'a> for Option<T> {
     unsafe fn emplace_from_json(
         dest: NonNull<()>,
@@ -802,20 +804,54 @@ unsafe impl<'a, T: FromJson<'a>> FromJson<'a> for Option<T> {
                 Ok(())
             }
             Ok(_) => {
-                let mut value = std::mem::MaybeUninit::<T>::uninit();
-                // SAFETY: `value` is valid uninitialized storage for `T`; on
-                // success the emplace call initializes it.
-                if let Err(err) = unsafe {
-                    T::emplace_from_json(NonNull::new_unchecked(value.as_mut_ptr()).cast(), parser)
+                if const {
+                    size_of::<Option<T>>() == size_of::<T>()
+                        && align_of::<Option<T>>() == align_of::<T>()
                 } {
-                    return Err(err);
-                };
-                // SAFETY: the emplace call succeeded, so `value` is
-                // initialized, and `dest` is writable storage for `Option<T>`.
-                unsafe {
-                    dest.cast::<Option<T>>().write(Some(value.assume_init()));
+                    // Niche optimization is in effect: `Option<T>` has no
+                    // extra storage beyond `T`. Emplace `T` directly into
+                    // `dest`, then rewrap it through `Some` so the destination
+                    // is initialized as an `Option<T>`.
+                    //
+                    // SAFETY: by the trait contract `dest` is writable storage
+                    // for `Option<T>`. The const check proves that storage is
+                    // byte-identical in size and alignment to `T`, so it is also
+                    // valid writable storage for `T`, satisfying the contract of
+                    // `T::emplace_from_json`. If decoding succeeds, `dest`
+                    // holds an initialized `T`; reading it at type `T` moves it
+                    // out, and writing `Some(T)` initializes the same storage as
+                    // `Option<T>`. `ptr::write` does not drop the moved-out
+                    // bytes, so the value is owned exactly once.
+                    //
+                    // Moreover, the entire branch below gets optimized out at
+                    // opt-level=1 or higher.
+                    let result = unsafe { T::emplace_from_json(dest, parser) };
+                    if let Ok(()) = result {
+                        unsafe {
+                            dest.cast::<Option<T>>()
+                                .write(Some(dest.cast::<T>().read()));
+                        }
+                    }
+                    return result;
+                } else {
+                    let mut value = std::mem::MaybeUninit::<T>::uninit();
+                    // SAFETY: `value` is valid uninitialized storage for `T`; on
+                    // success the emplace call initializes it.
+                    if let Err(err) = unsafe {
+                        T::emplace_from_json(
+                            NonNull::new_unchecked(value.as_mut_ptr()).cast(),
+                            parser,
+                        )
+                    } {
+                        return Err(err);
+                    };
+                    // SAFETY: the emplace call succeeded, so `value` is
+                    // initialized, and `dest` is writable storage for `Option<T>`.
+                    unsafe {
+                        dest.cast::<Option<T>>().write(Some(value.assume_init()));
+                    }
+                    Ok(())
                 }
-                Ok(())
             }
             Err(err) => Err(err),
         }

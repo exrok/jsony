@@ -10,9 +10,7 @@ description = "An experimental fast compiling serialization and deserialization 
 keywords = ["serialization"]
 categories = ["encoding"]
 rust-version = "1.85"
-exclude = [
-  "devsm.toml"
-]
+exclude = ["devsm.toml"]
 
 [dependencies]
 jsony_macros = { version = "0.1.10", optional = true }
@@ -31,11 +29,8 @@ jsony = { path = "." }
 jsony_macros = { path = "crates/jsony_macros" }
 
 [workspace]
-members = [
-    "crates/*",
-    "crates/jsony_value/benchmark",
-]
+members = ["crates/*", "crates/jsony_value/benchmark"]
 resolver = "2"
 
-[profile.release]
-debug = 1
+#[profile.release]
+#debug = 1

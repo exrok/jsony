@@ -3,7 +3,7 @@ use std::{
     fmt::Display,
     fs::File,
     hint::black_box,
-    io::{self, Read},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -148,6 +148,7 @@ const RUN_FILE_FORMAT: &str = "jsony_bench.run";
 const RUN_FILE_VERSION: u32 = 1;
 const RUN_PLAN_FORMAT: &str = "jsony_bench.plan";
 const RUN_PLAN_VERSION: u32 = 1;
+const DEFAULT_PROFILE_ITERATIONS: u64 = 1_000;
 
 // Trimmed-log-mean trim fraction per tail.
 const TRIM_FRACTION: f64 = 0.10;
@@ -254,11 +255,35 @@ impl Router {
             );
         }
 
+        let backend = match options.mode {
+            CliMode::Bench => backend(),
+            CliMode::Profile => BenchBackend::profile(options.profile_iterations),
+        };
+
+        if options.mode == CliMode::Profile {
+            let (_backend, records) = self.measure_records(&options, None, backend);
+            let run_file = self.run_file_from_records(&args, &options, records, None);
+
+            if run_file.records.is_empty() {
+                return EvalOutcome::error(
+                    2,
+                    "no benchmarks matched the selected route and parameter filters\n".to_owned(),
+                );
+            }
+
+            return EvalOutcome {
+                run_file: Some(run_file),
+                compare_report: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+            };
+        }
+
         let compare_run_plan = options
             .compare
             .as_ref()
             .map(|path| load_run_plan_for_compare(path));
-        let backend = backend();
 
         let (mut run_file, comparison_run_plan) = if options.save.is_some()
             && options.compare.is_none()
@@ -382,6 +407,7 @@ impl Router {
             route_filter: options.route_filter.clone(),
             param_filters: options.param_filters.clone(),
             run_plan,
+            progress: options.progress,
             records: Vec::new(),
             record_keys: BTreeSet::new(),
         };
@@ -430,6 +456,7 @@ pub struct Bench<'a> {
     path: Vec<String>,
     params: Vec<ParamValue>,
     bench_parameters: BenchParameters,
+    profile_iterations: Option<u64>,
 }
 
 impl<'a> Bench<'a> {
@@ -439,16 +466,27 @@ impl<'a> Bench<'a> {
             path,
             params: Vec::new(),
             bench_parameters: DEFAULT_BENCH_PARAM,
+            profile_iterations: None,
         }
     }
 
     pub fn func(&mut self, mut func: impl FnMut()) -> &mut Self {
         if self.context.should_measure(&self.path, &self.params) {
             let plan = self.context.measurement_plan(&self.path, &self.params);
-            let report = self
-                .context
-                .backend
-                .measure_func(&self.bench_parameters, plan, &mut func);
+            self.context.report_measure_start(&self.path, &self.params);
+            let started = std::time::Instant::now();
+            let report = self.context.backend.measure_func(
+                &self.bench_parameters,
+                plan,
+                self.default_profile_iterations(),
+                &mut func,
+            );
+            self.context.report_measure_finish(
+                &self.path,
+                &self.params,
+                started.elapsed(),
+                &report,
+            );
             self.context.push_record(RunRecord {
                 route: self.path_string(),
                 params: self.params.clone(),
@@ -489,11 +527,20 @@ impl<'a> Bench<'a> {
     ) -> &mut Self {
         if self.context.should_measure(&self.path, &self.params) {
             let plan = self.context.measurement_plan(&self.path, &self.params);
+            self.context.report_measure_start(&self.path, &self.params);
+            let started = std::time::Instant::now();
             let report = self.context.backend.measure_indexed(
                 &self.bench_parameters,
                 plan,
+                self.default_profile_iterations(),
                 iteration_multiple,
                 body,
+            );
+            self.context.report_measure_finish(
+                &self.path,
+                &self.params,
+                started.elapsed(),
+                &report,
             );
             self.context.push_record(RunRecord {
                 route: self.path_string(),
@@ -512,11 +559,20 @@ impl<'a> Bench<'a> {
     ) -> &mut Self {
         if self.context.should_measure(&self.path, &self.params) {
             let plan = self.context.measurement_plan(&self.path, &self.params);
+            self.context.report_measure_start(&self.path, &self.params);
+            let started = std::time::Instant::now();
             let report = self.context.backend.measure_generated(
                 &self.bench_parameters,
                 plan,
+                self.default_profile_iterations(),
                 generator,
                 func,
+            );
+            self.context.report_measure_finish(
+                &self.path,
+                &self.params,
+                started.elapsed(),
+                &report,
             );
             self.context.push_record(RunRecord {
                 route: self.path_string(),
@@ -546,6 +602,24 @@ impl<'a> Bench<'a> {
             path: self.path.clone(),
             params: self.params.clone(),
             bench_parameters,
+            profile_iterations: self.profile_iterations,
+        }
+    }
+
+    /// Set the default iteration count used by the `profile` subcommand for
+    /// this route and descendants. A CLI `--iterations` value still overrides
+    /// this route default.
+    pub fn with_profile_iterations(&mut self, iterations: u64) -> Bench<'_> {
+        assert!(
+            iterations > 0,
+            "profile iterations must be greater than zero"
+        );
+        Bench {
+            context: self.context,
+            path: self.path.clone(),
+            params: self.params.clone(),
+            bench_parameters: self.bench_parameters,
+            profile_iterations: Some(iterations),
         }
     }
 
@@ -565,12 +639,13 @@ impl<'a> Bench<'a> {
 
         for value in values {
             let value_text = value.to_string();
-            if self.context.param_value_possible(&name, &value_text) {
+            if self.context.param_value_possible(&name, &value_text, None) {
                 let mut child = Bench {
                     context: self.context,
                     path: self.path.clone(),
                     params: pushed_param(&self.params, &name, &value_text),
                     bench_parameters: self.bench_parameters,
+                    profile_iterations: self.profile_iterations,
                 };
                 func(&mut child, value);
             }
@@ -598,6 +673,37 @@ impl<'a> Bench<'a> {
         )
     }
 
+    /// Like [`Bench::param_str`], but in profile mode, when the user did not
+    /// pass a filter for this parameter, only the supplied representative values
+    /// are expanded. Bench mode and explicit `--param name=value` filters still
+    /// use the full value list.
+    pub fn param_str_profile_defaults<I, S, D, P, F>(
+        &mut self,
+        name: impl Into<String>,
+        values: I,
+        profile_defaults: D,
+        mut func: F,
+    ) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+        D: IntoIterator<Item = P>,
+        P: AsRef<str>,
+        F: FnMut(&mut Bench<'_>, String),
+    {
+        let profile_defaults = profile_defaults
+            .into_iter()
+            .map(|value| value.as_ref().to_owned())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            !profile_defaults.is_empty(),
+            "profile default parameter values must not be empty"
+        );
+        self.param_str_inner(name, values, Some(&profile_defaults), |bench, value| {
+            func(bench, value);
+        })
+    }
+
     pub fn items<I, T, F>(&mut self, name: impl Into<String>, values: I, func: F) -> &mut Self
     where
         I: IntoIterator<Item = T>,
@@ -616,11 +722,56 @@ impl<'a> Bench<'a> {
             path,
             params: self.params.clone(),
             bench_parameters: self.bench_parameters,
+            profile_iterations: self.profile_iterations,
         }
     }
 
     fn path_string(&self) -> String {
         self.path.join("/")
+    }
+
+    fn default_profile_iterations(&self) -> u64 {
+        self.profile_iterations
+            .unwrap_or(DEFAULT_PROFILE_ITERATIONS)
+    }
+
+    fn param_str_inner<I, S, F>(
+        &mut self,
+        name: impl Into<String>,
+        values: I,
+        profile_defaults: Option<&BTreeSet<String>>,
+        mut func: F,
+    ) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+        F: FnMut(&mut Bench<'_>, String),
+    {
+        let name = name.into();
+        validate_param_name(&name);
+        assert!(
+            self.params.iter().all(|param| param.name != name),
+            "duplicate benchmark parameter {name:?} on route {:?}",
+            self.path_string()
+        );
+
+        for value in values {
+            let value_text = value.as_ref().to_owned();
+            if self
+                .context
+                .param_value_possible(&name, &value_text, profile_defaults)
+            {
+                let mut child = Bench {
+                    context: self.context,
+                    path: self.path.clone(),
+                    params: pushed_param(&self.params, &name, &value_text),
+                    bench_parameters: self.bench_parameters,
+                    profile_iterations: self.profile_iterations,
+                };
+                func(&mut child, value_text);
+            }
+        }
+        self
     }
 }
 
@@ -1697,6 +1848,7 @@ struct RunContext {
     route_filter: Option<String>,
     param_filters: Vec<ParamValue>,
     run_plan: Option<RunPlan>,
+    progress: bool,
     records: Vec<RunRecord>,
     record_keys: BTreeSet<String>,
 }
@@ -1730,10 +1882,57 @@ impl RunContext {
         })
     }
 
-    fn param_value_possible(&self, name: &str, value: &str) -> bool {
-        self.param_filters
+    fn param_value_possible(
+        &self,
+        name: &str,
+        value: &str,
+        profile_defaults: Option<&BTreeSet<String>>,
+    ) -> bool {
+        let cli_filter_matches = self
+            .param_filters
             .iter()
-            .all(|filter| filter.name != name || filter.value == value)
+            .all(|filter| filter.name != name || filter.value == value);
+        if !cli_filter_matches {
+            return false;
+        }
+
+        if self.backend.is_profile()
+            && self.param_filters.iter().all(|filter| filter.name != name)
+            && let Some(profile_defaults) = profile_defaults
+        {
+            return profile_defaults.contains(value);
+        }
+
+        true
+    }
+
+    fn report_measure_start(&self, path: &[String], params: &[ParamValue]) {
+        if !self.progress {
+            return;
+        }
+        eprintln!("running {} {}", path.join("/"), format_params(params));
+        let _ = io::stderr().flush();
+    }
+
+    fn report_measure_finish(
+        &self,
+        path: &[String],
+        params: &[ParamValue],
+        elapsed: Duration,
+        report: &BenchReport,
+    ) {
+        if !self.progress {
+            return;
+        }
+        eprintln!(
+            "finished {} {} in {:.3}s ({} samples x {} iterations)",
+            path.join("/"),
+            format_params(params),
+            elapsed.as_secs_f64(),
+            report.sample_count(),
+            report.iterations_per_sample,
+        );
+        let _ = io::stderr().flush();
     }
 
     fn push_record(&mut self, record: RunRecord) {
@@ -1750,6 +1949,9 @@ impl RunContext {
 
 enum BenchBackend {
     Live(Bencher),
+    Profile {
+        cli_iterations: Option<u64>,
+    },
     #[cfg(test)]
     Fixed {
         next: u64,
@@ -1761,6 +1963,10 @@ impl BenchBackend {
         Self::Live(Bencher::new())
     }
 
+    fn profile(cli_iterations: Option<u64>) -> Self {
+        Self::Profile { cli_iterations }
+    }
+
     #[cfg(test)]
     fn fixed() -> Self {
         Self::Fixed { next: 1 }
@@ -1770,11 +1976,21 @@ impl BenchBackend {
         &mut self,
         parameters: &BenchParameters,
         measurement_plan: Option<MeasurementPlan>,
+        default_profile_iterations: u64,
         func: &mut dyn FnMut(),
     ) -> BenchReport {
         match self {
             BenchBackend::Live(bencher) => {
                 bencher.func_with_plan_report(parameters, measurement_plan, func)
+            }
+            BenchBackend::Profile { cli_iterations } => {
+                let iterations =
+                    resolve_profile_iterations(*cli_iterations, default_profile_iterations);
+                let start = std::time::Instant::now();
+                for _ in 0..iterations {
+                    func();
+                }
+                profile_report(iterations, start.elapsed())
             }
             #[cfg(test)]
             BenchBackend::Fixed { next } => {
@@ -1798,6 +2014,7 @@ impl BenchBackend {
         &mut self,
         parameters: &BenchParameters,
         measurement_plan: Option<MeasurementPlan>,
+        default_profile_iterations: u64,
         iteration_multiple: u64,
         body: &mut dyn FnMut(u64),
     ) -> BenchReport {
@@ -1808,6 +2025,17 @@ impl BenchBackend {
                 iteration_multiple,
                 body,
             ),
+            BenchBackend::Profile { cli_iterations } => {
+                let iterations = align_profile_iterations(
+                    resolve_profile_iterations(*cli_iterations, default_profile_iterations),
+                    iteration_multiple,
+                );
+                let start = std::time::Instant::now();
+                for index in 0..iterations {
+                    body(index);
+                }
+                profile_report(iterations, start.elapsed())
+            }
             #[cfg(test)]
             BenchBackend::Fixed { next } => {
                 body(0);
@@ -1834,6 +2062,7 @@ impl BenchBackend {
         &mut self,
         parameters: &BenchParameters,
         measurement_plan: Option<MeasurementPlan>,
+        default_profile_iterations: u64,
         generator: impl FnMut() -> T,
         func: impl FnMut(T),
     ) -> BenchReport {
@@ -1848,12 +2077,64 @@ impl BenchBackend {
                     &mut func,
                 )
             }
+            BenchBackend::Profile { cli_iterations } => {
+                let iterations =
+                    resolve_profile_iterations(*cli_iterations, default_profile_iterations);
+                let start = std::time::Instant::now();
+                let mut generator = generator;
+                let mut func = func;
+                for _ in 0..iterations {
+                    let mut input = generator();
+                    black_box(&mut input);
+                    func(input);
+                }
+                profile_report(iterations, start.elapsed())
+            }
             #[cfg(test)]
             BenchBackend::Fixed { next } => {
                 measure_generated_fixed(parameters, measurement_plan, next, generator, func)
             }
         }
     }
+
+    fn is_profile(&self) -> bool {
+        matches!(self, Self::Profile { .. })
+    }
+}
+
+fn resolve_profile_iterations(cli_iterations: Option<u64>, default_profile_iterations: u64) -> u64 {
+    cli_iterations.unwrap_or(default_profile_iterations).max(1)
+}
+
+fn align_profile_iterations(iterations: u64, iteration_multiple: u64) -> u64 {
+    let multiple = iteration_multiple.max(1);
+    let iterations = iterations.max(1);
+    if multiple == 1 {
+        return iterations;
+    }
+
+    iterations
+        .saturating_add(multiple - 1)
+        .saturating_div(multiple)
+        .saturating_mul(multiple)
+        .max(multiple)
+}
+
+fn profile_report(iterations: u64, elapsed: Duration) -> BenchReport {
+    let iterations = iterations.max(1);
+    let nanos_per_iter = nanos(elapsed).max(1) as f64 / iterations as f64;
+    BenchReport::from_samples(
+        vec![Stat {
+            nanos: f64_to_dec(nanos_per_iter),
+            cycles: Dec::default(),
+            inst: Dec::default(),
+            branch: Dec::default(),
+        }],
+        iterations,
+        0,
+        0,
+        Stat::default(),
+    )
 }
 
 #[cfg(test)]
@@ -2060,33 +2341,63 @@ struct PerfCounts {
     branch: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliMode {
+    Bench,
+    Profile,
+}
+
 #[derive(Debug, Clone)]
 struct CliOptions {
+    mode: CliMode,
     route_filter: Option<String>,
     save: Option<PathBuf>,
     compare: Option<PathBuf>,
     param_filters: Vec<ParamValue>,
     threshold_pct: f64,
+    profile_iterations: Option<u64>,
+    progress: bool,
     help: bool,
 }
 
 impl CliOptions {
     fn parse(args: &[String]) -> Result<Self, String> {
+        let mut mode = CliMode::Bench;
         let mut route_filter = None;
         let mut save = None;
         let mut compare = None;
         let mut param_filters = Vec::new();
         let mut threshold_pct = DEFAULT_THRESHOLD_PCT;
+        let mut profile_iterations = None;
+        let mut progress = false;
         let mut help = false;
 
         let mut index = 0;
+        if let Some(command) = args.first().map(String::as_str) {
+            match command {
+                "bench" => index = 1,
+                "profile" => {
+                    mode = CliMode::Profile;
+                    index = 1;
+                }
+                _ => {}
+            }
+        }
+
         while index < args.len() {
             match args[index].as_str() {
                 "--help" | "-h" => {
                     help = true;
                     index += 1;
                 }
+                "--progress" => {
+                    progress = true;
+                    index += 1;
+                }
                 "--save" => {
+                    if mode == CliMode::Profile {
+                        return Err("profile does not support --save".to_owned());
+                    }
                     index += 1;
                     let value = args
                         .get(index)
@@ -2095,6 +2406,9 @@ impl CliOptions {
                     index += 1;
                 }
                 "--compare" => {
+                    if mode == CliMode::Profile {
+                        return Err("profile does not support --compare".to_owned());
+                    }
                     index += 1;
                     let value = args
                         .get(index)
@@ -2125,6 +2439,26 @@ impl CliOptions {
                     }
                     index += 1;
                 }
+                "--iterations" | "--iters" => {
+                    if mode != CliMode::Profile {
+                        return Err(format!(
+                            "{} is only valid with the profile subcommand",
+                            args[index]
+                        ));
+                    }
+                    index += 1;
+                    let raw = args.get(index).ok_or_else(|| {
+                        format!("{} requires a positive integer", args[index - 1])
+                    })?;
+                    let iterations = raw.parse::<u64>().map_err(|err| {
+                        format!("{} expects a positive integer: {err}", args[index - 1])
+                    })?;
+                    if iterations == 0 {
+                        return Err(format!("{} must be greater than zero", args[index - 1]));
+                    }
+                    profile_iterations = Some(iterations);
+                    index += 1;
+                }
                 other if other.starts_with('-') => {
                     return Err(format!("unknown option {other:?}"));
                 }
@@ -2139,12 +2473,21 @@ impl CliOptions {
             }
         }
 
+        if mode == CliMode::Profile && !help && route_filter.is_none() {
+            return Err(
+                "profile requires a route, for example: benchmark profile opus/encode".to_owned(),
+            );
+        }
+
         Ok(Self {
+            mode,
             route_filter,
             save,
             compare,
             param_filters,
             threshold_pct,
+            profile_iterations,
+            progress,
             help,
         })
     }
@@ -3167,7 +3510,9 @@ fn format_percent(value: Option<f64>) -> String {
 }
 
 fn usage() -> String {
-    "usage: benchmark [route] [--param key=value] [--save path] [--compare path] [--threshold-pct N]\n".to_owned()
+    format!(
+        "usage:\n  benchmark [bench] [route] [--param key=value] [--save path] [--compare path] [--threshold-pct N] [--progress]\n  benchmark profile <route> [--param key=value] [--iterations N] [--progress]\n\nprofile runs matched routes without perf counters using fixed iterations. Routes may define their own profile default; otherwise the default is {DEFAULT_PROFILE_ITERATIONS}. --iterations overrides route defaults. Profile runs are quiet unless --progress is passed.\n"
+    )
 }
 
 fn unix_now_ms() -> u64 {
@@ -3252,6 +3597,174 @@ mod tests {
             args.iter().map(|value| value.to_string()),
             BenchBackend::fixed,
         )
+    }
+
+    #[test]
+    fn bench_subcommand_is_an_alias_for_default_mode() {
+        let mut router = Router::default();
+        router.add("foo", |bench| {
+            bench.func(|| {});
+        });
+
+        let outcome = eval_fixed(&router, &["bench", "foo"]);
+
+        assert_eq!(outcome.exit_code, 0);
+        assert_eq!(outcome.run_file.unwrap().records[0].route, "foo");
+    }
+
+    #[test]
+    fn profile_subcommand_runs_fixed_iterations() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let iterations = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&iterations);
+        let mut router = Router::default();
+        router.add("corpus", move |bench| {
+            let observed = Arc::clone(&observed);
+            bench.indexed_cyclic(4, move |_| {
+                observed.fetch_add(1, Ordering::SeqCst);
+            });
+        });
+
+        let outcome = eval_fixed(&router, &["profile", "corpus", "--iterations", "6"]);
+
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.stdout.is_empty());
+        assert!(outcome.stderr.is_empty());
+        let run = outcome.run_file.unwrap();
+        assert_eq!(iterations.load(Ordering::SeqCst), 8);
+        assert_eq!(run.records[0].report.iterations_per_sample, 8);
+        assert_eq!(run.records[0].report.sample_count(), 1);
+    }
+
+    #[test]
+    fn profile_subcommand_uses_route_default_iterations() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let iterations = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&iterations);
+        let mut router = Router::default();
+        router.add("corpus", move |bench| {
+            let observed = Arc::clone(&observed);
+            bench
+                .with_profile_iterations(6)
+                .indexed_cyclic(4, move |_| {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                });
+        });
+
+        let outcome = eval_fixed(&router, &["profile", "corpus"]);
+
+        assert_eq!(outcome.exit_code, 0);
+        let run = outcome.run_file.unwrap();
+        assert_eq!(iterations.load(Ordering::SeqCst), 8);
+        assert_eq!(run.records[0].report.iterations_per_sample, 8);
+    }
+
+    #[test]
+    fn profile_cli_iterations_override_route_default_iterations() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let iterations = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&iterations);
+        let mut router = Router::default();
+        router.add("corpus", move |bench| {
+            let observed = Arc::clone(&observed);
+            bench
+                .with_profile_iterations(20)
+                .indexed_cyclic(4, move |_| {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                });
+        });
+
+        let outcome = eval_fixed(&router, &["profile", "corpus", "--iterations", "6"]);
+
+        assert_eq!(outcome.exit_code, 0);
+        let run = outcome.run_file.unwrap();
+        assert_eq!(iterations.load(Ordering::SeqCst), 8);
+        assert_eq!(run.records[0].report.iterations_per_sample, 8);
+    }
+
+    #[test]
+    fn profile_parameter_defaults_limit_unfiltered_profile_runs() {
+        let mut router = Router::default();
+        router.add("matrix", |bench| {
+            bench.param_str_profile_defaults(
+                "shape",
+                ["small", "large"],
+                ["large"],
+                |bench, _shape| {
+                    bench.func(|| {});
+                },
+            );
+        });
+
+        let outcome = eval_fixed(&router, &["profile", "matrix"]);
+        let run = outcome.run_file.unwrap();
+
+        assert_eq!(run.records.len(), 1);
+        assert_eq!(run.records[0].params[0], ParamValue::new("shape", "large"));
+    }
+
+    #[test]
+    fn explicit_profile_parameter_filter_overrides_profile_defaults() {
+        let mut router = Router::default();
+        router.add("matrix", |bench| {
+            bench.param_str_profile_defaults(
+                "shape",
+                ["small", "large"],
+                ["large"],
+                |bench, _shape| {
+                    bench.func(|| {});
+                },
+            );
+        });
+
+        let outcome = eval_fixed(&router, &["profile", "matrix", "--param", "shape=small"]);
+        let run = outcome.run_file.unwrap();
+
+        assert_eq!(run.records.len(), 1);
+        assert_eq!(run.records[0].params[0], ParamValue::new("shape", "small"));
+    }
+
+    #[test]
+    fn bench_mode_ignores_profile_parameter_defaults() {
+        let mut router = Router::default();
+        router.add("matrix", |bench| {
+            bench.param_str_profile_defaults(
+                "shape",
+                ["small", "large"],
+                ["large"],
+                |bench, _shape| {
+                    bench.func(|| {});
+                },
+            );
+        });
+
+        let outcome = eval_fixed(&router, &["bench", "matrix"]);
+        let run = outcome.run_file.unwrap();
+
+        assert_eq!(run.records.len(), 2);
+        assert_eq!(run.records[0].params[0], ParamValue::new("shape", "small"));
+        assert_eq!(run.records[1].params[0], ParamValue::new("shape", "large"));
+    }
+
+    #[test]
+    fn profile_subcommand_requires_a_route() {
+        let router = Router::default();
+        let outcome = eval_fixed(&router, &["profile"]);
+
+        assert_eq!(outcome.exit_code, 2);
+        assert!(outcome.stderr.contains("profile requires a route"));
     }
 
     #[test]
