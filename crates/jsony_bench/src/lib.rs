@@ -2583,6 +2583,7 @@ fn compare_runs_with_threshold_and_plan(
 }
 
 pub fn render_run_table(run_file: &RunFile) -> String {
+    let units = RunTableUnits::new(run_file);
     let mut output = String::new();
     output.push_str(
         "route | params | cycles/op | cycles 95% | cycles mad | inst/op | inst mad | ns/op | samples | underflow | adj/cycles\n",
@@ -2595,15 +2596,20 @@ pub fn render_run_table(run_file: &RunFile) -> String {
             "{} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {}\n",
             record.route,
             format_params(&record.params),
-            record.report.estimate.cycles,
+            units.cycles.format_dec(record.report.estimate.cycles),
             format_metric_ci(
                 record.report.estimate.cycles,
-                record.report.estimate_log_se.cycles
+                record.report.estimate_log_se.cycles,
+                units.cycles,
             ),
-            record.report.median_abs_deviation.cycles,
-            record.report.estimate.inst,
-            record.report.median_abs_deviation.inst,
-            record.report.estimate.nanos,
+            units
+                .cycles_mad
+                .format_dec(record.report.median_abs_deviation.cycles),
+            units.inst.format_dec(record.report.estimate.inst),
+            units
+                .inst_mad
+                .format_dec(record.report.median_abs_deviation.inst),
+            units.nanos.format_dec(record.report.estimate.nanos),
             record.report.sample_count(),
             format_underflow(&record.report),
             format_adjustment_ratio(&record.report),
@@ -2647,6 +2653,7 @@ pub fn render_compare_report(report: &CompareReport) -> String {
                 * 100.0,
         ));
     } else {
+        let cycles_scale = compare_cycles_scale(&changed);
         output.push_str(&format!(
             "compare: {} regressions, {} improvements (threshold {:.2}%, corrected posterior >= {:.3}%)\n",
             report.regression_count,
@@ -2677,8 +2684,8 @@ pub fn render_compare_report(report: &CompareReport) -> String {
                 ),
                 format_p_pair(entry.cycles_p_regression, entry.cycles_p_improvement),
                 format_percent(entry.inst_delta_percent),
-                entry.baseline.estimate.cycles,
-                entry.current.estimate.cycles,
+                cycles_scale.format_dec(entry.baseline.estimate.cycles),
+                cycles_scale.format_dec(entry.current.estimate.cycles),
                 entry.classification,
                 entry.classification_reason,
             ));
@@ -2708,16 +2715,158 @@ fn format_delta_ci(delta: Option<f64>, lo: Option<f64>, hi: Option<f64>) -> Stri
     }
 }
 
-fn format_metric_ci(estimate: Dec, log_se: f64) -> String {
+fn format_metric_ci(estimate: Dec, log_se: f64, scale: MetricScale) -> String {
+    let Some((lo, hi)) = metric_ci_bounds(estimate, log_se) else {
+        return "n/a".to_owned();
+    };
+    format!("[{}, {}]", scale.format_f64(lo), scale.format_f64(hi))
+}
+
+fn metric_ci_bounds(estimate: Dec, log_se: f64) -> Option<(f64, f64)> {
     let estimate = f64::from(estimate);
     if estimate <= 0.0 || !estimate.is_finite() || !log_se.is_finite() {
-        return "n/a".to_owned();
+        return None;
     }
     let log_estimate = estimate.ln();
     let lo = (log_estimate - CI_95_Z * log_se).exp();
     let hi = (log_estimate + CI_95_Z * log_se).exp();
-    format!("[{lo:.2}, {hi:.2}]")
+    Some((lo, hi))
 }
+
+#[derive(Clone, Copy)]
+struct RunTableUnits {
+    cycles: MetricScale,
+    cycles_mad: MetricScale,
+    inst: MetricScale,
+    inst_mad: MetricScale,
+    nanos: MetricScale,
+}
+
+impl RunTableUnits {
+    fn new(run_file: &RunFile) -> Self {
+        let mut cycles = Vec::with_capacity(run_file.records.len() * 3);
+        let mut cycles_mad = Vec::with_capacity(run_file.records.len());
+        let mut inst = Vec::with_capacity(run_file.records.len());
+        let mut inst_mad = Vec::with_capacity(run_file.records.len());
+        let mut nanos = Vec::with_capacity(run_file.records.len());
+
+        for record in &run_file.records {
+            let report = &record.report;
+            cycles.push(f64::from(report.estimate.cycles));
+            if let Some((lo, hi)) =
+                metric_ci_bounds(report.estimate.cycles, report.estimate_log_se.cycles)
+            {
+                cycles.push(lo);
+                cycles.push(hi);
+            }
+            cycles_mad.push(f64::from(report.median_abs_deviation.cycles));
+            inst.push(f64::from(report.estimate.inst));
+            inst_mad.push(f64::from(report.median_abs_deviation.inst));
+            nanos.push(f64::from(report.estimate.nanos));
+        }
+
+        Self {
+            cycles: MetricScale::for_values(cycles),
+            cycles_mad: MetricScale::for_values(cycles_mad),
+            inst: MetricScale::for_values(inst),
+            inst_mad: MetricScale::for_values(inst_mad),
+            nanos: MetricScale::for_values(nanos),
+        }
+    }
+}
+
+fn compare_cycles_scale(changed: &[&CompareEntry]) -> MetricScale {
+    let mut values = Vec::with_capacity(changed.len() * 2);
+    for entry in changed {
+        values.push(f64::from(entry.baseline.estimate.cycles));
+        values.push(f64::from(entry.current.estimate.cycles));
+    }
+    MetricScale::for_values(values)
+}
+
+#[derive(Clone, Copy)]
+struct MetricScale {
+    suffix: &'static str,
+    divisor: f64,
+}
+
+impl MetricScale {
+    const RAW: Self = Self {
+        suffix: "",
+        divisor: 1.0,
+    };
+
+    fn for_values(values: impl IntoIterator<Item = f64>) -> Self {
+        let mut min_positive = f64::INFINITY;
+        for value in values {
+            let value = value.abs();
+            if value.is_finite() && value > 0.0 {
+                min_positive = min_positive.min(value);
+            }
+        }
+
+        if !min_positive.is_finite() {
+            return Self::RAW;
+        }
+
+        for unit in METRIC_UNITS.iter().rev() {
+            if min_positive >= unit.divisor * METRIC_UNIT_MIN_SCALED {
+                return *unit;
+            }
+        }
+        Self::RAW
+    }
+
+    fn format_dec(self, value: Dec) -> String {
+        self.format_f64(f64::from(value))
+    }
+
+    fn format_f64(self, value: f64) -> String {
+        if !value.is_finite() {
+            return "n/a".to_owned();
+        }
+        if self.suffix.is_empty() {
+            return format!("{value:.2}");
+        }
+
+        let scaled = value / self.divisor;
+        if scaled == 0.0 {
+            return format!("0{}", self.suffix);
+        }
+        let precision = if scaled.abs() >= 100.0 {
+            0
+        } else if scaled.abs() >= 10.0 {
+            1
+        } else {
+            2
+        };
+        format!("{scaled:.precision$}{}", self.suffix)
+    }
+}
+
+const METRIC_UNIT_MIN_SCALED: f64 = 10.0;
+const METRIC_UNITS: [MetricScale; 5] = [
+    MetricScale {
+        suffix: "K",
+        divisor: 1_000.0,
+    },
+    MetricScale {
+        suffix: "M",
+        divisor: 1_000_000.0,
+    },
+    MetricScale {
+        suffix: "B",
+        divisor: 1_000_000_000.0,
+    },
+    MetricScale {
+        suffix: "T",
+        divisor: 1_000_000_000_000.0,
+    },
+    MetricScale {
+        suffix: "P",
+        divisor: 1_000_000_000_000_000.0,
+    },
+];
 
 fn format_underflow(report: &BenchReport) -> String {
     if report.underflow_samples == 0 {
@@ -4452,6 +4601,54 @@ mod tests {
         assert!(output.contains("route | params | cycles/op"));
         assert!(output.contains("foo/bar"));
         assert!(output.contains("size=64"));
+    }
+
+    #[test]
+    fn run_table_scales_large_metric_columns() {
+        let run = test_run_file(vec![test_record_with_stat(
+            "large",
+            stat(100, 12_345_678, 20_000_000_000, 100),
+            Vec::new(),
+        )]);
+
+        let output = render_run_table(&run);
+
+        assert!(output.contains("12.3M"));
+        assert!(output.contains("[12.3M, 12.3M]"));
+        assert!(output.contains("20.0B"));
+    }
+
+    #[test]
+    fn run_table_keeps_near_million_columns_in_thousands() {
+        let run = test_run_file(vec![
+            test_record_with_stat("million", stat(100, 1_000_000, 1_000_000, 100), Vec::new()),
+            test_record_with_stat("just_under", stat(100, 999_000, 999_000, 100), Vec::new()),
+        ]);
+
+        let output = render_run_table(&run);
+
+        assert!(output.contains("1000K"));
+        assert!(output.contains("999K"));
+        assert!(!output.contains("1.00M"));
+    }
+
+    #[test]
+    fn compare_table_shares_cycle_scale_between_baseline_and_current() {
+        let baseline = test_run_file(vec![test_record_with_stat(
+            "optimized",
+            stat(100, 12_000_000, 100, 100),
+            Vec::new(),
+        )]);
+        let current = test_run_file(vec![test_record_with_stat(
+            "optimized",
+            stat(100, 9_000_000, 100, 100),
+            Vec::new(),
+        )]);
+
+        let output = render_compare_report(&compare_runs(&baseline, &current));
+
+        assert!(output.contains("12000K | 9000K"));
+        assert!(!output.contains("12.0M | 9000K"));
     }
 
     #[test]
