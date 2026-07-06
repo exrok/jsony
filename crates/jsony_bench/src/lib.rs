@@ -172,9 +172,10 @@ const COMPARE_MIN_SAMPLES: usize = 60;
 // generator path.
 const ADJUSTMENT_SAMPLES: u64 = 24;
 
-// Samples discarded after calibration to flush branch predictor / cache / TLB
-// state and let CPU frequency reach its steady boost.
-const BURN_IN_SAMPLES: usize = 16;
+// Default number of samples discarded after calibration to flush branch
+// predictor / cache / TLB state and let CPU frequency reach its steady boost.
+// Overridable per-bench via [`BenchParameters::burn_in_samples`].
+pub const DEFAULT_BURN_IN_SAMPLES: usize = 16;
 
 // Calibration spends at most this many iterations doubling.
 const CALIBRATION_MAX_PASSES: usize = 8;
@@ -1444,6 +1445,13 @@ pub struct BenchParameters {
     pub max_samples: usize,
     pub min_samples: usize,
     pub target_duration_ns: u64,
+    /// Discarded warm-up samples taken before measurement to flush branch
+    /// predictor / cache / TLB state and reach steady CPU boost. Cheap
+    /// microbenchmarks want the full [`DEFAULT_BURN_IN_SAMPLES`]; benches whose
+    /// single op already runs for many milliseconds self-warm in one or two
+    /// samples, so a lower count trims wall time that never shows up in the
+    /// measured duration. Zero disables burn-in.
+    pub burn_in_samples: usize,
 }
 
 impl BenchParameters {
@@ -1454,6 +1462,7 @@ impl BenchParameters {
         max_samples: 240,
         min_samples: 80,
         target_duration_ns: nanos(Duration::from_millis(200)),
+        burn_in_samples: DEFAULT_BURN_IN_SAMPLES,
     };
 
     pub fn validate(self) {
@@ -1491,6 +1500,7 @@ pub const BIG_BENCH_PARAM: BenchParameters = BenchParameters {
     max_samples: 400,
     min_samples: 150,
     target_duration_ns: nanos(Duration::from_millis(1000)),
+    burn_in_samples: DEFAULT_BURN_IN_SAMPLES,
 };
 
 pub const DEFAULT_BENCH_PARAM: BenchParameters = BenchParameters {
@@ -1500,6 +1510,7 @@ pub const DEFAULT_BENCH_PARAM: BenchParameters = BenchParameters {
     max_samples: 300,
     min_samples: 100,
     target_duration_ns: nanos(Duration::from_millis(500)),
+    burn_in_samples: DEFAULT_BURN_IN_SAMPLES,
 };
 
 impl Default for Bencher {
@@ -1706,7 +1717,7 @@ impl Bencher {
         // Burn-in: warm CPU, branch predictor, cache and TLB. Samples are
         // taken with the full pipeline (generator + func) so the work mirrors
         // what we will measure next. Discarded.
-        for _ in 0..BURN_IN_SAMPLES {
+        for _ in 0..param.burn_in_samples {
             let _ = sample_generated(self, iterations, generator, Some(&mut *func)).normalized;
         }
 
@@ -1741,7 +1752,7 @@ impl Bencher {
         BenchReport::from_samples(
             samples,
             iterations,
-            BURN_IN_SAMPLES,
+            param.burn_in_samples,
             underflow_samples,
             adjustment,
         )
@@ -1765,7 +1776,7 @@ impl Bencher {
         let iterations = align_iterations_to_multiple(iterations, param, iteration_multiple);
         let target_samples = measurement_plan.and_then(|plan| plan.locked_samples(param));
 
-        for _ in 0..BURN_IN_SAMPLES {
+        for _ in 0..param.burn_in_samples {
             let _ = func.sample(self, iterations, Stat::default());
         }
 
@@ -1789,7 +1800,7 @@ impl Bencher {
         BenchReport::from_samples(
             samples,
             iterations,
-            BURN_IN_SAMPLES,
+            param.burn_in_samples,
             underflow_samples,
             Stat::default(),
         )
