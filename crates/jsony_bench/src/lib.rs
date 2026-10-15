@@ -355,6 +355,8 @@ impl Router {
 
         let stdout = if let Some(compare_report) = &compare_report {
             render_compare_report(compare_report)
+        } else if options.pretty {
+            render_pretty_run_table(&run_file)
         } else {
             render_run_table(&run_file)
         };
@@ -2368,6 +2370,7 @@ struct CliOptions {
     threshold_pct: f64,
     profile_iterations: Option<u64>,
     progress: bool,
+    pretty: bool,
     help: bool,
 }
 
@@ -2381,6 +2384,7 @@ impl CliOptions {
         let mut threshold_pct = DEFAULT_THRESHOLD_PCT;
         let mut profile_iterations = None;
         let mut progress = false;
+        let mut pretty = false;
         let mut help = false;
 
         let mut index = 0;
@@ -2403,6 +2407,10 @@ impl CliOptions {
                 }
                 "--progress" => {
                     progress = true;
+                    index += 1;
+                }
+                "--pretty" => {
+                    pretty = true;
                     index += 1;
                 }
                 "--save" => {
@@ -2499,6 +2507,7 @@ impl CliOptions {
             threshold_pct,
             profile_iterations,
             progress,
+            pretty,
             help,
         })
     }
@@ -2627,6 +2636,117 @@ pub fn render_run_table(run_file: &RunFile) -> String {
         ));
     }
     output
+}
+
+const PRETTY_RUN_HEADERS: [&str; 11] = [
+    "case",
+    "params",
+    "cycles/op",
+    "inst/op",
+    "ns/op",
+    "cycles 95%",
+    "cycles mad",
+    "inst mad",
+    "samples",
+    "underflow",
+    "adj/cycles",
+];
+
+struct PrettyRunRow<'a> {
+    group: Option<&'a str>,
+    cells: [String; PRETTY_RUN_HEADERS.len()],
+}
+
+/// Render an aligned terminal table that groups routes by their parent path.
+///
+/// Primary measurements are kept together on the left. Confidence and
+/// diagnostic columns follow a visual divider so the result values remain the
+/// first thing read across each row.
+pub fn render_pretty_run_table(run_file: &RunFile) -> String {
+    let units = RunTableUnits::new(run_file);
+    let rows = run_file
+        .records
+        .iter()
+        .map(|record| {
+            let (group, name) = match record.route.rsplit_once('/') {
+                Some((group, name)) => (Some(group), format!("  {name}")),
+                None => (None, record.route.clone()),
+            };
+            PrettyRunRow {
+                group,
+                cells: [
+                    name,
+                    format_params(&record.params),
+                    units.cycles.format_dec(record.report.estimate.cycles),
+                    units.inst.format_dec(record.report.estimate.inst),
+                    units.nanos.format_dec(record.report.estimate.nanos),
+                    format_metric_ci(
+                        record.report.estimate.cycles,
+                        record.report.estimate_log_se.cycles,
+                        units.cycles,
+                    ),
+                    units
+                        .cycles_mad
+                        .format_dec(record.report.median_abs_deviation.cycles),
+                    units
+                        .inst_mad
+                        .format_dec(record.report.median_abs_deviation.inst),
+                    record.report.sample_count().to_string(),
+                    format_underflow(&record.report),
+                    format_adjustment_ratio(&record.report),
+                ],
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut widths = PRETTY_RUN_HEADERS.map(str::len);
+    for row in &rows {
+        for (index, cell) in row.cells.iter().enumerate() {
+            widths[index] = widths[index].max(cell.len());
+        }
+    }
+
+    let mut output = String::new();
+    push_pretty_run_line(&mut output, &PRETTY_RUN_HEADERS, &widths, true);
+    let separators = widths.map(|width| "-".repeat(width));
+    push_pretty_run_line(&mut output, &separators, &widths, false);
+
+    let mut active_group: Option<Option<&str>> = None;
+    for row in &rows {
+        if active_group != Some(row.group) {
+            if active_group.is_some() {
+                output.push('\n');
+            }
+            if let Some(group) = row.group {
+                output.push_str(group);
+                output.push_str("/\n");
+            }
+            active_group = Some(row.group);
+        }
+        push_pretty_run_line(&mut output, &row.cells, &widths, false);
+    }
+
+    output
+}
+
+fn push_pretty_run_line(
+    output: &mut String,
+    cells: &[impl AsRef<str>; PRETTY_RUN_HEADERS.len()],
+    widths: &[usize; PRETTY_RUN_HEADERS.len()],
+    header: bool,
+) {
+    for (index, (cell, width)) in cells.iter().zip(widths).enumerate() {
+        if index > 0 {
+            output.push_str(if index == 5 { "  |  " } else { "  " });
+        }
+        let cell = cell.as_ref();
+        if header || index < 2 {
+            output.push_str(&format!("{cell:<width$}"));
+        } else {
+            output.push_str(&format!("{cell:>width$}"));
+        }
+    }
+    output.push('\n');
 }
 
 pub fn render_compare_report(report: &CompareReport) -> String {
@@ -3671,7 +3791,7 @@ fn format_percent(value: Option<f64>) -> String {
 
 fn usage() -> String {
     format!(
-        "usage:\n  benchmark [bench] [route] [--param key=value] [--save path] [--compare path] [--threshold-pct N] [--progress]\n  benchmark profile <route> [--param key=value] [--iterations N] [--progress]\n\nprofile runs matched routes without perf counters using fixed iterations. Routes may define their own profile default; otherwise the default is {DEFAULT_PROFILE_ITERATIONS}. --iterations overrides route defaults. Profile runs are quiet unless --progress is passed.\n"
+        "usage:\n  benchmark [bench] [route] [--param key=value] [--save path] [--compare path] [--threshold-pct N] [--progress] [--pretty]\n  benchmark profile <route> [--param key=value] [--iterations N] [--progress]\n\n--pretty groups related routes and aligns primary results ahead of confidence and diagnostic columns.\n\nprofile runs matched routes without perf counters using fixed iterations. Routes may define their own profile default; otherwise the default is {DEFAULT_PROFILE_ITERATIONS}. --iterations overrides route defaults. Profile runs are quiet unless --progress is passed.\n"
     )
 }
 
@@ -4612,6 +4732,45 @@ mod tests {
         assert!(output.contains("route | params | cycles/op"));
         assert!(output.contains("foo/bar"));
         assert!(output.contains("size=64"));
+    }
+
+    #[test]
+    fn pretty_run_table_groups_routes_and_prioritizes_results() {
+        let run = test_run_file(vec![
+            test_record("foo/alpha", 10, vec![ParamValue::new("size", "64")]),
+            test_record("foo/beta", 20, vec![ParamValue::new("size", "128")]),
+            test_record("bar/gamma", 30, Vec::new()),
+        ]);
+
+        let output = render_pretty_run_table(&run);
+        let header = output.lines().next().unwrap();
+        let alpha = output.lines().find(|line| line.starts_with("  alpha")).unwrap();
+        let beta = output.lines().find(|line| line.starts_with("  beta")).unwrap();
+
+        assert_eq!(output.matches("foo/").count(), 1);
+        assert!(!output.contains("foo/alpha"));
+        assert!(!output.contains("foo/beta"));
+        assert!(output.contains("bar/\n  gamma"));
+        assert!(header.find("cycles/op").unwrap() < header.find("inst/op").unwrap());
+        assert!(header.find("inst/op").unwrap() < header.find("ns/op").unwrap());
+        assert!(header.find("ns/op").unwrap() < header.find("cycles 95%").unwrap());
+        assert_eq!(header.find('|'), alpha.find('|'));
+        assert_eq!(alpha.find('|'), beta.find('|'));
+    }
+
+    #[test]
+    fn pretty_flag_selects_grouped_run_output() {
+        let mut router = Router::default();
+        router.add("foo", |bench| {
+            bench.named("alpha").func(|| {});
+            bench.named("beta").func(|| {});
+        });
+
+        let outcome = eval_fixed(&router, &["--pretty"]);
+
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.stdout.starts_with("case"));
+        assert_eq!(outcome.stdout.matches("foo/").count(), 1);
     }
 
     #[test]
