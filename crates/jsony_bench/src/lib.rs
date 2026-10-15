@@ -301,9 +301,14 @@ impl Router {
             .as_ref()
             .map(|path| load_run_plan_for_compare(path));
 
-        let (mut run_file, comparison_run_plan) = if options.save.is_some()
-            && options.compare.is_none()
-        {
+        let (mut run_file, comparison_run_plan) = if options.single_pass {
+            let (_backend, records) =
+                self.measure_records(&options, compare_run_plan.clone(), backend);
+            (
+                self.run_file_from_records(&args, &options, records, None),
+                None,
+            )
+        } else if options.save.is_some() && options.compare.is_none() {
             let (next_backend, prepass_records) = self.measure_records(&options, None, backend);
             let prepass_run = self.run_file_from_records(&args, &options, prepass_records, None);
 
@@ -2386,6 +2391,7 @@ struct CliOptions {
     profile_iterations: Option<u64>,
     progress: bool,
     pretty: bool,
+    single_pass: bool,
     help: bool,
 }
 
@@ -2400,6 +2406,7 @@ impl CliOptions {
         let mut profile_iterations = None;
         let mut progress = false;
         let mut pretty = false;
+        let mut single_pass = false;
         let mut help = false;
 
         let mut index = 0;
@@ -2426,6 +2433,10 @@ impl CliOptions {
                 }
                 "--pretty" => {
                     pretty = true;
+                    index += 1;
+                }
+                "--single-pass" => {
+                    single_pass = true;
                     index += 1;
                 }
                 "--save" => {
@@ -2523,6 +2534,7 @@ impl CliOptions {
             profile_iterations,
             progress,
             pretty,
+            single_pass,
             help,
         })
     }
@@ -3806,7 +3818,7 @@ fn format_percent(value: Option<f64>) -> String {
 
 fn usage() -> String {
     format!(
-        "usage:\n  benchmark [bench] [route] [--param key=value] [--save path] [--compare path] [--threshold-pct N] [--progress] [--pretty]\n  benchmark profile <route> [--param key=value] [--iterations N] [--progress]\n\n--pretty groups related routes and aligns primary results ahead of confidence and diagnostic columns.\n\nprofile runs matched routes without perf counters using fixed iterations. Routes may define their own profile default; otherwise the default is {DEFAULT_PROFILE_ITERATIONS}. --iterations overrides route defaults. Profile runs are quiet unless --progress is passed.\n"
+        "usage:\n  benchmark [bench] [route] [--param key=value] [--save path] [--compare path] [--threshold-pct N] [--progress] [--pretty] [--single-pass]\n  benchmark profile <route> [--param key=value] [--iterations N] [--progress]\n\n--pretty groups related routes and aligns primary results ahead of confidence and diagnostic columns.\n\n--single-pass measures once: --save and --compare otherwise take a calibration pass first, which locks the iterations per sample and estimates the noise between passes. For routes whose iterations per sample are fixed, and whose counts barely vary, it halves the time.\n\nprofile runs matched routes without perf counters using fixed iterations. Routes may define their own profile default; otherwise the default is {DEFAULT_PROFILE_ITERATIONS}. --iterations overrides route defaults. Profile runs are quiet unless --progress is passed.\n"
     )
 }
 
