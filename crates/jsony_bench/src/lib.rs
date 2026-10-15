@@ -27,11 +27,13 @@ mod hygiene {
         try_disable_aslr_and_reexec();
         pin_cpu();
         try_raise_priority();
-        try_lock_memory();
+        if std::env::var_os("JSONY_BENCH_NO_MLOCK").is_none() {
+            try_lock_memory();
+        }
         cpu_frequency_warmup();
     }
 
-    fn try_disable_aslr_and_reexec() {
+    pub fn try_disable_aslr_and_reexec() {
         if std::env::var_os("JSONY_BENCH_NO_REEXEC").is_some() {
             return;
         }
@@ -142,6 +144,19 @@ mod hygiene {
 #[cfg(not(target_os = "linux"))]
 mod hygiene {
     pub fn prepare_process() {}
+    pub fn try_disable_aslr_and_reexec() {}
+}
+
+/// Re-executes the process with ASLR off now, as [`Bencher::new`] would at its
+/// first measurement (a no-op once off, or with `JSONY_BENCH_NO_REEXEC` set).
+///
+/// A benchmark binary whose setup is expensive (a loaded scene, a GPU device)
+/// calls this first thing in `main`, so the re-exec does not throw the setup
+/// away. Set `JSONY_BENCH_NO_MLOCK` as well when the setup maps memory that
+/// must not be locked (`mlockall(MCL_FUTURE)` would lock every later mapping,
+/// a driver's included).
+pub fn disable_aslr() {
+    hygiene::try_disable_aslr_and_reexec();
 }
 
 const RUN_FILE_FORMAT: &str = "jsony_bench.run";
